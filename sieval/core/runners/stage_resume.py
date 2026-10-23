@@ -4,7 +4,8 @@ A resume rolls each recorded sample back to the earliest stage whose identity
 changed, and reruns from there:
 
 ==============================  ==============================================
-Data or preprocess differ       That sample reruns from the start.
+Data differs                    That sample reruns from the start.
+Preprocess differs              Every sample reruns from the start.
 Inference differs               Refused: :class:`StageResumeError` names it.
 Postprocess differs             ``postprocess`` onward reruns on the recorded
                                 inference.
@@ -20,11 +21,17 @@ its later inference saw the old grader's feedback.
 A schema-1 ``grader`` (0.10.0 to 0.11.x) matches all grading stages or none
 (:func:`~sieval.core.tasks.run_meta.legacy_grader_keys`).
 
-A sample's data and prompt digests come from its ``preprocess`` record. For a
-directory recorded before them, the prompt is digested from the ``preprocess``
-output, and data and inference come from the caller's
-:class:`LegacyStageMatch`. A stage neither can tell is unknown, and a resume
-that would reuse it is refused. Nothing here writes to the recorded directory.
+``preprocess`` is code and arguments, one per task
+(:func:`~sieval.core.tasks.run_meta.preprocess_identity`); each ``preprocess``
+record is stamped with its key. A directory that recorded rendered prompts
+(identity schemas 1 and 2) is upgraded by rendering its recorded samples once:
+each renders the prompt it recorded, or ``preprocess`` changed.
+
+A sample's data digest comes from its ``preprocess`` record. For a directory
+recorded before them, the prompt is digested from the ``preprocess`` output,
+and data and inference come from the caller's :class:`LegacyStageMatch`. A
+stage neither can tell is unknown, and a resume that would reuse it is
+refused. Nothing here writes to the recorded directory.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
@@ -40,17 +47,23 @@ from sieval.core.tasks.context import TaskContext
 from sieval.core.tasks.run_meta import (
     GRADING_STAGES,
     STAGES,
+    PreprocessIdentity,
     ResumeOutcomes,
     RunIdentity,
+    StageCode,
     digest,
     grader_key,
     grader_task,
     grading_identities,
     inference_identity,
+    is_code_identity,
     judge_identities,
     legacy_grader_keys,
+    preprocess_identity,
+    preprocess_key,
     prompt_of,
     read_identity,
+    split_digests,
     stage_code,
     stage_key,
 )
@@ -121,7 +134,7 @@ def recorded_identity(meta: Mapping[str, Any] | None) -> RunIdentity | None:
 
 
 def recorded_grader(meta: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
-    """A schema-1 block's combined ``grader`` identity; ``None`` for schema 2."""
+    """A schema-1 block's combined ``grader`` identity; ``None`` for later ones."""
     read = read_identity((meta or {}).get("identity"))
     return read[1] if read is not None else None
 
@@ -156,11 +169,15 @@ type StageComparison = Literal["same", "differs", "unknown"]
 class ResumePlan(TypedDict):
     """What a resume of one task directory would do, from identities alone.
 
-    ``rerun_from`` is the earliest grading stage a finished sample reruns
-    from, ``None`` if none changed; data and preprocess are decided per
+    ``rerun_from`` is the earliest stage a finished sample reruns from:
+    ``preprocess`` when it differs (every sample restarts), else the earliest
+    grading stage that changed; ``None`` if none did. Data is decided per
     sample, so only compared here. ``refused`` is ``inference`` when reusing
     the recorded inference would be refused. ``legacy_grader`` is set for a
     schema-1 directory: ``kept`` (upgraded in place) or ``regrade``.
+    ``legacy_preprocess`` is ``True`` for a directory that recorded rendered
+    prompts (schemas 1 and 2): its ``preprocess`` compares ``unknown`` here,
+    and a resume renders the recorded samples once to decide.
     """
 
     identity_schema: int | None
@@ -168,6 +185,7 @@ class ResumePlan(TypedDict):
     rerun_from: str | None
     refused: str | None
     legacy_grader: Literal["kept", "regrade"] | None
+    legacy_preprocess: bool
 
 
 def plan_resume(
@@ -177,9 +195,9 @@ def plan_resume(
 ) -> ResumePlan:
     """Compare a recorded ``meta.json`` with this run's identities, running nothing.
 
-    A pure entry point for a dry run. *current* is this run's identity as
-    schema 2; ``data`` and ``preprocess`` may be ``None`` before anything is
-    preprocessed and then compare as ``unknown``. *legacy_grader_keys* is
+    A pure entry point for a dry run. *current* is this run's identity;
+    ``data`` may be ``None`` before anything is preprocessed and then
+    compares as ``unknown``. *legacy_grader_keys* is
     :func:`~sieval.core.tasks.run_meta.legacy_grader_keys` for this task,
     read only for a schema-1 directory. The runner plans per sample and is
     authoritative; this says what a resume of a finished directory does.
@@ -204,13 +222,40 @@ def plan_resume(
             stages[stage] = "same" if legacy_match else "unknown"
         if not legacy_match:
             stages[GRADING_STAGES[0]] = "differs"
+    recorded_preprocess = recorded.get("preprocess")
     return {
         "identity_schema": schema if isinstance(schema, int) else None,
         "stages": stages,
-        "rerun_from": earliest_grading_change(recorded, current, legacy_match),
+        "rerun_from": "preprocess"
+        if stages["preprocess"] == "differs"
+        else earliest_grading_change(recorded, current, legacy_match),
         "refused": "inference" if stages["inference"] != "same" else None,
         "legacy_grader": legacy,
+        "legacy_preprocess": recorded_preprocess is not None
+        and not is_code_identity(recorded_preprocess),
     }
+
+
+def task_preprocess_identity(task: "Task", code: StageCode) -> PreprocessIdentity:
+    """:func:`~sieval.core.tasks.run_meta.preprocess_identity` for *task*.
+
+    *code* is ``stage_code(...)["preprocess"]``. When that code reads a
+    dataset split, every split but ``test`` (the evaluated one, which ``data``
+    covers) is digested. Raises :class:`ValueError` when one cannot be.
+    """
+    splits: dict[str, str] | None = None
+    if code.get("splits"):
+        dataset_dict = task.dataset.dataset_dict
+        splits = split_digests(
+            {
+                str(name): cast(Iterable[object], dataset_dict[name])
+                for name in dataset_dict
+                if name != "test"
+            }
+        )
+        if splits is None:
+            raise ValueError("a dataset split the prompt reads cannot be digested")
+    return preprocess_identity(code, task.grader_args(), splits)
 
 
 def task_resume_plan(
@@ -233,14 +278,12 @@ def task_resume_plan(
     judges = judge_identities(task.judge_models(), task.judge_prompts())
     services = service_identities(task_cls.services)
     args = task.grader_args()
-    grading = grading_identities(
-        stage_code(task_cls, [j["role"] for j in judges], task_cls.services),
-        judges,
-        services,
-        args,
-        grader_task(task_cls),
+    code = stage_code(
+        task_cls, [j["role"] for j in judges], task_cls.services, list(args)
     )
+    grading = grading_identities(code, judges, services, args, grader_task(task_cls))
     current: dict[str, Any] = {
+        "preprocess": task_preprocess_identity(task, code["preprocess"]),
         "inference": inference_identity(
             model=task.model,
             task_args=task.inference_args(),
@@ -263,6 +306,9 @@ def _compare(stage: str, recorded: object, current: object) -> StageComparison:
     mine = cast(Mapping[str, Any], current) if isinstance(current, Mapping) else None
     if stage in GRADING_STAGES:
         a, b = stage_key(theirs), stage_key(mine)
+    elif stage == "preprocess":
+        # A recorded digest of rendered prompts compares as unknown.
+        a, b = preprocess_key(theirs), preprocess_key(mine)
     else:
         # Inference compares as a resume refuses it: by its configuration.
         a = theirs.get("digest") if theirs is not None else None
@@ -272,28 +318,50 @@ def _compare(stage: str, recorded: object, current: object) -> StageComparison:
     return "same" if a == b else "differs"
 
 
-def recorded_sample_digests(
-    ctx: TaskContext,
-) -> tuple[str | None, str | None, Literal["record", "derived"]]:
-    """A recorded sample's ``(data, prompt)`` digests and where they came from.
+class SampleDigests(TypedDict):
+    """A recorded sample's input stamps (:func:`recorded_sample_digests`).
 
-    ``record`` when its ``preprocess`` record carries them. Otherwise
-    ``derived``: the prompt is digested from the recorded ``preprocess`` output
-    and the data is ``None``, since shards do not hold the raw sample.
+    ``preprocess`` is the :func:`~sieval.core.tasks.run_meta.preprocess_key`
+    its record carries; ``prompt`` the digest of its rendered prompt, which
+    only a record written under identity schema 1 or 2 carries.
+    """
+
+    data: str | None
+    preprocess: str | None
+    prompt: str | None
+    source: Literal["record", "derived"]
+
+
+def recorded_sample_digests(ctx: TaskContext) -> SampleDigests:
+    """A recorded sample's data and preprocess stamps, and where they came from.
+
+    ``record`` when its ``preprocess`` record carries a data digest and a
+    ``preprocess`` key, or, under schema 1 or 2, a ``prompt`` digest.
+    Otherwise ``derived``: the prompt is digested from the recorded
+    ``preprocess`` output and the data is ``None``, since shards do not hold
+    the raw sample.
     """
     for entry in ctx.stage_meta.get(TaskStage.PREPROCESSED.value, ()):
         if isinstance(entry, dict) and isinstance(entry.get("identity"), dict):
             identity = entry["identity"]
-            data, prompt = identity.get("data"), identity.get("prompt")
-            if isinstance(data, str) and isinstance(prompt, str):
-                return data, prompt, "record"
-    prompt: str | None = None
+            data = identity.get("data")
+            preprocess, prompt = identity.get("preprocess"), identity.get("prompt")
+            if isinstance(data, str) and (
+                isinstance(preprocess, str) or isinstance(prompt, str)
+            ):
+                return {
+                    "data": data,
+                    "preprocess": preprocess if isinstance(preprocess, str) else None,
+                    "prompt": prompt if isinstance(prompt, str) else None,
+                    "source": "record",
+                }
+    rendered: str | None = None
     if ctx.preprocess_result is not None:
         try:
-            prompt = digest(prompt_of(ctx.preprocess_result))
+            rendered = digest(prompt_of(ctx.preprocess_result))
         except (TypeError, ValueError):
-            prompt = None
-    return None, prompt, "derived"
+            rendered = None
+    return {"data": None, "preprocess": None, "prompt": rendered, "source": "derived"}
 
 
 def has_graded(ctx: TaskContext) -> bool:

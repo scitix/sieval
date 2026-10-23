@@ -50,6 +50,7 @@ from .dialect_registry import (
     get_dialect_spec,
 )
 from .exceptions import CapabilityError
+from .extra import SEQUENCE_TYPES, SEQUENCE_WRAPPERS, check_extra
 from .gen_model import GenModel
 from .ir import (
     FINISH_SOURCE_CANDIDATE,
@@ -145,6 +146,8 @@ __all__ = [
     "FINISH_SOURCE_CANDIDATE",
     "REQUEST_ENVELOPE_HTTP",
     "REQUEST_ENVELOPE_KEY",
+    "SEQUENCE_TYPES",
+    "SEQUENCE_WRAPPERS",
     "FINISH_SOURCE_PROMPT_BLOCK",
     "FunctionToolCall",
     "GenModel",
@@ -198,6 +201,7 @@ __all__ = [
     "TopKEntry",
     "Transport",
     "UsageStats",
+    "check_extra",
     "ASYNC_HTTP_JSON_FACTORY",
     "AsyncHTTPJSONConnection",
     "BindingReconcileInput",

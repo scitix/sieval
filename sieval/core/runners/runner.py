@@ -4,7 +4,7 @@ import os
 import re
 import time
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -65,6 +65,7 @@ from sieval.core.tasks.run_meta import (
     GradingIdentity,
     InferenceIdentity,
     JudgeIdentity,
+    PreprocessIdentity,
     ResumeOutcomes,
     RunFrom,
     RunRequests,
@@ -76,8 +77,10 @@ from sieval.core.tasks.run_meta import (
     grader_task,
     grading_identities,
     inference_identity,
+    is_code_identity,
     judge_identities,
     legacy_grader_keys,
+    preprocess_key,
     prompt_of,
     request_digest,
     stage_code,
@@ -120,6 +123,7 @@ from .stage_resume import (
     recorded_grader,
     recorded_identity,
     recorded_sample_digests,
+    task_preprocess_identity,
 )
 
 #: Key of the run's own counts in ``report.json``.
@@ -522,6 +526,12 @@ class TaskRunner:
         self._grading: dict[str, GradingIdentity] | None = None
         self._stage_code: dict | None = None
         self._legacy_keys: set[str] | None = None
+        # This run's preprocess identity, computed once (`_preprocess_identity`);
+        # whether any recorded sample's preprocess changed; and, for a directory
+        # that recorded rendered prompts, whether each still renders its own.
+        self._preprocess: PreprocessIdentity | None | Literal[False] = False
+        self._preprocess_restarted = False
+        self._legacy_prompts_match: bool | None = None
         self._stage_stamps: dict[str, str | None] = dict.fromkeys(GRADING_STAGES)
         # Context overflows an earlier run recorded as failed inference, by
         # sample: a resume scores them from the recorded refusal (`_infer`).
@@ -529,13 +539,10 @@ class TaskRunner:
         self._data_match: bool | None = None
         self._resume_plan: ResumeOutcomes | None = None
         self._unverified_inference = 0
-        # Run history: actions executed this run, each sample's data and prompt
-        # digests as of its first preprocess, and judge versions the API
-        # reported, by role.
+        # Run history: actions executed this run, each sample's data digest as
+        # of its first preprocess, and judge versions the API reported, by role.
         self._ran_actions: set[TaskAction] = set()
-        self._sample_digests: dict[
-            str | int, tuple[int | None, str | None, str | None]
-        ] = {}
+        self._sample_digests: dict[str | int, tuple[int | None, str | None]] = {}
         self._input_identity_written = False
         self._judge_versions: dict[str, str] = {}
         self._judge_roles: dict[str, list[str]] | None = None
@@ -896,11 +903,13 @@ class TaskRunner:
 
         Recorded before any work, so an interrupted run is resumed and the
         resume gates have a ``meta.json`` to read. Inference and grader
-        identities are known now; data and prompt once every sample is past
+        identities are known now, and so is preprocess unless a recorded
+        sample's changed (then at the end); data once every sample is past
         preprocess. Returns the samples a resume rewinds.
         """
         inference = self._inference_identity()
         grading = self._grading_identities()
+        preprocess = self._preprocess_identity()
         changed: list[str | int] = []
         keeps_recorded_model = False
         if resumed:
@@ -924,7 +933,10 @@ class TaskRunner:
             config_path=self._config_path(),
             identity={
                 "data": None,
-                "preprocess": None,
+                # Unknown while a sample recorded under another preprocess may
+                # still be on disk: `_sample_preprocess_changed` reads a
+                # recorded code identity as what verified such a sample.
+                "preprocess": None if self._preprocess_restarted else preprocess,
                 "inference": inference,
                 **{
                     stage: None
@@ -1032,7 +1044,7 @@ class TaskRunner:
             model=self._model_name(),
             config_diff=self._resume_config_diff,
             config_path=self._config_path(),
-            identity=self._grading_identity_update(),
+            identity=self._resume_identity_update(),
         )
         self._contexts = await self._loader.load_initial_state()
         await self._loader.hydrate(
@@ -1080,6 +1092,8 @@ class TaskRunner:
         rereport = False
         if cached_report is not None:
             match = self._recorded_stages_match()
+            if match is not None and not await self._recorded_preprocess_matches():
+                match = None
             if match is None:
                 logger.info(
                     "report.json found, but its run's stage identities differ "
@@ -1108,7 +1122,7 @@ class TaskRunner:
             model=self._model_name(),
             config_diff=self._resume_config_diff,
             config_path=self._config_path(),
-            identity=self._grading_identity_update(report_unknown=True),
+            identity=self._resume_identity_update(report_unknown=True),
         )
         self._contexts = await self._loader.load_initial_state()
         await self._loader.hydrate(
@@ -1437,10 +1451,7 @@ class TaskRunner:
             if overflows:
                 meta[CONTEXT_OVERFLOW] = list(overflows)
             if stage == TaskStage.PREPROCESSED:
-                meta["identity"] = {
-                    "data": self._safe_digest(ctx.raw_sample),
-                    "prompt": self._safe_digest(prompt_of(inner)),
-                }
+                meta["identity"] = self._input_stamp(self._safe_digest(ctx.raw_sample))
             elif stage in (TaskStage.POSTPROCESSED, TaskStage.FEEDBACK):
                 # Per sample, so a resume can tell which code graded it.
                 meta["identity"] = self._grading_stamps(stage)
@@ -1955,20 +1966,96 @@ class TaskRunner:
             logger.warning("Legacy grader identity unavailable: {}", exc)
             return set()
 
-    def _grading_identity_update(self, *, report_unknown: bool = False) -> dict:
-        """Grading identities a run that grades nothing writes at its start.
+    def _resume_identity_update(self, *, report_unknown: bool = False) -> dict:
+        """Identities a fast resume or re-report writes at its start.
 
-        Each stage identity this run computes, so a schema-1 block becomes
-        schema 2 in place; ``report`` stays unknown until a re-report writes
-        it. Empty when they cannot be computed: the carried ones stay.
+        This run's preprocess and grading identities, so a schema-1 block, or
+        a schema-2 one with rendered prompts, is upgraded in place; ``report``
+        stays unknown until a re-report writes it. Grading identities that
+        cannot be computed leave the carried ones.
         """
+        update: dict = {"preprocess": self._preprocess_identity()}
         grading = self._grading_identities()
-        if grading is None:
-            return {}
-        update: dict = dict(grading)
-        if report_unknown:
-            update["report"] = None
+        if grading is not None:
+            update.update(grading)
+            if report_unknown:
+                update["report"] = None
         return update
+
+    async def _recorded_preprocess_matches(self) -> bool:
+        """Whether a finished run's ``preprocess`` is this run's.
+
+        A code identity compares by :func:`preprocess_key`. One of rendered
+        prompts (schema 1, or schema 2 before preprocess was code-based) is
+        checked by rendering every recorded sample once: each must render the
+        prompt it recorded. A run without identities is decided elsewhere.
+        """
+        identity = recorded_identity(self._recorded)
+        if identity is None:
+            return True
+        recorded = identity["preprocess"]
+        if is_code_identity(recorded):
+            mine = preprocess_key(self._preprocess_identity())
+            return mine is not None and mine == preprocess_key(recorded)
+        if self._legacy_prompts_match is not None:
+            return self._legacy_prompts_match
+        contexts = await self._loader.load_initial_state()
+        await self._loader.hydrate(
+            contexts,
+            set(),
+            include_stages={TaskStage.FINAL, TaskStage.FAILED},
+            prepare_retries=False,
+            record_each_stage=self._record_each_stage,
+        )
+        self._legacy_prompts_match = await self._legacy_prompts_render(
+            contexts.values()
+        )
+        return self._legacy_prompts_match
+
+    async def _legacy_prompts_render(self, contexts: Iterable[TaskContext]) -> bool:
+        """Whether every recorded sample of *contexts* without a ``preprocess``
+        stamp renders, under this run's ``preprocess``, the prompt it recorded.
+
+        The upgrade from rendered prompts: one ``preprocess`` call per such
+        sample. A sample whose data changed reruns anyway and is skipped; one
+        never preprocessed has no prompt to compare.
+        """
+        checked = 0
+        for ctx in contexts:
+            if ctx.preprocess_result is None:
+                continue
+            ctx = self._ensure_raw_sample(ctx)
+            stamps = recorded_sample_digests(ctx)
+            if stamps["preprocess"] is not None:
+                continue
+            data = stamps["data"]
+            if stamps["source"] == "derived":
+                data = (
+                    self._safe_digest(ctx.raw_sample)
+                    if self._recorded_data_matches()
+                    else None
+                )
+            if data is None or data != self._safe_digest(ctx.raw_sample):
+                continue
+            checked += 1
+            if stamps["prompt"] is None or (
+                stamps["prompt"] != await self._current_prompt_digest(ctx)
+            ):
+                logger.info(
+                    "{}: sample {} renders another prompt than it recorded; "
+                    "preprocess changed, every sample reruns",
+                    self._task.name,
+                    ctx.sample_id,
+                )
+                return False
+        if checked:
+            logger.info(
+                "{}: {} recorded prompt(s) re-rendered unchanged; preprocess "
+                "identity upgraded in place",
+                self._task.name,
+                checked,
+            )
+        return True
 
     def _check_inference(self, current: InferenceIdentity | None) -> None:
         """Refuse a resume whose inference differs from the recorded run's."""
@@ -2075,18 +2162,28 @@ class TaskRunner:
     def _stage_plan(self) -> ResumePlan:
         """:func:`plan_resume` over this runner's identities, with its decisions.
 
-        ``preprocess`` is decided per sample (``restarted``), so it is left
-        out. ``rerun_from`` is the runner's, which trusts a directory with no
-        identities; ``refused`` is ``None``, as a refusal raises before this.
+        ``preprocess`` is compared as code; a schema-1/2 one takes the verdict
+        of the rendering pass planning made. ``rerun_from`` is the runner's,
+        which trusts a directory with no identities; ``refused`` is ``None``,
+        as a refusal raises before this.
         """
         current: dict[str, object] = {
             "data": self._dataset_identity(),
+            "preprocess": self._preprocess_identity(),
             "inference": self._inference_identity(),
             **(self._grading_identities() or {}),
         }
         plan = plan_resume(self._recorded, current, self._legacy_grader_keys())
-        del plan["stages"]["preprocess"]
-        plan["rerun_from"] = self._recorded_grading_change()
+        if plan["legacy_preprocess"] and self._legacy_prompts_match is not None:
+            plan["stages"]["preprocess"] = (
+                "same" if self._legacy_prompts_match else "differs"
+            )
+        changed = plan["stages"]["preprocess"] == "differs"
+        plan["rerun_from"] = (
+            "preprocess"
+            if changed or self._preprocess_restarted
+            else self._recorded_grading_change()
+        )
         plan["refused"] = None
         return plan
 
@@ -2168,8 +2265,8 @@ class TaskRunner:
         ``report`` all but the report, ``None`` otherwise.
 
         Same data, inference, postprocess and feedback reuse every sample.
-        Preprocess is covered by the code the stages digest: a prompt
-        template lives in the task module or the arguments it digests.
+        Preprocess is compared after, by :meth:`_recorded_preprocess_matches`,
+        which may render the recorded samples.
         """
         identity = recorded_identity(self._recorded)
         if identity is None:
@@ -2283,7 +2380,8 @@ class TaskRunner:
         """Decide, per recorded sample, what this resume keeps.
 
         Each sample rolls back to the earliest stage that changed for it:
-        changed data or preprocess restarts it; a changed postprocess rolls it
+        changed data or preprocess restarts it (a preprocess change restarts
+        every sample: all were stamped alike); a changed postprocess rolls it
         back to its recorded inference, a changed feedback to its recorded
         postprocess; a sample past iteration 0 restarts instead, since its
         later inference saw the old feedback. A changed report keeps every
@@ -2294,6 +2392,19 @@ class TaskRunner:
         size = len(test_set) if test_set else 0
         changed: list[str | int] = []
         counts = _no_outcomes()
+        if (
+            self._legacy_prompts_match is None
+            and not self._trusts_unrecorded()
+            and not is_code_identity(
+                (recorded_identity(self._recorded) or {}).get("preprocess")
+            )
+        ):
+            in_range = [
+                c
+                for sid, c in self._contexts.items()
+                if isinstance(sid, int) and 0 <= sid < size
+            ]
+            self._legacy_prompts_match = await self._legacy_prompts_render(in_range)
 
         for sid, ctx in list(self._contexts.items()):
             if not isinstance(sid, int) or not 0 <= sid < size:
@@ -2341,8 +2452,9 @@ class TaskRunner:
         ctx = self._ensure_raw_sample(ctx)
         restart = self._task.make_context(ctx.sample_id)
         current_data = self._safe_digest(ctx.raw_sample)
-        data, prompt, source = recorded_sample_digests(ctx)
-        derived = source == "derived"
+        stamps = recorded_sample_digests(ctx)
+        data = stamps["data"]
+        derived = stamps["source"] == "derived"
         if derived:
             # No per-sample identity on record (a run before them, or one with
             # `record_meta` off): the recorded data identity of the whole set,
@@ -2365,11 +2477,11 @@ class TaskRunner:
         if data is None or data != current_data:
             return "restarted", restart
         if ctx.preprocess_result is not None:
-            current_prompt = await self._current_prompt_digest(ctx)
-            if prompt is None or prompt != current_prompt:
+            if self._sample_preprocess_changed(stamps["preprocess"]):
+                self._preprocess_restarted = True
                 return "restarted", restart
             if derived:
-                ctx = self._stamp_input(ctx, current_data, current_prompt)
+                ctx = self._stamp_input(ctx, current_data)
         if not has_graded(ctx):
             return "kept", ctx
         change = self._sample_grading_change(ctx)
@@ -2381,13 +2493,31 @@ class TaskRunner:
             return "regraded", self._to_refeed(ctx)
         return "repostprocessed", self._to_regrade(ctx)
 
-    @staticmethod
-    def _stamp_input(ctx: TaskContext, data: str | None, prompt: str | None):
-        """Add the data and prompt digests to *ctx*'s latest ``preprocess`` meta."""
+    def _sample_preprocess_changed(self, stamp: str | None) -> bool:
+        """Whether a recorded sample's ``preprocess`` differs from this run's.
+
+        *stamp* is the :func:`preprocess_key` its record carries. A record
+        without one (rendered prompts on record, or none) was checked by
+        rendering (:meth:`_legacy_prompts_render`), unless the directory
+        records a code identity: then a run that upgraded it verified the
+        sample under that identity. An unknown identity on either side differs.
+        """
+        current = preprocess_key(self._preprocess_identity())
+        if stamp is not None:
+            return current is None or stamp != current
+        identity = recorded_identity(self._recorded)
+        recorded = identity["preprocess"] if identity is not None else None
+        if is_code_identity(recorded):
+            return current is None or preprocess_key(recorded) != current
+        return self._legacy_prompts_match is not True
+
+    def _stamp_input(self, ctx: TaskContext, data: str | None):
+        """Add the data digest and this run's preprocess key to *ctx*'s latest
+        ``preprocess`` meta."""
         key = TaskStage.PREPROCESSED.value
         history = list(ctx.stage_meta.get(key) or [{}])
         last = dict(history[-1])
-        last["identity"] = {"data": data, "prompt": prompt}
+        last["identity"] = self._input_stamp(data)
         history[-1] = cast(TaskStageMeta, last)
         return replace(ctx, stage_meta={**ctx.stage_meta, key: history})
 
@@ -2525,20 +2655,9 @@ class TaskRunner:
                 versions=self._judge_versions,
             )
             task_cls = type(self._task)
-            if self._stage_code is None:
-                self._stage_code = stage_code(
-                    task_cls, [j["role"] for j in judges], task_cls.services
-                )
-                for stage, code in self._stage_code.items():
-                    if "fallback" in code:
-                        logger.info(
-                            "{}: {} counts all grading code ({})",
-                            self._task.name,
-                            stage,
-                            code["fallback"],
-                        )
+            code = self._stage_code_once([j["role"] for j in judges])
             grading = grading_identities(
-                self._stage_code,
+                code,
                 judges,
                 service_identities(task_cls.services),
                 self._task.grader_args(),
@@ -2551,6 +2670,47 @@ class TaskRunner:
         self._stage_stamps = {s: stage_key(grading[s]) for s in GRADING_STAGES}
         self._grading = grading
         return grading
+
+    def _stage_code_once(self, judge_roles: list[str]) -> dict:
+        """:func:`stage_code` for this task, walked once per runner."""
+        if self._stage_code is None:
+            task_cls = type(self._task)
+            self._stage_code = stage_code(
+                task_cls,
+                judge_roles,
+                task_cls.services,
+                list(self._task.grader_args()),
+            )
+            for stage, code in self._stage_code.items():
+                if "fallback" in code:
+                    logger.info(
+                        "{}: {} counts all of its task code ({})",
+                        self._task.name,
+                        stage,
+                        code["fallback"],
+                    )
+        return self._stage_code
+
+    def _preprocess_identity(self) -> PreprocessIdentity | None:
+        """This run's ``preprocess`` identity, computed once: no sample is
+        preprocessed for it. ``None`` when it cannot be computed."""
+        if self._preprocess is False:
+            try:
+                roles = [j["role"] for j in self._current_judges()]
+                code = self._stage_code_once(roles)["preprocess"]
+                self._preprocess = task_preprocess_identity(self._task, code)
+            except IDENTITY_ERRORS as exc:
+                logger.warning("Preprocess identity unavailable: {}", exc)
+                self._preprocess = None
+        return self._preprocess
+
+    def _input_stamp(self, data: str | None) -> dict[str, str | None]:
+        """What a ``preprocess`` record is stamped with: its sample's data
+        digest and this run's :func:`preprocess_key`."""
+        return {
+            "data": data,
+            "preprocess": preprocess_key(self._preprocess_identity()),
+        }
 
     def _seed_judge_versions(self, meta: dict | None) -> None:
         """Carry judge versions a resumed run's ``meta.json`` recorded.
@@ -2620,10 +2780,10 @@ class TaskRunner:
                     self._judge_versions.setdefault(role, reported)
 
     def _note_sample_digests(self, ctx: TaskContext) -> None:
-        """Record *ctx*'s data and prompt digests once, as of its first preprocess.
+        """Record *ctx*'s data digest once, as of its first preprocess.
 
-        Prefers the digests its ``preprocess`` record carries -- what that run
-        saw -- and falls back to digesting the sample and the recorded prompt.
+        Prefers the digest its ``preprocess`` record carries -- what that run
+        saw -- and falls back to digesting the sample.
         """
         if ctx.sample_id in self._sample_digests:
             return
@@ -2637,19 +2797,10 @@ class TaskRunner:
         data = recorded.get("data") if recorded else None
         if data is None:
             data = self._safe_digest(ctx.raw_sample)
-        prompt = recorded.get("prompt") if recorded else None
-        if prompt is None:
-            # No prompt at all is a fact (preprocess failed or never ran); a
-            # prompt that would not digest is unknown.
-            prompt = (
-                ABSENT
-                if ctx.preprocess_result is None
-                else self._safe_digest(prompt_of(ctx.preprocess_result))
-            )
-        self._sample_digests[ctx.sample_id] = (ctx.repeat_index, data, prompt)
+        self._sample_digests[ctx.sample_id] = (ctx.repeat_index, data)
 
     async def _maybe_write_input_identity(self, force: bool = False) -> None:
-        """Write the data and prompt identities once every sample is past preprocess.
+        """Write the data identity once every sample is past preprocess.
 
         Not a barrier: samples already past preprocess keep going while the rest
         catch up. *force* writes whatever is known at the end of a run, so a
@@ -2666,8 +2817,7 @@ class TaskRunner:
         self._input_identity_written = True
         entries = self._sample_digests.items()
         await self._saver.set_identity(
-            data=aggregate_digest((sid, rep, d) for sid, (rep, d, _) in entries),
-            preprocess=aggregate_digest((sid, rep, p) for sid, (rep, _, p) in entries),
+            data=aggregate_digest((sid, rep, d) for sid, (rep, d) in entries)
         )
 
     def _requests_identity(self) -> DigestedStage:
@@ -2707,12 +2857,13 @@ class TaskRunner:
         *reported* says ``report.json`` was written; ``report()`` returning
         ``None`` writes none.
 
-        Writes the data and preprocess identities if a sample never reached
-        preprocess, folds what the candidate was sent into the inference
-        identity, and rewrites the grading ones with the judge versions
-        reported.
+        Writes the data identity if a sample never reached preprocess, and the
+        preprocess one if a resume left it unknown; folds what the candidate
+        was sent into the inference identity, and rewrites the grading ones
+        with the judge versions reported.
         """
         await self._maybe_write_input_identity(force=True)
+        await self._saver.set_identity(preprocess=self._preprocess_identity())
         inference = self._saver.inference_identity
         if inference is not None:
             await self._saver.set_identity(

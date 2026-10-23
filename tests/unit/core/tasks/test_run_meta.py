@@ -23,6 +23,7 @@ from sieval.core.tasks.run_meta import (
     ABSENT,
     GRADER_PACKAGES,
     GRADING_STAGES,
+    IDENTITY_SCHEMA,
     JUDGE_MODEL_REF_ENV,
     STAGES,
     JudgeIdentity,
@@ -40,6 +41,7 @@ from sieval.core.tasks.run_meta import (
     grader_modules,
     grader_task,
     inference_identity,
+    is_code_identity,
     judge_identities,
     judge_model_id,
     judge_model_refs,
@@ -1137,7 +1139,7 @@ class TestDocument:
         assert carried["data"] == data
         assert carried["report"] is None
 
-    def test_a_schema_1_block_reads_as_schema_2(self):
+    def test_a_schema_1_block_reads_as_this_schema(self):
         data = {"digest": "sha256:d", "samples": 1}
         prompt = {"digest": "sha256:p", "samples": 1}
         grader = {"digest": "sha256:g", "modules": {}, "judges": []}
@@ -1151,7 +1153,7 @@ class TestDocument:
         read = read_identity(block)
         assert read is not None
         identity, legacy = read
-        assert identity["schema"] == 2
+        assert identity["schema"] == IDENTITY_SCHEMA == 3
         assert identity["data"] == data
         assert identity["preprocess"] == prompt
         assert identity["inference"] == {"digest": "sha256:i"}
@@ -1159,10 +1161,20 @@ class TestDocument:
         assert legacy == grader
         assert carried_identity({"identity": block}) == identity
 
+    def test_a_schema_2_block_is_read_as_written(self):
+        prompts = {"digest": "sha256:p", "samples": 1}
+        read = read_identity({"schema": 2, "preprocess": prompts})
+        assert read is not None
+        identity, legacy = read
+        assert identity["schema"] == 3
+        assert identity["preprocess"] == prompts
+        assert not is_code_identity(identity["preprocess"])
+        assert legacy is None
+
     def test_another_schema_is_not_read(self):
-        assert read_identity({"schema": 3, "data": {"digest": "x"}}) is None
+        assert read_identity({"schema": 4, "data": {"digest": "x"}}) is None
         assert read_identity("nope") is None
-        assert carried_identity({"identity": {"schema": 3}}) == empty_identity()
+        assert carried_identity({"identity": {"schema": 4}}) == empty_identity()
 
     def test_carried_runs_tolerates_old_and_malformed(self):
         assert carried_runs(None) == []

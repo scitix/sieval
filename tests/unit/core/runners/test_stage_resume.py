@@ -755,7 +755,7 @@ class TestInterruptedBeforeEveryPreprocess:
         assert (root / "meta.json").read_bytes() == before
 
 
-def test_recorded_identity_reads_schema_1_and_2():
+def test_recorded_identity_reads_schemas_1_to_3():
     assert recorded_identity(None) is None
     assert recorded_identity({"identity": {"schema": 99}}) is None
     identity = recorded_identity({"identity": {"schema": 2, "data": {"digest": "x"}}})
@@ -769,7 +769,7 @@ def test_recorded_identity_reads_schema_1_and_2():
     }
     identity = recorded_identity({"identity": old})
     assert identity is not None
-    assert identity["schema"] == 2
+    assert identity["schema"] == 3
     assert identity["preprocess"] == {"digest": "p"}
     assert identity["postprocess"] is None
     assert recorded_grader({"identity": old}) == old["grader"]
@@ -1300,7 +1300,7 @@ class TestPlanRunNamesTheStage:
         stages = plan["stages"]
         assert stages is not None
         assert stages["stages"]["data"] == "differs"
-        assert "preprocess" not in stages["stages"]
+        assert stages["stages"]["preprocess"] == "same"
         assert stages["rerun_from"] is None
         assert (plan["to_infer"], plan["to_grade"]) == (1, 1)
 
@@ -1381,3 +1381,207 @@ def test_plan_resume_rolls_back_to_the_earliest_changed_stage():
     other = plan_resume(recorded, {**same, "inference": {"digest": "sha256:j"}})
     assert other["refused"] == "inference"
     assert plan_resume(None, same)["identity_schema"] is None
+
+
+# ===================================================================
+# preprocess is code: a change restarts every sample, and a directory that
+# recorded rendered prompts (identity schema 1 or 2) is upgraded in place
+# ===================================================================
+def _as_schema_2(root: Path) -> None:
+    """Rewrite *root* as a schema-2 run left it: ``preprocess`` a digest over
+    every sample's rendered prompt, each ``preprocess`` record stamped with
+    its prompt digest instead of a ``preprocess`` key."""
+    from sieval.core.tasks.run_meta import aggregate_digest, digest, prompt_of
+
+    prompts: list[tuple[int, None, str]] = []
+    for path in root.rglob("*.jsonl"):
+        lines = []
+        for line in path.read_bytes().splitlines():
+            record = orjson.loads(line)
+            entries = list((record.get("stage_meta") or {}).values())
+            if isinstance(record.get("meta_last"), dict):
+                entries.append([record["meta_last"]])
+            pre = record.get("preprocess_result")
+            for history in entries:
+                for entry in history:
+                    stamp = entry.get("identity")
+                    if isinstance(stamp, dict) and "preprocess" in stamp:
+                        stamp.pop("preprocess")
+                        stamp["prompt"] = digest(prompt_of(pre))
+            if record.get("stage") == "preprocessed":
+                prompts.append((record["sample_id"], None, digest(prompt_of(pre))))
+            lines.append(orjson.dumps(record))
+        path.write_bytes(b"\n".join(lines) + b"\n")
+        idx = path.with_suffix(".idx")
+        offset, out = 0, []
+        for raw, entry in zip(lines, idx.read_text().splitlines(), strict=True):
+            parts = entry.split("\t")
+            parts[3], parts[4] = str(offset), str(len(raw) + 1)
+            out.append("\t".join(parts))
+            offset += len(raw) + 1
+        idx.write_text("\n".join(out) + "\n")
+    meta = _meta(root)
+    meta["identity"]["schema"] = 2
+    meta["identity"]["preprocess"] = aggregate_digest(prompts)
+    (root / "meta.json").write_bytes(orjson.dumps(meta))
+
+
+class TestPreprocessIsCode:
+    @pytest.mark.anyio
+    async def test_a_preprocess_arg_change_restarts_every_sample(self, tmp_path):
+        """Before, only the samples whose rendered prompt changed restarted;
+        now every sample of the task does, as the identity is per task."""
+        root = await _first(tmp_path)
+        task, model = _task(prefix="Q: ")
+        await _run(tmp_path, "first", task, resume=True)
+        assert model.call_count == 3
+        run = _meta(root)["runs"][-1]
+        assert run["resume"]["restarted"] == 3
+        assert _meta(root)["identity"]["preprocess"]["args"]["prefix"] == "Q: "
+
+    @pytest.mark.anyio
+    async def test_preprocess_is_computed_without_preprocessing(self, tmp_path):
+        """A fast resume of an unchanged run calls no `preprocess`."""
+        await _first(tmp_path)
+        task, model = _task()
+        await _run(tmp_path, "first", task, resume=True)
+        assert task.calls["preprocess"] == 0
+        assert model.call_count == 0
+
+    @pytest.mark.anyio
+    async def test_a_grading_arg_leaves_preprocess(self, tmp_path):
+        root = await _first(tmp_path)
+        before = _meta(root)["identity"]["preprocess"]
+        task, model = _task(threshold=0.9)
+        await _run(tmp_path, "first", task, resume=True)
+        assert model.call_count == 0
+        assert _meta(root)["identity"]["preprocess"] == before
+
+    @pytest.mark.anyio
+    async def test_an_interrupted_restart_keeps_preprocess_unknown(self, tmp_path):
+        """While samples recorded under the old preprocess may remain, the
+        directory's preprocess is unknown, and each stamp decides."""
+        root = await _first(tmp_path)
+        scope = anyio.CancelScope()
+
+        class Stops(QATask):
+            async def postprocess(self, inf, ctx):
+                scope.cancel()
+                await anyio.sleep_forever()
+
+        task, _ = _task(cls=Stops, prefix="Q: ")
+        with scope:
+            await _run(tmp_path, "first", task, resume=True)
+        assert _meta(root)["identity"]["preprocess"] is None
+        inferred_new = await _inferred_under(root, _new_key())
+
+        task, model = _task(prefix="Q: ")
+        await _run(tmp_path, "first", task, resume=True)
+        assert _meta(root)["identity"]["preprocess"]["args"]["prefix"] == "Q: "
+        # Those are kept by their stamp; the rest, recorded under the old
+        # preprocess, are inferred again.
+        assert model.call_count == 3 - len(inferred_new)
+
+
+def _new_key() -> str | None:
+    """The ``preprocess`` key of the ``prefix="Q: "`` task these tests resume."""
+    from sieval.core.runners.stage_resume import task_preprocess_identity
+    from sieval.core.tasks.run_meta import preprocess_key, stage_code
+
+    task, _ = _task(prefix="Q: ")
+    code = stage_code(type(task), args=list(task.grader_args()))["preprocess"]
+    return preprocess_key(task_preprocess_identity(task, code))
+
+
+async def _inferred_under(root: Path, key: str | None) -> set:
+    """Samples on disk past ``infer`` whose ``preprocess`` record has *key*."""
+    from sieval.core.runners.stage_resume import has_graded, recorded_sample_digests
+    from sieval.core.tasks.consts import TaskStage
+    from sieval.core.tasks.loader import TaskLoader
+
+    task, _ = _task()
+    loader = TaskLoader(task=task, root_dir=root)
+    contexts = await loader.load_initial_state()
+    await loader.hydrate(
+        contexts,
+        set(),
+        include_stages=set(TaskStage),
+        record_each_stage=True,
+    )
+    return {
+        sid
+        for sid, ctx in contexts.items()
+        if (ctx.infer_result is not None or has_graded(ctx))
+        and recorded_sample_digests(ctx)["preprocess"] == key
+    }
+
+
+class TestSchema2Upgrade:
+    @pytest.mark.anyio
+    async def test_unchanged_prompts_upgrade_in_place(self, tmp_path):
+        """Rendering the recorded samples once shows nothing changed: every
+        sample is kept, and the block is rewritten as schema 3."""
+        root = await _first(tmp_path)
+        _as_schema_2(root)
+        task, model = _task()
+        await _run(tmp_path, "first", task, resume=True)
+        assert model.call_count == 0
+        assert task.calls["preprocess"] == 3  # the one upgrade pass
+        assert task.calls["postprocess"] == 0
+        identity = _meta(root)["identity"]
+        assert identity["schema"] == 3
+        assert "modules" in identity["preprocess"]
+
+        # Upgraded: the next resume renders nothing.
+        task, model = _task()
+        await _run(tmp_path, "first", task, resume=True)
+        assert task.calls["preprocess"] == 0
+        assert model.call_count == 0
+
+    @pytest.mark.anyio
+    async def test_unchanged_prompts_upgrade_an_unfinished_run(self, tmp_path):
+        root = await _first(tmp_path)
+        _as_schema_2(root)
+        (root / "report.json").unlink()
+        task, model = _task()
+        await _run(tmp_path, "first", task, resume=True)
+        assert model.call_count == 0
+        run = _meta(root)["runs"][-1]
+        assert run["resume"]["kept"] == 3
+        assert run["resume"]["restarted"] == 0
+
+    @pytest.mark.anyio
+    async def test_a_changed_prompt_restarts_every_sample(self, tmp_path):
+        root = await _first(tmp_path)
+        _as_schema_2(root)
+        task, model = _task(prefix="Q: ")
+        await _run(tmp_path, "first", task, resume=True)
+        assert model.call_count == 3
+        assert _meta(root)["runs"][-1]["resume"]["restarted"] == 3
+
+    @pytest.mark.anyio
+    async def test_the_plan_reads_the_upgrade(self, tmp_path):
+        from sieval.core.runners import task_resume_plan
+
+        root = await _first(tmp_path)
+        _as_schema_2(root)
+        task, _ = _task()
+        keys = {"deterministic": False, "max_iterations": 1, "max_retries": 3}
+        plan = task_resume_plan(task, _meta(root), runner_keys=keys)
+        assert plan["identity_schema"] == 2
+        assert plan["legacy_preprocess"] is True
+        assert plan["stages"]["preprocess"] == "unknown"
+        assert plan["rerun_from"] is None
+
+        # plan_run renders the recorded samples as the run would.
+        runner = TaskRunner(
+            task, make_config(tmp_path, result_dir=str(root), resume=True)
+        )
+        planned = await runner.plan_run()
+        assert planned["to_infer"] == 0
+        changed, _ = _task(prefix="Q: ")
+        runner = TaskRunner(
+            changed, make_config(tmp_path, result_dir=str(root), resume=True)
+        )
+        planned = await runner.plan_run()
+        assert planned["to_infer"] == 3

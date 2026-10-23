@@ -33,6 +33,7 @@ from sieval.cli.resolution import (
     validate_task_config_args,
 )
 from sieval.cli.session import RootConfigDict
+from sieval.core.models import check_extra
 from sieval.core.models.capabilities import (
     CAPABILITY_KEYS,
     CapabilityConfigError,
@@ -208,6 +209,18 @@ def _validate_models(cfg: dict, result: ValidationResult) -> None:
                     )
                 except (TypeError, ValueError) as exc:
                     result.errors.append(str(exc))
+
+        raw_model_args = mcfg.get("args")
+        for where, extra in (
+            (f"Model '{name}' extra", mcfg.get("extra")),
+            (
+                f"Model '{name}' args.extra",
+                raw_model_args.get("extra")
+                if isinstance(raw_model_args, dict)
+                else None,
+            ),
+        ):
+            _check_model_extra(extra, where, result)
 
         if has_base:
             base_ref = mcfg["base"]
@@ -523,6 +536,19 @@ def _validate_tasks(cfg: dict, result: ValidationResult) -> None:
                         f"Task '{name}' infer_args cannot change binding resources: "
                         + ", ".join(misplaced)
                     )
+                _check_model_extra(
+                    infer_args.get("extra"), f"Task '{name}' infer_args.extra", result
+                )
+
+
+def _check_model_extra(extra: object, where: str, result: ValidationResult) -> None:
+    """Report an ``extra`` whose documented keys are malformed
+    (:func:`~sieval.core.models.check_extra`), such as a wrapper without
+    ``{seq}``."""
+    try:
+        check_extra(extra, where)
+    except ValueError as exc:
+        result.errors.append(str(exc))
 
 
 def _validate_runner_config(cfg: dict, result: ValidationResult) -> None:

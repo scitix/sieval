@@ -429,11 +429,14 @@ class TestDryRunReportsWhatARunWouldDo:
             "needs_inference": True,
         }
         stages = data["tasks"]["echo"]["stages"]
-        assert stages["identity_schema"] == 2
+        assert stages["identity_schema"] == 3
         assert stages["rerun_from"] is None
         # A third sample changes the set's data identity; each recorded sample
         # still matches its own digest, so both are kept.
         assert stages["stages"]["data"] == "differs"
+        # Preprocess is code: the same task compares the same.
+        assert stages["stages"]["preprocess"] == "same"
+        assert stages["legacy_preprocess"] is False
         assert stages["stages"]["inference"] == "same"
         assert engine.launches == []
         assert _tree(tmp_path / "results") == recorded

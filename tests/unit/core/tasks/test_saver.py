@@ -392,7 +392,7 @@ class TestRunMeta:
         assert meta["task"] == _IDENTITY
         assert meta["model"] == "candidate"
         assert meta["identity"] == {
-            "schema": 2,
+            "schema": 3,
             "data": None,
             "preprocess": None,
             "inference": None,
@@ -565,7 +565,7 @@ class TestRunMeta:
         )
         await TaskSaver(root_dir=root).begin_run(resumed=True)
         meta = _read_meta(root)
-        assert meta["identity"]["schema"] == 2
+        assert meta["identity"]["schema"] == 3
         assert meta["identity"]["data"] is None
         # Malformed entries are dropped, well-formed ones kept.
         assert [r["start"] for r in meta["runs"]] == ["fresh", "resume"]
@@ -596,7 +596,7 @@ class TestRunMeta:
             await saver.set_identity(grader=None)
 
     @pytest.mark.anyio
-    async def test_a_schema_1_identity_is_carried_as_schema_2(self, tmp_path):
+    async def test_a_schema_1_identity_is_carried_as_schema_3(self, tmp_path):
         """`prompt` becomes `preprocess`; the unsplittable `grader` is dropped,
         leaving the grading stages unknown until the run writes them."""
         root = tmp_path / "old"
@@ -618,7 +618,7 @@ class TestRunMeta:
         )
         await TaskSaver(root_dir=root).begin_run(resumed=True)
         assert _read_meta(root)["identity"] == {
-            "schema": 2,
+            "schema": 3,
             "data": {"digest": "sha256:d", "samples": 1},
             "preprocess": {"digest": "sha256:p", "samples": 1},
             "inference": {"digest": "sha256:i"},

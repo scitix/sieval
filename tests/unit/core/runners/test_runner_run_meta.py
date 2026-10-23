@@ -29,7 +29,13 @@ from sieval.core.tasks import (
 )
 from sieval.core.tasks.consts import TaskStage
 from sieval.core.tasks.loader import TaskLoader
-from sieval.core.tasks.run_meta import RESULT_SCHEMA_VERSION, aggregate_digest, digest
+from sieval.core.tasks.run_meta import (
+    RESULT_SCHEMA_VERSION,
+    aggregate_digest,
+    digest,
+    preprocess_identity,
+    preprocess_key,
+)
 from sieval.core.tasks.saver import TaskSaver
 from sieval.core.tasks.task import Task
 from sieval.core.utils import atomic as saver_module
@@ -179,9 +185,12 @@ class TestFreshRun:
         assert meta["deterministic"] is False
         assert meta["model"] == "mock-chat"
         identity = meta["identity"]
-        assert identity["schema"] == 2
+        assert identity["schema"] == 3
         assert identity["data"]["samples"] == 3
-        assert identity["preprocess"]["samples"] == 3
+        # A test task lives outside the followed packages: no code, and `n`
+        # is an inference argument, not a preprocess one.
+        assert identity["preprocess"]["modules"] == {}
+        assert identity["preprocess"]["args"] == {}
         assert identity["inference"]["digest"].startswith("sha256:")
         # A test task lives outside the followed packages: no modules, no judges.
         for stage in ("postprocess", "feedback", "report"):
@@ -204,7 +213,7 @@ class TestFreshRun:
         assert "from" not in run
 
     @pytest.mark.anyio
-    async def test_data_and_prompt_digests_are_what_the_samples_hold(self, tmp_path):
+    async def test_data_is_the_samples_and_preprocess_the_code(self, tmp_path):
         runner = _runner(tmp_path)
         await runner.arun()
         identity = _meta(runner.root_dir)["identity"]
@@ -212,12 +221,10 @@ class TestFreshRun:
         expected_data = aggregate_digest(
             (i, None, digest(sample)) for i, sample in enumerate(SAMPLES)
         )
-        expected_prompt = aggregate_digest(
-            (i, None, digest([{"role": "user", "content": s["question"]}]))
-            for i, s in enumerate(SAMPLES)
-        )
         assert identity["data"] == expected_data
-        assert identity["preprocess"] == expected_prompt
+        assert identity["preprocess"] == preprocess_identity(
+            {"modules": {}, "judges": [], "services": False, "args": []}, {}
+        )
 
     @pytest.mark.anyio
     async def test_per_sample_digests_land_in_the_preprocess_record(self, tmp_path):
@@ -235,7 +242,9 @@ class TestFreshRun:
             [entry] = ctx.stage_meta[TaskStage.PREPROCESSED.value]
             assert entry["identity"] == {
                 "data": digest(sample),
-                "prompt": digest([{"role": "user", "content": sample["question"]}]),
+                "preprocess": preprocess_key(
+                    _meta(runner.root_dir)["identity"]["preprocess"]
+                ),
             }
 
     @pytest.mark.anyio
@@ -279,7 +288,7 @@ class TestFreshRun:
         await runner.arun()
         identity = _meta(runner.root_dir)["identity"]
         assert identity["data"]["samples"] == 3
-        assert identity["preprocess"]["samples"] == 3
+        assert identity["data"]["digest"] is not None
 
 
 class TestInferenceIdentityFromRunner:
@@ -519,7 +528,9 @@ class TestIdentityUnavailable:
         runner = _runner(tmp_path, task=task, record_meta=False)
         await runner.arun()
         identity = _meta(runner.root_dir)["identity"]
-        assert identity["preprocess"] == aggregate_digest([(0, None, None)])
+        # Preprocess is code, so a prompt that will not digest leaves it known.
+        assert identity["preprocess"]["digest"].startswith("sha256:")
+        assert identity["data"]["digest"] is not None
 
     @pytest.mark.anyio
     async def test_a_broken_judge_lookup_leaves_the_grader_unknown(self, tmp_path):
@@ -926,12 +937,12 @@ class TestBackwardCompatibleRead:
         meta = _meta(root)
         assert "task" not in meta
         assert [r["start"] for r in meta["runs"]] == ["resume"]
-        # Every sample was already final: only `report()` ran, and data and
-        # prompt are digested from what the shards hold.
+        # Every sample was already final: only `report()` ran; data is
+        # digested from the samples, preprocess from the code.
         assert meta["runs"][0]["reran"] == ["report"]
         assert meta["runs"][0]["reported"] is True
         assert meta["identity"]["data"]["samples"] == 3
-        assert meta["identity"]["preprocess"]["samples"] == 3
+        assert meta["identity"]["preprocess"]["digest"].startswith("sha256:")
 
 
 # ===================================================================

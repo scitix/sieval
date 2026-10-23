@@ -1027,6 +1027,53 @@ class TestValidateTasks:
         assert not result.ok
         assert any("binding resources" in e and "api_key" in e for e in result.errors)
 
+    @pytest.mark.parametrize(
+        ("model", "infer_args", "where"),
+        [
+            (
+                {"name": "m", "extra": {"sequence_wrappers": {"dna": "<dna>"}}},
+                None,
+                "Model 'm' extra.sequence_wrappers.dna",
+            ),
+            (
+                {"name": "m", "args": {"extra": {"sequence_wrappers": {"x": "{seq}"}}}},
+                None,
+                "Model 'm' args.extra.sequence_wrappers.x",
+            ),
+            (
+                {"name": "m"},
+                {"extra": {"sequence_wrappers": {"rna": 1}}},
+                "Task 't' infer_args.extra.sequence_wrappers.rna",
+            ),
+        ],
+    )
+    def test_malformed_sequence_wrappers_are_rejected(self, model, infer_args, where):
+        task: dict = {"class": "X", "dataset": "d", "model": "m"}
+        if infer_args is not None:
+            task["infer_args"] = infer_args
+        cfg = {
+            "models": {"m": model},
+            "datasets": {"d": {"class": "X"}},
+            "tasks": {"t": task},
+        }
+        result = validate_eval_config(cfg)
+        assert any(e.startswith(where) for e in result.errors), result.errors
+
+    def test_well_formed_sequence_wrappers_pass(self):
+        cfg = {
+            "models": {
+                "m": {
+                    "name": "m",
+                    "extra": {"sequence_wrappers": {"dna": "<dna>{seq}</dna>"}},
+                }
+            },
+            "datasets": {"d": {"class": "X"}},
+            "tasks": {"t": {"class": "X", "dataset": "d", "model": "m"}},
+        }
+        assert not any(
+            "sequence_wrappers" in e for e in validate_eval_config(cfg).errors
+        )
+
     def test_model_role_unsupported_by_task_constructor_is_rejected(self):
         # `sieval eval` must reject the same role config `sieval run --dry-run`
         # rejects; the two entry points disagreeing is what let the missing

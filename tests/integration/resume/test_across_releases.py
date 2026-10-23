@@ -4,7 +4,8 @@ The fixtures are ``human_eval_0shot_gen`` task directories that SiEval 0.10.0,
 0.10.2 and 0.11.0 wrote for five HumanEval problems against a fake model.
 ``human_eval-5.jsonl`` holds those five problems, so the data identity they
 recorded matches. All three recorded identity schema 1; a resume reads it and
-writes schema 2.
+writes schema 3, rendering the five recorded prompts once to check that
+``preprocess`` is unchanged.
 
 The grading tests point ``SIEVAL_CODE_EVAL_API`` at a fake code evaluator and
 declare it the vendored service each fixture recorded, so the service identity
@@ -38,6 +39,7 @@ from sieval.core.tasks.run_meta import (
     GRADING_STAGES,
     IDENTITY_SCHEMA,
     RESULT_SCHEMA_VERSION,
+    is_code_identity,
 )
 from sieval.core.tasks.services import VENDORED_SERVICES_ENV
 from sieval.tasks import HumanEvalZeroShotGenTask
@@ -224,12 +226,15 @@ class TestResumeAcrossReleases:
         assert resumed["reran"] == []
         assert resumed["resume"]["kept"] == 5
         assert resumed["resume"]["repostprocessed"] == 0
+        assert resumed["resume"]["restarted"] == 0
         identity = meta["identity"]
-        assert identity["schema"] == IDENTITY_SCHEMA == 2
+        assert identity["schema"] == IDENTITY_SCHEMA == 3
         assert "grader" not in identity and "prompt" not in identity
         old = recorded["identity"]
         assert identity["data"] == old["data"]
-        assert identity["preprocess"] == old["prompt"]
+        # The rendered prompts became the code identity a fresh run writes.
+        assert is_code_identity(identity["preprocess"])
+        assert identity["preprocess"] != old["prompt"]
         assert identity["inference"] == old["inference"]
         assert all(identity[stage] is not None for stage in GRADING_STAGES)
         assert identity["feedback"]["services"] == old["grader"]["services"]
@@ -259,6 +264,40 @@ class TestResumeAcrossReleases:
         assert fresh is not None
         for stage in GRADING_STAGES:
             assert upgraded[stage] == fresh[stage], stage
+        assert upgraded["preprocess"] == runner._preprocess_identity()
+
+    def test_a_changed_prompt_restarts_every_sample(
+        self, release, tmp_path, evaluator, monkeypatch
+    ):
+        """The recorded prompts no longer render: preprocess changed, so the
+        upgrade restarts every sample instead of keeping its inference."""
+        evaluator(_recorded_service(release))
+        root = _copy(release, tmp_path)
+        original = HumanEvalZeroShotGenTask.preprocess
+
+        async def preprocess(self, raw, ctx):
+            record = await original(self, raw, ctx)
+            record["prompt"][0]["content"] += "\n"
+            return record
+
+        monkeypatch.setattr(HumanEvalZeroShotGenTask, "preprocess", preprocess)
+        result = CliRunner().invoke(
+            app,
+            [
+                "eval",
+                str(_config(tmp_path)),
+                "--result-dir",
+                str(root),
+                "--resume",
+                "-o",
+                "json",
+            ],
+        )
+        # Nothing serves the model, so the restarted samples fail at infer.
+        assert result.exception is None, result.output
+        resumed = _meta(root)["runs"][-1]
+        assert resumed["resume"]["restarted"] == 5
+        assert resumed["resume"]["kept"] == 0
 
     def test_a_changed_grader_regrades(self, release, tmp_path, evaluator):
         served = evaluator(_recorded_service(release))
@@ -272,8 +311,11 @@ class TestResumeAcrossReleases:
         assert resumed["reran"] == ["postprocess", "feedback", "report"]
         assert resumed["resume"]["repostprocessed"] == 5
         identity = _meta(root)["identity"]
-        assert identity["schema"] == 2
+        assert identity["schema"] == 3
         assert identity["feedback"]["args"]["timeout"] == 4.0
+        # `timeout` is a grading argument, never read by preprocess.
+        assert "timeout" not in identity["preprocess"]["args"]
+        assert resumed["resume"]["restarted"] == 0
         assert report["score"] == 20.0
 
     def test_a_changed_report_rereports_only(

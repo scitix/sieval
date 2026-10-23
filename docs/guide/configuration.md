@@ -191,6 +191,52 @@ true, top_logprobs: N}`), each input token's top-N lands in
 the generated tokens'. Served by `sglang_legacy` and `openai_completions`.
 The reply grows by N entries per input token.
 
+## Model Capabilities (`extra`)
+
+`extra` is a dict on a model that tasks read and the API never sees. It is
+the contract between tasks and models: a task asks the model for a
+capability by key, and when the key is absent it does nothing different.
+SiEval passes the dict through and records it in the inference identity; it
+interprets no key, and only checks the shape of the keys below so a typo
+fails before the run. Set it on a model (top level or `args`) or per task in
+`infer_args`; a task's `infer_args.extra` replaces the model's.
+
+```yaml
+models:
+    naturelm:
+        name: org/naturelm
+        api_base: http://127.0.0.1:30000/v1
+        extra:
+            sequence_wrappers:
+                dna: "<dna>{seq}</dna>"
+                rna: "<rna>{seq}</rna>"
+```
+
+| Key | Value | Read by |
+| --- | --- | --- |
+| `sequence_wrappers` | `{<seq_type>: "<format with {seq}>"}`; types `dna`, `rna`, `protein`, `mol` (SMILES) | Tasks that put a biological sequence in a prompt |
+
+`sequence_wrappers` is for models trained with special tokens around
+biological sequences, such as NatureLM or domain-tokenizer models. Without
+the tokens the tokenizer reads the sequence as plain text and the score
+degrades without an error. Each value is a format string with `{seq}`
+(literal braces as `{{` and `}}`). A template without `{seq}`, with any other
+field, or under an unknown type is refused.
+
+A task reads the key in `preprocess` and wraps each sequence it injects; a
+task with two sequences wraps both:
+
+```python
+async def preprocess(self, raw, ctx):
+    wrap = self.model.extra.get("sequence_wrappers", {}).get("dna")
+    seq = wrap.format(seq=raw["sequence"]) if wrap else raw["sequence"]
+    return build_prompt_record([{"role": "user", "content": PROMPT.format(seq=seq)}])
+```
+
+With no wrapper the prompt is byte for byte what it was. Wrapping changes
+only the request: a wrapping model and a plain one share `data` and
+`preprocess`, and differ in `inference` (see [Resume](#resume)).
+
 ## Task Pipeline
 
 Each task implements a typed 5-stage pipeline:
@@ -261,7 +307,8 @@ run's, and reruns each sample from the earliest stage that changed:
 
 | Differs | Resume |
 | --- | --- |
-| `data` (the selected samples) or `preprocess` (the prompt) | Those samples rerun from the start; the rest are kept |
+| `data` (the selected samples) | Those samples rerun from the start; the rest are kept |
+| `preprocess` (prompt rendering: its code and the arguments it reads) | Every sample reruns from the start |
 | `inference` | Refused, naming the stage |
 | `postprocess` (answer extraction) | `postprocess`, `feedback` and `report` rerun on the recorded inference |
 | `feedback` (scoring: judges, their prompts and sampling, services) | `feedback` and `report` rerun on the recorded `postprocess` |
@@ -276,14 +323,35 @@ class and `grader_args()`; `feedback` also holds every judge and service.
 those in `GRADER_ARGS_EXCLUDED`; a task extends it with arguments that cannot
 change a verdict: `Task.GRADER_ARGS_EXCLUDED | {"grade_timeout"}`.
 
+The `preprocess` identity is the code `preprocess` reaches and the
+`grader_args()` that code reads, plus a digest of every dataset split but
+`test` when it reads one (few-shot exemplars). It is computed once at setup;
+no sample is preprocessed for it. It is not the prompts: a rendered prompt is
+a function of code, arguments, data and the model's `extra`, and those are
+`preprocess`, `data` and `inference` (whose per-sample `requests` digest the
+request as sent). So a preprocess change restarts every sample of the task,
+where a 0.11 resume restarted only the samples whose prompt changed.
+
 Code is attributed to stages by a static walk from each stage method; code two
 stages reach counts in both. A stage that reaches code by a name only known at
 run time (`getattr(self, name)`, `eval`, `importlib`) counts all grading code,
 and so does every stage after it; `stage_code()` names the construct.
+`preprocess` falls back alone, and also when its code opens a file at run time
+(`open`, `read_text`, `importlib.resources`, a directory listing, a database
+connection): it then counts the task's whole code and the non-Python files
+beside the module that reads one. A staged dataset file it opens counts only
+through the dataset's pin and the argument that names it.
 
 A schema-1 `meta.json` (0.10.0 to 0.11.x) folds the grading stages into one
 `grader`. If it still matches the task's code, every verdict is kept and the
 block is upgraded in place; otherwise every sample regrades.
+
+Schemas 1 and 2 recorded `preprocess` as a digest of each sample's rendered
+prompt. A resume renders each recorded sample once with this build's
+`preprocess`; when every one renders the prompt it recorded, nothing changed
+and the block is upgraded to schema 3 in place. When one does not,
+`preprocess` changed and every sample reruns. The pass runs only on that
+upgrade.
 
 A same-directory resume reruns a sample with no recorded identity, such as one
 interrupted before `preprocess`. Under `record_meta: false` no sample has one,
@@ -349,11 +417,12 @@ in `SIEVAL_TARGET_GPU` ([Resolving for declared GPUs](infer.md#resolving-for-dec
       "samples": 3,
       "resume_plan": {"kept": 2, "rereported": 0, "regraded": 0, "repostprocessed": 0, "restarted": 0, "dropped": 0},
       "stages": {
-        "identity_schema": 2,
-        "stages": {"data": "differs", "inference": "same", "postprocess": "same", "feedback": "same", "report": "same"},
+        "identity_schema": 3,
+        "stages": {"data": "differs", "preprocess": "same", "inference": "same", "postprocess": "same", "feedback": "same", "report": "same"},
         "rerun_from": null,
         "refused": null,
-        "legacy_grader": null
+        "legacy_grader": null,
+        "legacy_preprocess": false
       },
       "new": 1,
       "to_infer": 1,
@@ -378,10 +447,12 @@ in `SIEVAL_TARGET_GPU` ([Resolving for declared GPUs](infer.md#resolving-for-dec
   counts the samples sent to the model under test, `to_grade` those run through
   a grading stage; `needs_inference` is whether `to_infer` is above zero.
 - `tasks.<task>.stages` compares each stage's recorded identity with this
-  run's: `same`, `differs` or `unknown`. `rerun_from` is the grading stage the
-  resume reruns from (`report` for a re-report), else `null`; a data change
-  shows in `resume_plan` as `restarted`. `legacy_grader` is `kept` or `regrade`
-  for a schema-1 directory. `stages` is `null` for a fresh start.
+  run's: `same`, `differs` or `unknown`. `rerun_from` is the stage the resume
+  reruns from (`preprocess` restarts every sample, `report` is a re-report),
+  else `null`; a data change shows in `resume_plan` as `restarted`.
+  `legacy_grader` is `kept` or `regrade` for a schema-1 directory;
+  `legacy_preprocess` is `true` for a schema-1 or schema-2 directory, compared
+  by rendering its recorded samples once. `stages` is `null` for a fresh start.
 - `needs_inference` is whether the run starts any engine. A task that infers
   through an `api_base` model counts in its `to_infer` but starts none.
 
