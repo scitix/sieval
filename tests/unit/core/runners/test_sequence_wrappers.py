@@ -16,11 +16,12 @@ from pathlib import Path
 import orjson
 import pytest
 
-from sieval.core.models import check_extra
+from sieval.core.models import check_extra, sequence_wrapper
 from sieval.core.runners import task_resume_plan
 from sieval.core.runners.runner import TaskRunner
-from sieval.core.runners.stage_resume import StageResumeError
+from sieval.core.runners.stage_resume import StageResumeError, task_preprocess_identity
 from sieval.core.tasks import build_prompt_record
+from sieval.core.tasks.run_meta import stage_code
 from sieval.core.tasks.task import Task
 from tests.conftest import MockChatModel, MockDataset, make_config, prompt_of
 
@@ -38,7 +39,7 @@ class WrapTask(Task):
     model_type = "chat"
 
     async def preprocess(self, raw, ctx):
-        wrap = self.model.extra.get("sequence_wrappers", {}).get("dna")
+        wrap = sequence_wrapper(self.model.extra, "dna")
         first, second = raw["sequence"], raw["partner"]
         if wrap:
             first, second = wrap.format(seq=first), wrap.format(seq=second)
@@ -265,6 +266,18 @@ class TestValidation:
         check_extra(None)
         check_extra({"note": "free-form"})
 
+    @pytest.mark.parametrize(
+        ("extra", "expected"),
+        [
+            ({"sequence_wrappers": WRAPPERS}, "<dna>{seq}</dna>"),
+            ({"sequence_wrappers": {"rna": "<rna>{seq}</rna>"}}, None),
+            ({"sequence_wrappers": "<dna>{seq}</dna>"}, None),
+            ({}, None),
+        ],
+    )
+    def test_sequence_wrapper_reads_one_type(self, extra, expected):
+        assert sequence_wrapper(extra, "dna") == expected
+
 
 class ShotTask(WrapTask):
     """Prefixes each prompt with the ``train`` split's first row: a few-shot
@@ -274,6 +287,22 @@ class ShotTask(WrapTask):
         shot = self.dataset.dataset_dict["train"][0]["sequence"]
         record = await super().preprocess(raw, ctx)
         record["prompt"][0]["content"] = f"{shot}\n" + record["prompt"][0]["content"]
+        return record
+
+
+class NamedShotTask(WrapTask):
+    """Draws its exemplar from the split ``fewshot_split`` names."""
+
+    def __init__(self, *args, fewshot_split: str = "dev", **kwargs):
+        super().__init__(*args, **kwargs)
+        self._fewshot_split = fewshot_split
+
+    async def preprocess(self, raw, ctx):
+        split = self.dataset.dataset_dict[self._fewshot_split]
+        record = await super().preprocess(raw, ctx)
+        record["prompt"][0]["content"] = (
+            f"{split[0]['sequence']}\n" + (record["prompt"][0]["content"])
+        )
         return record
 
 
@@ -303,3 +332,20 @@ class TestFewShotSplits:
         other = task_resume_plan(task("CCCC"), recorded, runner_keys=keys)
         assert other["stages"]["preprocess"] == "differs"
         assert other["rerun_from"] == "preprocess"
+
+    def test_only_the_named_fewshot_split_is_digested(self):
+        from datasets import Dataset as HFDataset
+
+        def task(validation_seq):
+            dataset = MockDataset(SAMPLES)
+            for split, seq in (("dev", "AAAA"), ("validation", validation_seq)):
+                dataset.dataset_dict[split] = HFDataset.from_list(
+                    [{"sequence": seq, "partner": "", "answer": ""}]
+                )
+            return NamedShotTask(dataset=dataset, model=_model(), name="seq")
+
+        code = stage_code(NamedShotTask, args=["fewshot_split"])["preprocess"]
+        one = task_preprocess_identity(task("CCCC"), code)
+        assert list(one["splits"]) == ["dev"]
+        # An unread split's rows do not move the identity.
+        assert task_preprocess_identity(task("GGGG"), code) == one

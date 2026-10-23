@@ -1,20 +1,14 @@
 """``Model.extra``: what a model offers the tasks that evaluate it.
 
-``extra`` is a dict on the model, set through ``infer_args.extra`` or the
-model config's ``extra``, and never sent to the API. It is a contract between
-tasks and models: a task asks the model for a capability by key, and when the
-key is absent the task does nothing different. The framework passes the dict
-through untouched, records it in the inference identity, and never changes a
-request because of it; it only checks the shape of the keys listed here, so a
-mistyped value is refused before a run rather than silently ignored.
+A dict on the model, never sent to the API. A task asks for a capability by
+key and does nothing different when it is absent. Core passes the dict through
+and records it in the inference identity; it only checks the shape of the
+keys documented here, so a typo is refused before a run.
 
 ======================  ======================================================
-``sequence_wrappers``   ``{<seq_type>: "<format with {seq}>"}``. A model
-                        trained with special tokens around biological
-                        sequences needs them at inference; a task wraps each
-                        sequence it puts in a prompt with
-                        ``template.format(seq=...)``. Types are
-                        :data:`SEQUENCE_TYPES`.
+``sequence_wrappers``   ``{<seq_type>: "<format with {seq}>"}``: the special
+                        tokens a model was trained with around biological
+                        sequences. Read with :func:`sequence_wrapper`.
 ======================  ======================================================
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
@@ -24,6 +18,8 @@ import string
 from collections.abc import Mapping
 from typing import cast
 
+from sieval.core.types import JSONValue
+
 #: ``extra`` key of the sequence wrappers a model needs.
 SEQUENCE_WRAPPERS = "sequence_wrappers"
 
@@ -32,12 +28,22 @@ SEQUENCE_WRAPPERS = "sequence_wrappers"
 SEQUENCE_TYPES: tuple[str, ...] = ("dna", "rna", "protein", "mol")
 
 
-def check_extra(extra: object, where: str = "extra") -> None:
-    """Refuse an ``extra`` whose documented keys have the wrong shape.
+def sequence_wrapper(extra: Mapping[str, JSONValue], seq_type: str) -> str | None:
+    """The model's template for *seq_type* in ``Model.extra``, or ``None``.
 
-    Keys not documented in this module are not checked. Raises
-    :class:`ValueError` naming *where* and the offending key.
+    ``wrap.format(seq=...)`` wraps a sequence; with ``None`` a task renders
+    what it renders for a plain model.
     """
+    wrappers = extra.get(SEQUENCE_WRAPPERS)
+    if not isinstance(wrappers, Mapping):
+        return None
+    template = cast(Mapping[str, object], wrappers).get(seq_type)
+    return template if isinstance(template, str) else None
+
+
+def check_extra(extra: object, where: str = "extra") -> None:
+    """Raise :class:`ValueError` when a key documented here has the wrong shape;
+    other keys are not checked."""
     if extra is None:
         return
     if not isinstance(extra, Mapping):
@@ -49,12 +55,9 @@ def check_extra(extra: object, where: str = "extra") -> None:
 
 
 def check_sequence_wrappers(wrappers: object, where: str = SEQUENCE_WRAPPERS) -> None:
-    """Refuse ``sequence_wrappers`` that are not ``{type: template}``.
-
-    Each type must be one of :data:`SEQUENCE_TYPES` and each template a
-    string whose only replacement field is ``{seq}``, present at least once;
-    literal braces are written ``{{`` and ``}}``, as in :meth:`str.format`.
-    """
+    """Refuse ``sequence_wrappers`` that are not ``{type: template}``: each type
+    in :data:`SEQUENCE_TYPES`, each template a format string whose only field
+    is ``{seq}``."""
     if not isinstance(wrappers, Mapping):
         raise ValueError(
             f"{where} must map a sequence type to a template, "

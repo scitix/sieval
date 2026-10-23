@@ -21,11 +21,9 @@ its later inference saw the old grader's feedback.
 A schema-1 ``grader`` (0.10.0 to 0.11.x) matches all grading stages or none
 (:func:`~sieval.core.tasks.run_meta.legacy_grader_keys`).
 
-``preprocess`` is code and arguments, one per task
-(:func:`~sieval.core.tasks.run_meta.preprocess_identity`); each ``preprocess``
-record is stamped with its key. A directory that recorded rendered prompts
-(identity schemas 1 and 2) is upgraded by rendering its recorded samples once:
-each renders the prompt it recorded, or ``preprocess`` changed.
+Each ``preprocess`` record is stamped with the task's ``preprocess`` key. A
+directory that recorded rendered prompts (identity schemas 1 and 2) is
+upgraded by rendering its recorded samples once.
 
 A sample's data digest comes from its ``preprocess`` record. For a directory
 recorded before them, the prompt is digested from the ``preprocess`` output,
@@ -169,15 +167,13 @@ type StageComparison = Literal["same", "differs", "unknown"]
 class ResumePlan(TypedDict):
     """What a resume of one task directory would do, from identities alone.
 
-    ``rerun_from`` is the earliest stage a finished sample reruns from:
-    ``preprocess`` when it differs (every sample restarts), else the earliest
-    grading stage that changed; ``None`` if none did. Data is decided per
-    sample, so only compared here. ``refused`` is ``inference`` when reusing
-    the recorded inference would be refused. ``legacy_grader`` is set for a
-    schema-1 directory: ``kept`` (upgraded in place) or ``regrade``.
-    ``legacy_preprocess`` is ``True`` for a directory that recorded rendered
-    prompts (schemas 1 and 2): its ``preprocess`` compares ``unknown`` here,
-    and a resume renders the recorded samples once to decide.
+    ``rerun_from`` is the earliest stage a finished sample reruns from
+    (``preprocess`` restarts every sample), ``None`` if none changed; data is
+    decided per sample, so only compared here. ``refused`` is ``inference``
+    when reusing the recorded inference would be refused. ``legacy_grader`` is
+    set for a schema-1 directory: ``kept`` or ``regrade``.
+    ``legacy_preprocess`` marks a schema-1 or schema-2 directory, whose
+    ``preprocess`` compares ``unknown`` until its samples are re-rendered.
     """
 
     identity_schema: int | None
@@ -236,22 +232,29 @@ def plan_resume(
     }
 
 
+#: The task argument naming the split few-shot exemplars are drawn from.
+FEWSHOT_SPLIT_ARG = "fewshot_split"
+
+
 def task_preprocess_identity(task: "Task", code: StageCode) -> PreprocessIdentity:
     """:func:`~sieval.core.tasks.run_meta.preprocess_identity` for *task*.
 
     *code* is ``stage_code(...)["preprocess"]``. When that code reads a
-    dataset split, every split but ``test`` (the evaluated one, which ``data``
-    covers) is digested. Raises :class:`ValueError` when one cannot be.
+    dataset split, the one its ``fewshot_split`` argument names is digested,
+    else every split but ``test`` (which ``data`` covers). Raises
+    :class:`ValueError` when one cannot be.
     """
     splits: dict[str, str] | None = None
     if code.get("splits"):
         dataset_dict = task.dataset.dataset_dict
+        args = task.grader_args()
+        named = args.get(FEWSHOT_SPLIT_ARG)
+        if FEWSHOT_SPLIT_ARG in code.get("args", ()) and named in dataset_dict:
+            names = [named]
+        else:
+            names = [name for name in dataset_dict if name != "test"]
         splits = split_digests(
-            {
-                str(name): cast(Iterable[object], dataset_dict[name])
-                for name in dataset_dict
-                if name != "test"
-            }
+            {str(name): cast(Iterable[object], dataset_dict[name]) for name in names}
         )
         if splits is None:
             raise ValueError("a dataset split the prompt reads cannot be digested")

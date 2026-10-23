@@ -50,7 +50,7 @@ from .dialect_registry import (
     get_dialect_spec,
 )
 from .exceptions import CapabilityError
-from .extra import SEQUENCE_TYPES, SEQUENCE_WRAPPERS, check_extra
+from .extra import SEQUENCE_TYPES, SEQUENCE_WRAPPERS, check_extra, sequence_wrapper
 from .gen_model import GenModel
 from .ir import (
     FINISH_SOURCE_CANDIDATE,
@@ -202,6 +202,7 @@ __all__ = [
     "Transport",
     "UsageStats",
     "check_extra",
+    "sequence_wrapper",
     "ASYNC_HTTP_JSON_FACTORY",
     "AsyncHTTPJSONConnection",
     "BindingReconcileInput",

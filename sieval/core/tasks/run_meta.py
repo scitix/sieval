@@ -10,11 +10,10 @@ produced the current ``report.json``:
 ===============  ============================================================
 ``data``         Every selected sample, keyed by ``(sample_id, repeat_index)``
                  and digested over its whole raw content.
-``preprocess``   The code ``preprocess`` reaches (:func:`stage_code`) and the
-                 task arguments it reads (:func:`preprocess_identity`), plus
-                 every dataset split when it reads one beyond the sample
-                 (few-shot exemplars). Computed once at setup from code: no
-                 sample is preprocessed for it.
+``preprocess``   The code ``preprocess`` reaches (:func:`stage_code`), the
+                 task arguments it reads and, for few-shot, the split it draws
+                 exemplars from (:func:`preprocess_identity`). Computed from
+                 code once at setup.
 ``inference``    The candidate's resolved request arguments, dialect and
                  engine, the task's own inference arguments (``n``), the
                  result-changing runner keys and the serving recipe, plus
@@ -30,31 +29,22 @@ produced the current ``report.json``:
 ``report``       The same for ``report`` and ``problem_groups``.
 ===============  ============================================================
 
-A change to one stage reruns it and every stage after it. A ``preprocess``
-change restarts every sample of the task.
+A change to one stage reruns it and every stage after it; a ``preprocess``
+change restarts every sample.
 
-Why ``preprocess`` is code and not the prompts it renders:
-
-=====================  =======================================================
-The rendered prompt    is a function of code, arguments, data and the model's
-                       capabilities (``Model.extra``, such as
-                       ``sequence_wrappers``).
-Code and arguments     are ``preprocess``.
-Data                   is ``data``.
-Model capabilities     change the request, which ``inference`` digests per
-                       sample (``requests``, the body as sent): a wrapped
-                       prompt is covered there.
-So                     one benchmark on a wrapping model and on a plain one
-                       shares ``data`` and ``preprocess``, and differs only in
-                       ``inference``.
-=====================  =======================================================
+``preprocess`` is code, not the prompts it renders: a prompt is code,
+arguments, data and the model's ``extra``, and ``extra`` reaches the request,
+which ``inference`` digests per sample. So a wrapping model and a plain one
+share ``data`` and ``preprocess`` and differ in ``inference``. The walk is
+static: a prompt that reads an environment variable, or a file through a
+reader outside :data:`_FILE_READS` (``pd.read_csv``), is covered only through
+the argument naming it.
 
 Identity schema 1 (0.10.0 to 0.11.x) named ``preprocess`` ``prompt`` and
 folded the grading stages into one ``grader``. :func:`legacy_grader_keys`
 recomputes it with the walk that wrote it: equal means nothing changed.
-Schemas 1 and 2 hold ``preprocess`` as a digest over every sample's rendered
-prompt; a resume renders the recorded samples once to compare
-(:func:`is_code_identity`).
+Schemas 1 and 2 hold ``preprocess`` as a digest of rendered prompts; a resume
+renders the recorded samples once to compare (:func:`is_code_identity`).
 
 Every digest is ``sha256:`` over canonical JSON (sorted keys, no whitespace).
 A stage whose input could not be read is ``None``: unknown, never a guess. A
@@ -231,10 +221,9 @@ class GradingIdentity(TypedDict):
 class PreprocessIdentity(TypedDict):
     """The ``preprocess`` stage: what renders a prompt, but the sample.
 
-    ``modules`` is the code ``preprocess`` reaches (:func:`stage_code`),
-    ``args`` the ``grader_args()`` it reads. ``splits`` digests every dataset
-    split but ``test``, present only when the code reads one (few-shot
-    exemplars). ``fallback`` says why ``modules`` holds all the task's code.
+    ``modules`` is the code it reaches, ``args`` the ``grader_args()`` it
+    reads, ``splits`` a digest of each split it draws exemplars from, and
+    ``fallback`` why ``modules`` holds all the task's code.
     """
 
     digest: str
@@ -249,9 +238,8 @@ class RunIdentity(TypedDict):
 
     Two runs share a stage only when every digest in it matches: for
     ``inference`` that is ``digest`` *and* ``requests.digest``, and a ``None``
-    digest on either side matches nothing. A ``preprocess`` read from schema 1
-    or 2 is a :class:`DigestedStage` of rendered prompts
-    (:func:`is_code_identity`).
+    digest on either side matches nothing. A schema-1 or schema-2
+    ``preprocess`` is a :class:`DigestedStage` of rendered prompts.
     """
 
     schema: int
@@ -1066,9 +1054,7 @@ _LOADERS = frozenset(
 #: Attribute lookups that name the attribute in an argument.
 _ATTR_CALLS = frozenset({"getattr", "setattr", "delattr", "hasattr"})
 
-#: Names and attributes that read a file whose path only the run knows:
-#: ``open``, ``pathlib`` and ``importlib.resources`` reads, directory listings,
-#: a database connection.
+#: Names and attributes that read a file whose path only the run knows.
 _FILE_READS = frozenset(
     {"open", "read_text", "read_bytes", "files", "iterdir", "glob", "rglob"}
     | {"listdir", "scandir", "connect"}
@@ -1076,14 +1062,9 @@ _FILE_READS = frozenset(
 
 
 def _loaded_unfollowed(task_cls: type) -> set[str] | None:
-    """The attributes a ``preprocess`` outside the followed packages loads.
-
-    Its code is in no identity (a task defined in a test or a script), so
-    only what it reads is taken from its source, for its arguments and
-    dataset splits: the attributes the methods of its classes load, from
-    ``preprocess`` and the shared entry methods on, by name. ``None`` when a
-    class's source cannot be read.
-    """
+    """The attributes a ``preprocess`` outside the followed packages (a task
+    in a test or a script) loads, by name from its classes' source; ``None``
+    when a class's source cannot be read."""
     methods: dict[str, list[ast.AST]] = {}
     for klass in task_cls.__mro__:
         top = klass.__module__.partition(".")[0]
@@ -1110,11 +1091,6 @@ def _loaded_unfollowed(task_cls: type) -> set[str] | None:
         loaded |= refs.loaded
         pending.extend(a for a in refs.attrs if a in methods)
     return loaded
-
-
-#: Attributes through which a task reads a dataset split other than the
-#: evaluated one, such as few-shot exemplars.
-_SPLIT_READS = frozenset({"dataset_dict", "train_set", "retrieve_samples"})
 
 
 class _Unattributable(Exception):
@@ -1793,20 +1769,16 @@ def stage_code(
     :func:`grader_modules`, every judge and service; ``fallback`` names it.
 
     ``preprocess`` falls back on its own, and also when a function or method
-    it reaches reads a file (``open``, ``read_text``, ``files()``, a
-    directory listing, a database connection): it then counts all of
-    :func:`grader_modules` and the non-Python files of the reading module's
-    package (:func:`_package_data`). A module read at import or digested
-    whole that reads a file adds its package's non-Python files without
-    falling back, named in ``files``: it holds no task method, and what it
-    reads ships beside it. A file outside the code (a staged database or
-    document) counts only through the dataset's pin and the argument naming
-    it. ``args`` names the *args* its code reads
-    (``self.<name>``, ``self._<name>`` or an attribute stored from one; all
-    of them under a fallback; for a ``preprocess`` outside the followed
-    packages, read from its class source alone), and ``splits`` whether it
-    reads a dataset split beyond the
-    sample (``dataset_dict``, ``train_set``, ``retrieve_samples``).
+    it reaches reads a file (:data:`_FILE_READS`): it then counts all of
+    :func:`grader_modules` and the data files of the reading module's package
+    (:func:`_package_data`). A module that reads a file at import adds its
+    package's data files without falling back, named in ``files``.
+
+    ``args`` names the *args* ``preprocess`` reads as ``self.<name>``,
+    ``self._<name>`` or an attribute stored from one; all of them under a
+    fallback, or when the task overrides ``grader_args``, which may return an
+    argument kept under another name. ``splits`` is whether it reads a split
+    beyond the sample (:data:`_SPLIT_READS`).
     """
     arg_names = sorted(set(args))
     roles = sorted(set(judge_roles))
@@ -1864,7 +1836,10 @@ def _preprocess_entry(
     entry: StageCode, walk: _StageWalk, walker: _StageWalker, args: list[str]
 ) -> None:
     """Add what :func:`stage_code` records for ``preprocess`` alone to *entry*."""
-    if "preprocess" in walker.methods:
+    if _overrides_grader_args(walker.task_cls):
+        entry["args"] = list(args)
+        entry["splits"] = bool((walk.loaded | walk.whole_loaded) & _SPLIT_READS)
+    elif "preprocess" in walker.methods:
         entry["args"] = [a for a in args if walk.reads((a, f"_{a}"))]
         entry["splits"] = bool((walk.loaded | walk.whole_loaded) & _SPLIT_READS)
     else:
@@ -1890,16 +1865,27 @@ def _preprocess_entry(
         entry["fallback"] = f"{', '.join(w for _, w in units)} read a file at run time"
 
 
+def _overrides_grader_args(task_cls: type) -> bool:
+    """Whether a class of *task_cls* defines its own ``grader_args``: the
+    base reads each argument back under its own name, an override need not."""
+    return any(
+        "grader_args" in vars(klass) and klass.__module__ != "sieval.core.tasks.task"
+        for klass in task_cls.__mro__
+    )
+
+
 #: Attributes through which a task reads a dataset split other than the
 #: evaluated one, such as few-shot exemplars.
 _SPLIT_READS = frozenset({"dataset_dict", "train_set", "retrieve_samples"})
 
-#: Files beside a module's source that are never data it reads.
-_NOT_DATA_SUFFIXES = (".py", ".pyc", ".pyi", ".md")
+#: Files beside a module's source that are never data it reads: code and the
+#: agent instruction files. Other Markdown may be a prompt template.
+_NOT_DATA_SUFFIXES = (".py", ".pyc", ".pyi")
+_NOT_DATA_NAMES = frozenset({"AGENTS.md", "CLAUDE.md", "README.md"})
 
 
 def _package_data(modules: Iterable[str], own: str | None) -> dict[str, str]:
-    """``{file key: digest}`` of every non-Python file under each of *modules*'
+    """``{file key: digest}`` of every data file under each of *modules*'
     package directories: a module that reads a file the walk cannot name most
     likely reads one shipped beside it (a template, few-shot examples)."""
     out: dict[str, str] = {}
@@ -1913,7 +1899,11 @@ def _package_data(modules: Iterable[str], own: str | None) -> dict[str, str]:
                 d for d in dirnames if not d.startswith((".", "__pycache__"))
             )
             for filename in sorted(filenames):
-                if filename.startswith(".") or filename.endswith(_NOT_DATA_SUFFIXES):
+                if (
+                    filename.startswith(".")
+                    or filename.endswith(_NOT_DATA_SUFFIXES)
+                    or filename in _NOT_DATA_NAMES
+                ):
                     continue
                 path = os.path.join(dirpath, filename)
                 out[_file_key(module, path, own)] = (

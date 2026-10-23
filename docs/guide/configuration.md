@@ -193,13 +193,12 @@ The reply grows by N entries per input token.
 
 ## Model Capabilities (`extra`)
 
-`extra` is a dict on a model that tasks read and the API never sees. It is
-the contract between tasks and models: a task asks the model for a
-capability by key, and when the key is absent it does nothing different.
-SiEval passes the dict through and records it in the inference identity; it
-interprets no key, and only checks the shape of the keys below so a typo
-fails before the run. Set it on a model (top level or `args`) or per task in
-`infer_args`; a task's `infer_args.extra` replaces the model's.
+`extra` is a dict on a model that tasks read and the API never sees: a task
+asks for a capability by key and does nothing different when it is absent.
+SiEval records it in the inference identity and checks the shape of the keys
+below, so a typo fails before the run. Set it on a model (top level or
+`args`) or per task in `infer_args`; a task's `infer_args.extra` replaces the
+model's.
 
 ```yaml
 models:
@@ -217,25 +216,23 @@ models:
 | `sequence_wrappers` | `{<seq_type>: "<format with {seq}>"}`; types `dna`, `rna`, `protein`, `mol` (SMILES) | Tasks that put a biological sequence in a prompt |
 
 `sequence_wrappers` is for models trained with special tokens around
-biological sequences, such as NatureLM or domain-tokenizer models. Without
-the tokens the tokenizer reads the sequence as plain text and the score
-degrades without an error. Each value is a format string with `{seq}`
-(literal braces as `{{` and `}}`). A template without `{seq}`, with any other
-field, or under an unknown type is refused.
+biological sequences (NatureLM, domain-tokenizer models); without them the
+score degrades silently. Each value is a format string whose only field is
+`{seq}` (literal braces as `{{` and `}}`).
 
-A task reads the key in `preprocess` and wraps each sequence it injects; a
-task with two sequences wraps both:
+A task wraps each sequence it injects in `preprocess`:
 
 ```python
+from sieval.core.models import sequence_wrapper
+
 async def preprocess(self, raw, ctx):
-    wrap = self.model.extra.get("sequence_wrappers", {}).get("dna")
+    wrap = sequence_wrapper(self.model.extra, "dna")
     seq = wrap.format(seq=raw["sequence"]) if wrap else raw["sequence"]
     return build_prompt_record([{"role": "user", "content": PROMPT.format(seq=seq)}])
 ```
 
-With no wrapper the prompt is byte for byte what it was. Wrapping changes
-only the request: a wrapping model and a plain one share `data` and
-`preprocess`, and differ in `inference` (see [Resume](#resume)).
+With no wrapper the prompt is unchanged. A wrapping model and a plain one
+share `data` and `preprocess` and differ in `inference` (see [Resume](#resume)).
 
 ## Task Pipeline
 
@@ -323,14 +320,16 @@ class and `grader_args()`; `feedback` also holds every judge and service.
 those in `GRADER_ARGS_EXCLUDED`; a task extends it with arguments that cannot
 change a verdict: `Task.GRADER_ARGS_EXCLUDED | {"grade_timeout"}`.
 
-The `preprocess` identity is the code `preprocess` reaches and the
-`grader_args()` that code reads, plus a digest of every dataset split but
-`test` when it reads one (few-shot exemplars). It is computed once at setup;
-no sample is preprocessed for it. It is not the prompts: a rendered prompt is
-a function of code, arguments, data and the model's `extra`, and those are
-`preprocess`, `data` and `inference` (whose per-sample `requests` digest the
-request as sent). So a preprocess change restarts every sample of the task,
-where a 0.11 resume restarted only the samples whose prompt changed.
+The `preprocess` identity is the code `preprocess` reaches, the
+`grader_args()` it reads (all of them when the task overrides `grader_args`)
+and, for few-shot, a digest of the `fewshot_split` it draws from (every split
+but `test` when it names none). It is computed from code at setup, not from
+the prompts: the model's `extra` reaches the request, which `inference`
+digests. A preprocess change restarts every sample of the task.
+
+The walk is static. A prompt that reads an environment variable, or a file
+through a reader it cannot see (`pd.read_csv`), is covered only through the
+argument naming it: keep such inputs in task arguments.
 
 Code is attributed to stages by a static walk from each stage method; code two
 stages reach counts in both. A stage that reaches code by a name only known at
@@ -338,20 +337,16 @@ run time (`getattr(self, name)`, `eval`, `importlib`) counts all grading code,
 and so does every stage after it; `stage_code()` names the construct.
 `preprocess` falls back alone, and also when its code opens a file at run time
 (`open`, `read_text`, `importlib.resources`, a directory listing, a database
-connection): it then counts the task's whole code and the non-Python files
-beside the module that reads one. A staged dataset file it opens counts only
-through the dataset's pin and the argument that names it.
+connection): it then counts the task's whole code and the data files beside
+the module that reads one.
 
 A schema-1 `meta.json` (0.10.0 to 0.11.x) folds the grading stages into one
 `grader`. If it still matches the task's code, every verdict is kept and the
 block is upgraded in place; otherwise every sample regrades.
 
-Schemas 1 and 2 recorded `preprocess` as a digest of each sample's rendered
-prompt. A resume renders each recorded sample once with this build's
-`preprocess`; when every one renders the prompt it recorded, nothing changed
-and the block is upgraded to schema 3 in place. When one does not,
-`preprocess` changed and every sample reruns. The pass runs only on that
-upgrade.
+Schemas 1 and 2 recorded `preprocess` as rendered-prompt digests. A resume
+renders each recorded sample once: if all match, the block is upgraded to
+schema 3 in place; otherwise every sample reruns.
 
 A same-directory resume reruns a sample with no recorded identity, such as one
 interrupted before `preprocess`. Under `record_meta: false` no sample has one,

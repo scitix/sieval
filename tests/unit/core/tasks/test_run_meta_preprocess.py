@@ -147,6 +147,25 @@ class TestCodeChanges:
         _, load = plugin
         assert _identity(load, {**ARGS, "k": 5}) == _identity(load)
 
+    def test_an_arg_kept_under_another_name_counts_with_an_override(self, plugin):
+        """A ``grader_args`` override may return ``label`` while ``preprocess``
+        reads ``self._kind``: every argument it returns counts."""
+        pkg, load = plugin
+        _edit(pkg, "task.py", "self._label = label", "self._kind = label")
+        _edit(pkg, "task.py", "self._label, raw", "self._kind, raw")
+        _edit(
+            pkg,
+            "task.py",
+            "    async def infer(",
+            "    def grader_args(self):\n"
+            '        return {"label": self._kind, "k": self._k}\n\n'
+            "    async def infer(",
+        )
+        identity = _identity(load)
+        assert identity["args"] == ARGS
+        after = _identity(load, {**ARGS, "label": "enhancer"})
+        assert preprocess_key(after) != preprocess_key(identity)
+
     def test_the_key_ignores_why_it_fell_back(self, plugin):
         _, load = plugin
         identity = _identity(load)
@@ -178,6 +197,22 @@ class TestDynamicCode:
         before = preprocess_key(identity)
         (pkg / "template.txt").write_text("Is this a {label}?")
         assert preprocess_key(_identity(load)) != before
+
+    def test_a_markdown_template_is_data_but_agent_notes_are_not(self, plugin):
+        pkg, load = plugin
+        (pkg / "prompt.md").write_text("Is it a {label}?")
+        (pkg / "CLAUDE.md").write_text("notes")
+        _edit(
+            pkg,
+            "task.py",
+            '        return render(HEADER, self._label, raw["sequence"])\n',
+            "        here = __file__.rpartition('/')[0]\n"
+            "        with open(here + '/prompt.md') as f:\n"
+            '            return f.read() + raw["sequence"]\n',
+        )
+        modules = _identity(load)["modules"]
+        assert "./prompt.md" in modules
+        assert "./CLAUDE.md" not in modules
 
     def test_a_run_time_name_falls_back(self, plugin):
         pkg, load = plugin

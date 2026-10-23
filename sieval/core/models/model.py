@@ -661,15 +661,9 @@ class Model:
         return info
 
     @property
-    def extra(self) -> dict[str, Any]:
-        """What this model offers the tasks evaluating it, by key; never sent.
-
-        A task reads a capability it knows by key (``sequence_wrappers``) and
-        does nothing different when it is absent. See
-        :mod:`sieval.core.models.extra`. Typed ``Any`` so a task can chain
-        ``.get()`` on a documented key, whose shape is checked when the model
-        is built.
-        """
+    def extra(self) -> dict[str, JSONValue]:
+        """What this model offers the tasks evaluating it, by key; never sent
+        (:mod:`sieval.core.models.extra`)."""
         return dict(self._extra) if self._extra else {}
 
     def meta(self) -> ModelMeta:

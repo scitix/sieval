@@ -526,9 +526,9 @@ class TaskRunner:
         self._grading: dict[str, GradingIdentity] | None = None
         self._stage_code: dict | None = None
         self._legacy_keys: set[str] | None = None
-        # This run's preprocess identity, computed once (`_preprocess_identity`);
-        # whether any recorded sample's preprocess changed; and, for a directory
-        # that recorded rendered prompts, whether each still renders its own.
+        # This run's preprocess identity (`False` until computed); whether a
+        # recorded sample's preprocess changed; for a schema-1/2 directory,
+        # whether every recorded sample still renders its recorded prompt.
         self._preprocess: PreprocessIdentity | None | Literal[False] = False
         self._preprocess_restarted = False
         self._legacy_prompts_match: bool | None = None
@@ -933,9 +933,8 @@ class TaskRunner:
             config_path=self._config_path(),
             identity={
                 "data": None,
-                # Unknown while a sample recorded under another preprocess may
-                # still be on disk: `_sample_preprocess_changed` reads a
-                # recorded code identity as what verified such a sample.
+                # Unknown while a sample stamped with another preprocess may
+                # remain: `_sample_preprocess_changed` trusts a recorded one.
                 "preprocess": None if self._preprocess_restarted else preprocess,
                 "inference": inference,
                 **{
@@ -1967,13 +1966,9 @@ class TaskRunner:
             return set()
 
     def _resume_identity_update(self, *, report_unknown: bool = False) -> dict:
-        """Identities a fast resume or re-report writes at its start.
-
-        This run's preprocess and grading identities, so a schema-1 block, or
-        a schema-2 one with rendered prompts, is upgraded in place; ``report``
-        stays unknown until a re-report writes it. Grading identities that
-        cannot be computed leave the carried ones.
-        """
+        """This run's preprocess and grading identities, which a fast resume or
+        re-report writes at its start to upgrade an older block in place.
+        ``report`` stays unknown until a re-report writes it."""
         update: dict = {"preprocess": self._preprocess_identity()}
         grading = self._grading_identities()
         if grading is not None:
@@ -1983,13 +1978,9 @@ class TaskRunner:
         return update
 
     async def _recorded_preprocess_matches(self) -> bool:
-        """Whether a finished run's ``preprocess`` is this run's.
-
-        A code identity compares by :func:`preprocess_key`. One of rendered
-        prompts (schema 1, or schema 2 before preprocess was code-based) is
-        checked by rendering every recorded sample once: each must render the
-        prompt it recorded. A run without identities is decided elsewhere.
-        """
+        """Whether a finished run's ``preprocess`` is this run's: by
+        :func:`preprocess_key`, or for rendered prompts (schemas 1 and 2) by
+        rendering every recorded sample once."""
         identity = recorded_identity(self._recorded)
         if identity is None:
             return True
@@ -2013,13 +2004,9 @@ class TaskRunner:
         return self._legacy_prompts_match
 
     async def _legacy_prompts_render(self, contexts: Iterable[TaskContext]) -> bool:
-        """Whether every recorded sample of *contexts* without a ``preprocess``
-        stamp renders, under this run's ``preprocess``, the prompt it recorded.
-
-        The upgrade from rendered prompts: one ``preprocess`` call per such
-        sample. A sample whose data changed reruns anyway and is skipped; one
-        never preprocessed has no prompt to compare.
-        """
+        """Whether every unstamped recorded sample of *contexts* renders the
+        prompt it recorded: one ``preprocess`` call each. Samples whose data
+        changed rerun anyway and are skipped."""
         checked = 0
         for ctx in contexts:
             if ctx.preprocess_result is None:
@@ -2496,11 +2483,9 @@ class TaskRunner:
     def _sample_preprocess_changed(self, stamp: str | None) -> bool:
         """Whether a recorded sample's ``preprocess`` differs from this run's.
 
-        *stamp* is the :func:`preprocess_key` its record carries. A record
-        without one (rendered prompts on record, or none) was checked by
-        rendering (:meth:`_legacy_prompts_render`), unless the directory
-        records a code identity: then a run that upgraded it verified the
-        sample under that identity. An unknown identity on either side differs.
+        *stamp* is the :func:`preprocess_key` its record carries. Without one,
+        the directory's code identity decides if it has one (an upgrade
+        verified the sample), else the rendering pass. Unknown differs.
         """
         current = preprocess_key(self._preprocess_identity())
         if stamp is not None:
