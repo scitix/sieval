@@ -58,12 +58,11 @@ from sieval.core.types import JSONValue
 
 from .services import ServiceIdentity
 
-#: Version of a task result directory's on-disk layout that a resume reads:
-#: shard records and their ``.idx`` files, ``meta.json`` and the ``report.json``
-#: shape the loader reads. Written as ``meta.json`` ``result_schema_version``;
-#: the resume gate compares it (:mod:`sieval.core.runners.resume_gate`, which
-#: says when to bump it). Not :data:`IDENTITY_SCHEMA`, which versions only the
-#: ``identity`` block.
+#: Version of the task result directory a resume reads (shard records and their
+#: ``.idx``, ``meta.json``, the ``report.json`` shape), written as ``meta.json``
+#: ``result_schema_version``; a resume refuses any other. Bump it for a layout
+#: change older directories cannot be read under, or for a core change that
+#: alters results: the grader walk skips ``sieval.core``, so nothing else sees it.
 RESULT_SCHEMA_VERSION = 1
 
 #: Version of the ``identity`` block's layout. A digest computed differently is

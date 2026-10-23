@@ -45,20 +45,20 @@ class TaskRunIdentity(TypedDict):
 class TaskRunMeta(TypedDict):
     """The ``meta.json`` document: where a task directory came from.
 
-    ``version``, ``result_schema_version``, ``deterministic`` and ``task``
-    describe the run that created the directory and are kept across resumes;
-    the resume gates read them. ``result_schema_version`` is the directory's
-    on-disk layout (:data:`~sieval.core.tasks.run_meta.RESULT_SCHEMA_VERSION`);
-    ``version`` is provenance only.
+    ``version``, ``deterministic`` and ``task`` describe the run that created
+    the directory and are kept across resumes; the resume gates read them.
+    ``result_schema_version``
+    (:data:`~sieval.core.tasks.run_meta.RESULT_SCHEMA_VERSION`) is what the
+    version gate compares; ``version`` is provenance only.
     ``model``, ``config``, ``identity`` and ``runs`` are rewritten by every
     run — see :mod:`sieval.core.tasks.run_meta` for their shape. ``config`` is
     the run's ``effective_config.yaml``, relative to this directory.
 
     Readers tolerate older files: ``result_schema_version`` absent is a run
-    before 0.11.0, mapped from ``version``; ``deterministic`` absent is a pre-feature
-    run, ``task`` absent is a pre-feature run or an undecorated ``Task``, and
-    ``model`` / ``identity`` / ``runs`` absent is a run before stage
-    identities. Nothing backfills them.
+    before 0.11.0, mapped from ``version`` and written by its next resume;
+    ``deterministic`` absent is a pre-feature run, ``task`` absent is a
+    pre-feature run or an undecorated ``Task``, and ``model`` / ``identity`` /
+    ``runs`` absent is a run before stage identities. Nothing backfills those.
     """
 
     version: str
@@ -268,11 +268,11 @@ class TaskContext[TRawSample, TPreprocessed, TInferred, TPostprocessed, TFeedbac
         # byte-identical to one written before this field existed.
         #
         # Presence says "this row is a copy"; absence only says no copy number was
-        # recorded. A resume within one result schema version
-        # (`resume_schema_verdict`) appends to shards whose older records predate
-        # the field, mixing a single archive — so read a missing key as unknown,
-        # not as copy 0 (`stage_meta`'s per-record version tells them apart
-        # wherever it was recorded).
+        # recorded. A resume within one schema (`resume_schema_verdict`)
+        # appends to shards whose older records predate the field, mixing a
+        # single archive — so read a missing key as unknown, not as copy 0
+        # (`stage_meta`'s per-record version tells them apart wherever it was
+        # recorded).
         if self.repeat_index is not None:
             d["repeat_index"] = self.repeat_index
         if self._is_snapshot:

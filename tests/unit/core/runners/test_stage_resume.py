@@ -496,7 +496,13 @@ def _strip_identities(root: Path) -> None:
     """Rewrite *root* as a run before #150 left it: no identity in meta.json,
     no per-sample identity in the preprocess records, no run column."""
     (root / "meta.json").write_bytes(
-        orjson.dumps({"version": _meta(root)["version"], "deterministic": False})
+        orjson.dumps(
+            {
+                "version": _meta(root)["version"],
+                "result_schema_version": _meta(root)["result_schema_version"],
+                "deterministic": False,
+            }
+        )
     )
     for path in root.rglob("*.jsonl"):
         lines = []

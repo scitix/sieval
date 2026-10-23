@@ -2,27 +2,9 @@
 
 Pure, I/O-free: decides whether a task result directory may be resumed by the
 running SiEval. The deciding number is ``meta.json`` ``result_schema_version``
-(:data:`~sieval.core.tasks.run_meta.RESULT_SCHEMA_VERSION`), not the package
-version. It versions the on-disk layout of a task's result directory that a
-resume reads: shard records and their ``.idx`` files, ``meta.json`` and the
-``report.json`` shape the loader reads. It is unrelated to ``identity.schema``
-(``IDENTITY_SCHEMA``), which versions only the identity block inside
-``meta.json``.
-
-Whether a reused result is still valid is not decided here: the stage
-identities decide that (:mod:`sieval.core.runners.stage_resume`). The package
-version stays in ``meta.json`` ``version`` and ``runs[].sieval`` as provenance.
-
-Bump ``RESULT_SCHEMA_VERSION`` when a release makes
-
-* an incompatible change to that layout, one an older directory cannot be
-  read under; or
-* a change to core semantics the stage identities cannot see. The grader
-  identity walks task and plugin code, not ``sieval.core`` or
-  ``sieval.datasets``, so this number is the only guard against such a change.
-
-0.7.0, 0.8.0 and 0.10.0 would each have bumped it. 0.11.0 does not: its
-directories are laid out as 0.10.x's.
+(:data:`~sieval.core.tasks.run_meta.RESULT_SCHEMA_VERSION`, which says when to
+bump it); the package version is provenance only. Whether a reused result is
+still valid is for the stage identities (:mod:`sieval.core.runners.stage_resume`).
 
 A directory written before the field existed maps from its recorded version:
 0.10.0 and later, local builds included, is schema 1; anything older, an
@@ -40,8 +22,7 @@ from sieval.core.tasks.run_meta import RESULT_SCHEMA_VERSION
 
 _ZERO = Version("0.0.0")
 
-#: The first release that wrote each result schema version, for directories
-#: that predate the ``result_schema_version`` field.
+#: The first release that wrote each result schema version.
 _FIRST_RELEASE: dict[int, Version] = {1: Version("0.10.0")}
 
 

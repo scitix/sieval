@@ -15,17 +15,15 @@ SiEval is a **model delivery quality verification system**: eval-side knowledge 
 Precise reproducibility is a product contract, not a nicety.
 
 - Safety guards (e.g. the resume stage comparison) ship strict-only. No `--force-*` flags, no bypass env vars, no "(future)" escape-hatch hints in errors.
-- A resume (`--resume`, `--resume DIR`) compares stage identities, not config text (`sieval/core/runners/stage_resume.py`): changed data or prompt → those samples rerun; changed grader → regrade on the recorded inference; changed inference, or an unknown stage it would reuse → refused. Before that, `meta.json` `result_schema_version` must equal `RESULT_SCHEMA_VERSION` (`sieval/core/runners/resume_gate.py`); the package version is provenance only. `effective_config.yaml` and `infer_plans.yaml` are audit records; config changes go to `meta.json` `runs[].config`.
+- A resume (`--resume`, `--resume DIR`) compares stage identities, not config text (`sieval/core/runners/stage_resume.py`): changed data or prompt → those samples rerun; changed grader → regrade on the recorded inference; changed inference, or an unknown stage it would reuse → refused. Before that, `meta.json` `result_schema_version` must equal `RESULT_SCHEMA_VERSION` (absent: mapped from `version`, 0.10.0+ is 1); the package version is provenance only. `effective_config.yaml` and `infer_plans.yaml` are audit records; config changes go to `meta.json` `runs[].config`.
 - Recovery: "start fresh" or "match the stage the refusal names". Escape-hatch proposals must re-justify the contract, not just add a flag.
 
 ## Result Schema Version
 
-`RESULT_SCHEMA_VERSION` (`sieval/core/tasks/run_meta.py`, written as `meta.json` `result_schema_version`) versions the on-disk layout of a task's result directory that a resume reads: shard records and their `.idx` files, `meta.json`, and the `report.json` shape the loader reads. `IDENTITY_SCHEMA` is a different number: it versions only the `identity` block. Bump `RESULT_SCHEMA_VERSION` in the PR that makes either change, and say so in the CHANGELOG:
+Bump `RESULT_SCHEMA_VERSION` (`sieval/core/tasks/run_meta.py`) in the PR that makes either change below, and say so in the CHANGELOG:
 
-- an incompatible change to that layout, one an older directory cannot be read under;
-- a change to core semantics the stage identities cannot see. The grader identity walks task and plugin code, not `sieval.core` or `sieval.datasets`, so a core change that alters results is caught only here.
-
-0.7.0, 0.8.0 and 0.10.0 would each have bumped it; 0.11.0 does not. A directory without the field maps from its `version`: 0.10.0 and later is 1.
+- a change to a task result directory's layout (shards, `.idx`, `meta.json`, the `report.json` shape) that older directories cannot be read under;
+- a core change that alters results. The grader identity does not walk `sieval.core` or `sieval.datasets`, so nothing else catches it.
 
 ## Project Structure & Module Organization
 

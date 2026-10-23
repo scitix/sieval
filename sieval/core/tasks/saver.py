@@ -212,17 +212,15 @@ class TaskSaver:
     ) -> None:
         """Rewrite ``meta.json`` for a run that is starting, appending its ``runs[]``.
 
-        ``result_schema_version`` is always this build's
-        :data:`~sieval.core.tasks.run_meta.RESULT_SCHEMA_VERSION`: the resume
-        gate refuses any other. ``version``, ``deterministic`` and ``task``
-        describe the run that created the directory: a resume keeps the
-        persisted values and never
-        backfills a missing ``deterministic`` or ``task``, since either would
-        describe the resuming process rather than the run that produced the
-        samples. A
-        fresh run writes its own. A stage identity given here replaces the
-        carried one (``None`` sets it unknown); a stage not given is carried
-        from a resumed ``meta.json`` of the same identity schema.
+        ``result_schema_version`` is always this build's: the resume gate
+        admits no other. ``version``, ``deterministic`` and ``task`` describe
+        the run that created the directory: a resume keeps the persisted values
+        and never backfills a missing ``deterministic`` or ``task``, since
+        either would describe the resuming process rather than the run that
+        produced the samples. A fresh run writes its own. A stage identity
+        given here replaces the carried one (``None`` sets it unknown); a stage
+        not given is carried from a resumed ``meta.json`` of the same identity
+        schema.
 
         *run_from* starts a resume across tasks: the directory's history begins
         with this run (``start: "from"``) and its origin fields are this run's,
@@ -239,8 +237,7 @@ class TaskSaver:
         existing = await self._read_meta() if resumed and run_from is None else None
         meta: TaskRunMeta
         if existing is not None and isinstance(existing.get("version"), str):
-            # The resume gate admitted only this result schema version, so a
-            # directory from before the field records it from now on.
+            # The gate admitted only this schema; a pre-field directory records it now.
             meta = cast(
                 TaskRunMeta,
                 {

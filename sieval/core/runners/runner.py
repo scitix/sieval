@@ -346,30 +346,30 @@ def read_run_version(root_dir: Path) -> str | None:
     """Return the sieval version in ``root_dir/meta.json``, or ``None``.
 
     Public for the CLI, which explains a cross-version resume in an abort it
-    raises before any runner exists. One reader, so its message cannot come to
-    describe a different file than :func:`gate_resume_version` read.
+    raises before any runner exists.
 
     ``None`` covers every unusable case: no file, unreadable, not a mapping, no
     ``version``, or a non-string one.
     """
-    meta = _read_run_meta(root_dir)
-    if meta is None:
-        return None
-    version = meta.get("version")
+    return _recorded_version(_read_run_meta(root_dir))
+
+
+def _recorded_version(meta: dict | None) -> str | None:
+    version = (meta or {}).get("version")
     return version if isinstance(version, str) else None
 
 
 def gate_resume_version(root_dir: Path, current_version: str) -> None:
     """Refuse to resume a directory whose result schema version is not this build's.
 
-    Reads ``result_schema_version`` and ``version`` from ``root_dir/meta.json``
-    and applies :func:`resume_schema_verdict`. Missing, unreadable, or
-    version-less ``meta.json`` is fail-closed (reject). Raises
-    :class:`ResumeVersionError` on reject; logs a warning on a resume across
-    SiEval versions; silent on an exact match.
+    Applies :func:`resume_schema_verdict` to ``root_dir/meta.json``, read once.
+    Missing, unreadable, or version-less ``meta.json`` is fail-closed (reject).
+    Raises :class:`ResumeVersionError` on reject; logs a warning on a resume
+    across SiEval versions; silent on an exact match.
     """
-    v_run = read_run_version(root_dir)
-    if v_run is None:
+    meta = _read_run_meta(root_dir)
+    v_run = _recorded_version(meta)
+    if meta is None or v_run is None:
         # *root_dir* may be a `resume` source, so never advise removing it.
         raise ResumeVersionError(
             f"Resume aborted: {root_dir} holds a run, but its meta.json is "
@@ -378,7 +378,6 @@ def gate_resume_version(root_dir: Path, current_version: str) -> None:
             "Start fresh in another result_dir, without resuming it."
         )
 
-    meta = _read_run_meta(root_dir) or {}
     recorded_schema = meta.get("result_schema_version")
     verdict = resume_schema_verdict(recorded_schema, v_run, current_version)
     if verdict.action is ResumeAction.REJECT:
@@ -389,12 +388,11 @@ def gate_resume_version(root_dir: Path, current_version: str) -> None:
         )
     if verdict.action is ResumeAction.COMPATIBLE:
         logger.warning(
-            "Resuming across sieval versions of result schema version {} "
-            "(persisted={}, current={}); per-record provenance will record the "
-            "blend.",
-            RESULT_SCHEMA_VERSION,
+            "Resuming across sieval versions (persisted={}, current={}, result "
+            "schema version {}); per-record provenance will record the blend.",
             v_run,
             current_version,
+            RESULT_SCHEMA_VERSION,
         )
 
 
