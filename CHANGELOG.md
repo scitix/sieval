@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **A model's top-level `extra` reaches the model.** `models.<m>.extra` was checked by `--dry-run` and then dropped when the model was built, so `Model.extra` was `{}` and the inference identity left it out; only `args.extra` worked. Both placements now bind the same value, on every dialect and on a derived model. Setting both is refused before any engine starts. A config that sets `args.extra` keeps its inference identity. A result directory written under 0.12.0 from a top-level `extra` ran without it, so resuming it is refused as an inference change; start it fresh (#227).
+
 ## [0.12.0] - 2026-10-23
 
 A minor bump: `meta.json` `identity` moves to schema 3, with one identity per

@@ -1074,6 +1074,19 @@ class TestValidateTasks:
             "sequence_wrappers" in e for e in validate_eval_config(cfg).errors
         )
 
+    def test_extra_both_top_level_and_in_args_is_rejected(self):
+        extra = {"sequence_wrappers": {"dna": "<dna>{seq}</dna>"}}
+        cfg = {
+            "models": {"m": {"name": "m", "extra": extra, "args": {"extra": extra}}},
+            "datasets": {"d": {"class": "X"}},
+            "tasks": {"t": {"class": "X", "dataset": "d", "model": "m"}},
+        }
+        errors = validate_eval_config(cfg).errors
+        assert any(
+            e.startswith("Model 'm' sets 'extra' both at its top level and in 'args'")
+            for e in errors
+        ), errors
+
     def test_model_role_unsupported_by_task_constructor_is_rejected(self):
         # `sieval eval` must reject the same role config `sieval run --dry-run`
         # rejects; the two entry points disagreeing is what let the missing
@@ -1713,6 +1726,34 @@ class TestRunDryRun:
         assert checks["schema"]["ok"] is True
         assert checks["imports"]["ok"] is True
         assert checks["capability_reconcile"]["ok"] is True
+
+    @pytest.mark.parametrize(
+        ("extra_yaml", "ok"),
+        [
+            ("    extra:\n      sequence_wrappers: {dna: '<dna>'}\n", False),
+            (
+                "    args:\n      extra:\n        sequence_wrappers: {dna: '<dna>'}\n",
+                False,
+            ),
+            ("    extra: {}\n    args:\n      extra: {}\n", False),
+            ("    extra:\n      sequence_wrappers: {dna: '<dna>{seq}</dna>'}\n", True),
+        ],
+        ids=["top-level-malformed", "args-malformed", "both", "top-level-valid"],
+    )
+    def test_schema_check_sees_top_level_extra(self, tmp_path, extra_yaml, ok):
+        from sieval.cli.validation import run_dry_run
+
+        config = tmp_path / "eval.yaml"
+        config.write_text(
+            "models:\n  m:\n    name: org/m\n    api_base: http://x/v1\n"
+            + extra_yaml
+            + "datasets:\n  d:\n    class: HumanEvalDataset\n"
+            "tasks:\n  t:\n    class: sieval.tasks.human_eval_0shot_base_gen."
+            "HumanEvalZeroShotBaseGenTask\n    dataset: d\n    model: m\n",
+            encoding="utf-8",
+        )
+        checks = {c["name"]: c for c in run_dry_run(config)["checks"]}
+        assert checks["schema"]["ok"] is ok, checks["schema"]
 
     def test_returns_dict_on_missing_file(self, tmp_path):
         from sieval.cli.validation import run_dry_run

@@ -7409,6 +7409,242 @@ tasks:
             await session._close_owned_model_resources()
 
 
+_WRAPPERS: dict[str, JSONValue] = {"dna": "<dna>{seq}</dna>"}
+_RNA_WRAPPERS: dict[str, JSONValue] = {"rna": "<rna>{seq}</rna>"}
+
+
+class TestModelExtraPlacement:
+    """A model's ``extra`` binds the same from its top level or from ``args``,
+    on the canonical and legacy paths, and both at once are refused."""
+
+    class ChatTask:
+        model_type = "chat"
+
+        @classmethod
+        def model_requirements_for(cls, context):
+            return (
+                TaskModelRequirement(
+                    role="candidate",
+                    binding=context.model_bindings["candidate"],
+                    requires=TaskRequirements(input=InputKind.CHAT),
+                    source_task="chat_task",
+                ),
+            )
+
+    class GenTask:
+        model_type = "gen"
+
+        @classmethod
+        def model_requirements_for(cls, context):
+            return (
+                TaskModelRequirement(
+                    role="candidate",
+                    binding=context.model_bindings["candidate"],
+                    requires=TaskRequirements(input=InputKind.COMPLETION),
+                    source_task="gen_task",
+                ),
+            )
+
+    @staticmethod
+    def _bound(tmp_path: Path, models: str, task_cls: type) -> EvalSession:
+        config_path = _write_yaml_config(
+            tmp_path,
+            "extra.yaml",
+            f"models:\n{models}"
+            "tasks:\n  t:\n    class: fake.T\n"
+            "    dataset:\n      class: fake.Dataset\n    model: m\n",
+        )
+        session = EvalSession(config_path)
+        with (
+            patch("sieval.cli.session.resolve_task_class", return_value=task_cls),
+            patch("sieval.core.models.connection_factory.AsyncOpenAI"),
+        ):
+            session._setup_prelaunch_reconciliation()
+            session._setup_postlaunch_reconciliation()
+            session._setup_models()
+        return session
+
+    _ROOT = "  root:\n    name: org/m\n    api_base: http://x/v1\n    api_key: k\n"
+    _LEGACY = "    type: gen\n    engine: sglang\n    dialect: sglang_legacy\n"
+
+    @pytest.mark.parametrize(
+        "placement",
+        [
+            "    extra:\n      sequence_wrappers: {dna: '<dna>{seq}</dna>'}\n",
+            "    args:\n      extra:\n"
+            "        sequence_wrappers: {dna: '<dna>{seq}</dna>'}\n",
+        ],
+        ids=["top-level", "args"],
+    )
+    @pytest.mark.parametrize("legacy", [False, True], ids=["canonical", "legacy"])
+    def test_top_level_and_args_bind_the_same_extra(
+        self, tmp_path: Path, placement: str, legacy: bool
+    ) -> None:
+        from sieval.core.tasks.run_meta import model_request_args
+
+        root = self._ROOT.replace("root", "m") + (self._LEGACY if legacy else "")
+        session = self._bound(
+            tmp_path,
+            root + placement,
+            self.GenTask if legacy else self.ChatTask,
+        )
+        model = session.models["m"]
+        assert model.extra == {"sequence_wrappers": _WRAPPERS}
+        # The inference identity reads ``extra`` from the bound model.
+        assert model_request_args(model)["extra"] == {"sequence_wrappers": _WRAPPERS}
+        assert "extra" not in model._kwargs
+
+    @pytest.mark.parametrize("legacy", [False, True], ids=["canonical", "legacy"])
+    def test_derived_model_inherits_top_level_extra(
+        self, tmp_path: Path, legacy: bool
+    ) -> None:
+        models = (
+            self._ROOT
+            + (self._LEGACY if legacy else "")
+            + "    extra:\n      sequence_wrappers: {dna: '<dna>{seq}</dna>'}\n"
+            + "  m:\n    base: root\n    args:\n      temperature: 0.5\n"
+        )
+        session = self._bound(
+            tmp_path, models, self.GenTask if legacy else self.ChatTask
+        )
+        assert session.models["m"].extra == {"sequence_wrappers": _WRAPPERS}
+        assert session.models["m"]._kwargs["temperature"] == 0.5
+
+    @pytest.mark.parametrize("legacy", [False, True], ids=["canonical", "legacy"])
+    def test_derived_top_level_extra_replaces_the_base(
+        self, tmp_path: Path, legacy: bool
+    ) -> None:
+        models = (
+            self._ROOT
+            + (self._LEGACY if legacy else "")
+            + "    extra:\n      sequence_wrappers: {dna: '<dna>{seq}</dna>'}\n"
+            + "  m:\n    base: root\n"
+            + "    extra:\n      sequence_wrappers: {rna: '<rna>{seq}</rna>'}\n"
+        )
+        session = self._bound(
+            tmp_path, models, self.GenTask if legacy else self.ChatTask
+        )
+        assert session.models["m"].extra == {"sequence_wrappers": _RNA_WRAPPERS}
+        assert session.models["root"].extra == {"sequence_wrappers": _WRAPPERS}
+
+    @pytest.mark.parametrize("derived", [False, True], ids=["root", "derived"])
+    def test_both_placements_are_refused_before_binding(
+        self, tmp_path: Path, derived: bool
+    ) -> None:
+        both = (
+            "    extra:\n      sequence_wrappers: {dna: '<dna>{seq}</dna>'}\n"
+            "    args:\n      extra:\n"
+            "        sequence_wrappers: {rna: '<rna>{seq}</rna>'}\n"
+        )
+        models = (
+            self._ROOT + "  m:\n    base: root\n" + both
+            if derived
+            else self._ROOT.replace("root", "m") + both
+        )
+        config_path = _write_yaml_config(
+            tmp_path,
+            "extra.yaml",
+            f"models:\n{models}"
+            "tasks:\n  t:\n    class: fake.T\n"
+            "    dataset:\n      class: fake.Dataset\n    model: m\n",
+        )
+        session = EvalSession(config_path)
+        with (
+            patch("sieval.cli.session.resolve_task_class", return_value=self.ChatTask),
+            patch("sieval.core.models.connection_factory.AsyncOpenAI") as client,
+            pytest.raises(ValueError, match=r"Model 'm' sets 'extra' both"),
+        ):
+            session._setup_prelaunch_reconciliation()
+        client.assert_not_called()
+
+    def test_task_infer_args_extra_replaces_top_level_extra(
+        self, tmp_path: Path
+    ) -> None:
+        from tests.unit.core.runners.test_runner import MockTask
+
+        config_path = _write_yaml_config(
+            tmp_path,
+            "extra.yaml",
+            "models:\n"
+            + self._ROOT.replace("root", "m")
+            + "    extra:\n      sequence_wrappers: {dna: '<dna>{seq}</dna>'}\n"
+            "datasets:\n  ds:\n    class: fake.Dataset\n"
+            "tasks:\n  t:\n    class: fake.MockTask\n    dataset: ds\n"
+            "    model: m\n    infer_args:\n      extra:\n"
+            "        sequence_wrappers: {rna: '<rna>{seq}</rna>'}\n",
+        )
+        session = EvalSession(config_path)
+        with (
+            patch("sieval.cli.session.resolve_task_class", return_value=MockTask),
+            patch("sieval.core.models.connection_factory.AsyncOpenAI"),
+        ):
+            session._setup_prelaunch_reconciliation()
+            session._setup_postlaunch_reconciliation()
+            session._setup_models()
+            session._init_runner()
+            session.datasets["ds"] = MagicMock()
+            session._setup_tasks()
+
+        assert session.runner is not None
+        task_model = session.runner._runners[0]._task.model
+        assert task_model.extra == {"sequence_wrappers": _RNA_WRAPPERS}
+        assert session.models["m"].extra == {"sequence_wrappers": _WRAPPERS}
+
+    @pytest.mark.parametrize(
+        "placement",
+        [
+            "        extra:\n          sequence_wrappers: {dna: '<dna>{seq}</dna>'}\n",
+            "        args:\n          extra:\n"
+            "            sequence_wrappers: {dna: '<dna>{seq}</dna>'}\n",
+        ],
+        ids=["top-level", "args"],
+    )
+    def test_inline_role_binds_extra_from_either_placement(
+        self, tmp_path: Path, placement: str
+    ) -> None:
+        judge_task = TestPrelaunchReconciliation.JudgeTask
+        config_path = _write_yaml_config(
+            tmp_path,
+            "extra.yaml",
+            "models:\n"
+            + self._ROOT.replace("root", "m")
+            + "tasks:\n  t:\n    class: fake.JudgeTask\n"
+            "    dataset:\n      class: fake.Dataset\n    model: m\n"
+            "    args:\n      grader:\n        model: judge\n"
+            "        api_base: http://judge/v1\n        api_key: k\n" + placement,
+        )
+        session = EvalSession(config_path)
+        with (
+            patch("sieval.cli.session.resolve_task_class", return_value=judge_task),
+            patch("sieval.core.models.connection_factory.AsyncOpenAI"),
+        ):
+            session._setup_prelaunch_reconciliation()
+            session._setup_postlaunch_reconciliation()
+            session._setup_models()
+        grader = session._bound_task_role_models["t"]["grader"]
+        assert grader.extra == {"sequence_wrappers": _WRAPPERS}
+
+    def test_inline_role_with_both_placements_is_refused(self, tmp_path: Path) -> None:
+        judge_task = TestPrelaunchReconciliation.JudgeTask
+        config_path = _write_yaml_config(
+            tmp_path,
+            "extra.yaml",
+            "models:\n"
+            + self._ROOT.replace("root", "m")
+            + "tasks:\n  t:\n    class: fake.JudgeTask\n"
+            "    dataset:\n      class: fake.Dataset\n    model: m\n"
+            "    args:\n      grader:\n        model: judge\n"
+            "        api_base: http://judge/v1\n        api_key: k\n"
+            "        extra: {}\n        args:\n          extra: {}\n",
+        )
+        session = EvalSession(config_path)
+        with (
+            patch("sieval.cli.session.resolve_task_class", return_value=judge_task),
+            pytest.raises(ValueError, match=r"inline grader sets 'extra' both"),
+        ):
+            session._setup_prelaunch_reconciliation()
+
+
 class TestEvalSessionWrappers:
     @pytest.mark.anyio
     async def test_arun_session_delegates_to_runner(self):

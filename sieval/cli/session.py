@@ -46,6 +46,7 @@ from sieval.cli.resolution import (
     derive_model_type,
     finalize_inline_model_binding,
     is_task_model_role_sentinel,
+    model_config_extra,
     normalize_inline_model_binding,
     resolve_dataset_class,
     resolve_key_function,
@@ -2096,6 +2097,7 @@ class EvalSession:
     ) -> None:
         """Reject resource overrides before reconciliation, allocation, or I/O."""
 
+        model_config_extra(config, f"Model '{model_name}'")
         is_root = config.get("base") is None
         allowed_top_level = (
             frozenset(
@@ -4007,10 +4009,12 @@ class EvalSession:
     @staticmethod
     def _request_builder_args(
         config: Mapping[str, object],
+        subject: str,
     ) -> tuple[dict[str, Any], Any]:
         raw = config.get("args", {})
         if not isinstance(raw, Mapping):
             raise ValueError("model args must be a dictionary")
+        extra = model_config_extra(config, subject)
         args = dict(raw)
         for key in (
             "api_base",
@@ -4021,7 +4025,7 @@ class EvalSession:
             "concurrency_limit",
         ):
             args.pop(key, None)
-        extra = args.pop("extra", None)
+        args.pop("extra", None)
         return args, extra
 
     def _create_owned_pool(
@@ -4174,6 +4178,10 @@ class EvalSession:
                 continue
             cfg = chain[0][1]
             args = self._normalize_dict(cfg.get("args"), f"Model '{name}' args")
+            args.pop("extra", None)
+            extra = model_config_extra(cfg, f"Model '{name}'")
+            if extra is not None:
+                args["extra"] = extra
             if self.deterministic:
                 _apply_request_seed_decision_to_args(
                     args,
@@ -4223,7 +4231,15 @@ class EvalSession:
                     model = self.models[base_name]
                     args = self._normalize_dict(cfg.get("args"), f"Model '{name}' args")
                     concurrency_limit = args.pop("concurrency_limit", None)
-                    model = model.with_args(concurrency_limit=concurrency_limit, **args)
+                    args.pop("extra", None)
+                    model = model.with_args(
+                        concurrency_limit=concurrency_limit,
+                        extra=cast(
+                            dict[str, JSONValue] | None,
+                            model_config_extra(cfg, f"Model '{name}'"),
+                        ),
+                        **args,
+                    )
                 else:
                     runtime_plan = result.runtime_plans[binding.binding_id]
                     deployment = self._realized_deployments_by_root[
@@ -4268,7 +4284,7 @@ class EvalSession:
                                     **inherited_defaults,
                                 )
 
-                    args, extra = self._request_builder_args(cfg)
+                    args, extra = self._request_builder_args(cfg, f"Model '{name}'")
                     concurrency_limit = None
                     if not is_root:
                         raw_args = cfg.get("args", {})
@@ -4319,6 +4335,9 @@ class EvalSession:
                 nested_args=True,
             )
             model = Model.bind(deployment, pool, runtime_plan)
+            extra = model_config_extra(
+                typed_source, f"Inline binding '{binding.binding_id}'"
+            )
             direct_config: dict[str, Any] = dict(typed_source)
             nested = direct_config.pop("args", None)
             if isinstance(nested, Mapping):
@@ -4335,9 +4354,9 @@ class EvalSession:
                 "service_role",
                 "capabilities",
                 "engine",
+                "extra",
             ):
                 direct_config.pop(key, None)
-            extra = direct_config.pop("extra", None)
             if direct_config or extra is not None:
                 model = model.with_args(
                     extra=cast(dict[str, JSONValue] | None, extra), **direct_config

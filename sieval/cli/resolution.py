@@ -104,6 +104,27 @@ def validate_task_config_args(
         )
 
 
+def model_config_extra(config: Mapping[str, object], subject: str) -> object:
+    """The ``extra`` a model config sets, at its top level or in ``args``.
+
+    Both at once are refused: either one may be the value the author meant,
+    and ``extra`` enters the inference identity, so a silent pick would record
+    a capability set nobody chose. ``None`` when neither is set.
+    """
+    raw_args = config.get("args")
+    nested = (
+        cast(Mapping[str, object], raw_args).get("extra")
+        if isinstance(raw_args, Mapping)
+        else None
+    )
+    top = config.get("extra")
+    if top is not None and nested is not None:
+        raise ValueError(
+            f"{subject} sets 'extra' both at its top level and in 'args'; keep one"
+        )
+    return top if top is not None else nested
+
+
 def binding_resource_argument_paths(
     arguments: Mapping[str, object],
     *,
@@ -237,6 +258,7 @@ def normalize_inline_model_binding(
             f"on an unsupported surface: {', '.join(paths)}"
         )
 
+    model_config_extra(raw_config, f"Task '{task_name}' inline {role}")
     requested_model_id = raw_config.get("model")
     if not isinstance(requested_model_id, str) or not requested_model_id:
         raise ValueError(

@@ -27,6 +27,7 @@ from sieval.cli._filter_spec import (
 )
 from sieval.cli.resolution import (
     binding_resource_argument_paths,
+    model_config_extra,
     resolve_dataset_class,
     resolve_task_class,
     validate_configured_engine_id,
@@ -221,6 +222,10 @@ def _validate_models(cfg: dict, result: ValidationResult) -> None:
             ),
         ):
             _check_model_extra(extra, where, result)
+        try:
+            model_config_extra(mcfg, f"Model '{name}'")
+        except ValueError as exc:
+            result.errors.append(str(exc))
 
         if has_base:
             base_ref = mcfg["base"]
