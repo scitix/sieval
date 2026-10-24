@@ -668,3 +668,75 @@ class TestDryRunStagePlan:
         assert echo["needs_inference"] is bool(engine.requests)
         assert len(engine.requests) == echo["to_infer"]
         assert _meta(tmp_path)["runs"][-1]["resume"] == echo["resume_plan"]
+
+
+def _cli_run(config: Path, *args: str) -> tuple[int, list[dict]]:
+    """``sieval run`` through the CLI: its exit code and ``SIEVAL_REFUSAL`` lines."""
+    from typer.testing import CliRunner
+
+    from sieval.cli.main import app
+
+    with patch(
+        "sieval.infer.topology.resolver.detect_local_gpu",
+        new=AsyncMock(return_value=H100),
+    ):
+        result = CliRunner().invoke(app, ["run", str(config), *args, "-o", "json"])
+    prefix = "SIEVAL_REFUSAL "
+    lines = [
+        json.loads(line.removeprefix(prefix))
+        for line in result.stderr.splitlines()
+        if line.startswith(prefix)
+    ]
+    return result.exit_code, lines
+
+
+class TestRefusalsExitWithTheirCode:
+    """A scheduler tells a deliberate refusal from a crash without the prose."""
+
+    def test_a_refused_resume_exits_3(self, tmp_path: Path, engine: Engine) -> None:
+        with _gpu(H100):
+            _sync_run(_write(tmp_path, QUESTIONS[:2]))
+        cfg = yaml.safe_load(_write(tmp_path, QUESTIONS[:2]).read_text())
+        cfg["tasks"]["echo"]["infer_args"] = {"temperature": 0.9}  # another inference
+        config = tmp_path / "eval.yaml"
+        config.write_text(yaml.safe_dump(cfg))
+        engine.launches.clear()
+
+        with _gpu(H100):
+            code, lines = _cli_run(config, "--resume")
+
+        assert code == 3
+        assert [(r["kind"], r["reason"], r.get("task")) for r in lines] == [
+            ("resume", "inference", "echo")
+        ]
+        assert lines[0]["message"].startswith("Resume refused:")
+        assert engine.launches == []
+
+    def test_samples_to_infer_on_a_node_without_gpus_exit_4(
+        self, tmp_path: Path, engine: Engine
+    ) -> None:
+        with _gpu(H100):
+            _sync_run(_write(tmp_path, QUESTIONS[:2]))
+        engine.launches.clear()
+
+        with _gpu(None):
+            code, lines = _cli_run(_write(tmp_path, QUESTIONS), "--resume")
+
+        assert code == 4
+        assert [(r["kind"], r["reason"]) for r in lines] == [("hardware", "no_gpu")]
+        assert "task" not in lines[0]
+        assert engine.launches == []
+
+    def test_a_crash_still_exits_1_with_no_refusal_line(
+        self, tmp_path: Path, engine: Engine
+    ) -> None:
+        config = _write(tmp_path, QUESTIONS)
+        cfg = yaml.safe_load(config.read_text())
+        cfg["tasks"]["echo"]["class"] = "tests.integration.test_lazy_launch.Missing"
+        config.write_text(yaml.safe_dump(cfg))
+
+        with _gpu(H100):
+            code, lines = _cli_run(config)
+
+        assert code == 1
+        assert lines == []

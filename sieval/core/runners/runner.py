@@ -392,13 +392,15 @@ def _recorded_version(meta: dict | None) -> str | None:
     return version if isinstance(version, str) else None
 
 
-def gate_resume_version(root_dir: Path, current_version: str) -> None:
+def gate_resume_version(
+    root_dir: Path, current_version: str, *, task: str | None = None
+) -> None:
     """Refuse to resume a directory whose result schema version is not this build's.
 
     Applies :func:`resume_schema_verdict` to ``root_dir/meta.json``, read once.
     Missing, unreadable, or version-less ``meta.json`` is fail-closed (reject).
-    Raises :class:`ResumeVersionError` on reject; logs a warning on a resume
-    across SiEval versions; silent on an exact match.
+    Raises :class:`ResumeVersionError`, naming *task*, on reject; logs a warning
+    on a resume across SiEval versions; silent on an exact match.
     """
     meta = _read_run_meta(root_dir)
     v_run = _recorded_version(meta)
@@ -408,7 +410,8 @@ def gate_resume_version(root_dir: Path, current_version: str) -> None:
             f"Resume aborted: {root_dir} holds a run, but its meta.json is "
             "missing, unreadable, or has no version, so the sieval version "
             "that wrote it is unknown.\n"
-            "Start fresh in another result_dir, without resuming it."
+            "Start fresh in another result_dir, without resuming it.",
+            task=task,
         )
 
     recorded_schema = meta.get("result_schema_version")
@@ -417,7 +420,8 @@ def gate_resume_version(root_dir: Path, current_version: str) -> None:
         raise ResumeVersionError(
             format_reject_message(
                 recorded_schema, v_run, current_version, verdict.reason
-            )
+            ),
+            task=task,
         )
     if verdict.action is ResumeAction.COMPATIBLE:
         logger.warning(
@@ -553,7 +557,7 @@ class TaskRunner:
         # user-chosen YAML key, not the registered `@sieval_task(name=...)`.
         self._task_identity = get_task_run_identity(task)
         if self._resumed_from_existing:
-            gate_resume_version(self._root_dir, __version__)
+            gate_resume_version(self._root_dir, __version__, task=task.name)
             self._recorded = _read_run_meta(self._root_dir)
             logger.info("Auto resumed from: {}", self._root_dir)
         elif source is not None:
@@ -1883,7 +1887,7 @@ class TaskRunner:
         """
         if not src.is_dir():
             raise FileNotFoundError(f"resume directory not found: {src}")
-        gate_resume_version(src, __version__)
+        gate_resume_version(src, __version__, task=self._task.name)
         recorded = _read_run_meta(src)
         block = (recorded or {}).get("identity")
         self._recorded = recorded
@@ -2058,6 +2062,7 @@ class TaskRunner:
             "  Inference is reused, never rerun, by a resume. Start fresh in a "
             "new result_dir, or match the model, its request arguments, the "
             "task's inference arguments and the serving recipe.",
+            task=self._task.name,
         )
 
     def _recorded_dir(self) -> str:
@@ -2446,6 +2451,7 @@ class TaskRunner:
                     "Resume refused: stage `data` is unknown: the recorded run "
                     "kept no data identity, and its shards do not hold the raw "
                     f"samples.\n  recorded: {self._recorded_dir()}",
+                    task=self._task.name,
                 )
             data = current_data if match else None
         if data is None or data != current_data:
@@ -2586,6 +2592,7 @@ class TaskRunner:
             f"{self._recorded_model()!r}'s.\n"
             f"  recorded: {self._recorded_dir()}\n"
             "  Start fresh in a new result_dir, or resume with the recorded model.",
+            task=self._task.name,
         )
 
     @staticmethod

@@ -521,6 +521,19 @@ def declared_target_gpu(environ: Mapping[str, str] | None = None) -> GPUInfo | N
     return parse_target_gpu(raw) if raw.strip() else None
 
 
+class LaunchGpuError(RuntimeError):
+    """An engine launch refused on this node's GPUs, before anything starts.
+
+    ``reason`` is ``no_gpu`` (an engine must launch, or its plan be resolved,
+    and ``nvidia-smi`` finds no GPU and none is declared) or ``mismatch`` (the
+    node's GPUs are not the declared ones).
+    """
+
+    def __init__(self, reason: str, message: str) -> None:
+        self.reason = reason
+        super().__init__(message)
+
+
 async def check_launch_gpu(*, required: bool = False) -> None:
     """Refuse to launch an engine on GPUs other than the declared ones.
 
@@ -529,7 +542,8 @@ async def check_launch_gpu(*, required: bool = False) -> None:
     of one SKU can report different ``memory.total`` (ECC, PCIe vs SXM), and
     the memory decides tensor parallelism. Without a declaration nothing is
     checked, unless *required* (some engine will launch): then a node where
-    ``nvidia-smi`` finds no GPU is refused before anything starts.
+    ``nvidia-smi`` finds no GPU is refused before anything starts. Refusals
+    raise :class:`LaunchGpuError`.
     """
     declared = declared_target_gpu()
     if declared is None and not required:
@@ -537,9 +551,10 @@ async def check_launch_gpu(*, required: bool = False) -> None:
     detected = await detect_local_gpu()
     if declared is None:
         if detected is None:
-            raise RuntimeError(
+            raise LaunchGpuError(
+                "no_gpu",
                 "This run needs an inference engine, and nvidia-smi finds no "
-                "GPU on this node. Run it on a GPU node."
+                "GPU on this node. Run it on a GPU node.",
             )
         return
     if detected == declared:
@@ -557,9 +572,10 @@ async def check_launch_gpu(*, required: bool = False) -> None:
             if ours != theirs
         ]
         here = f"{format_target_gpu(detected)!r}: {', '.join(differing)}"
-    raise RuntimeError(
+    raise LaunchGpuError(
+        "mismatch",
         f"The serving plan was resolved for {TARGET_GPU_ENV}="
         f"{format_target_gpu(declared)!r}, but this node has {here}. "
         "Declare the GPUs this node has, or run on a node that has the "
-        "declared ones."
+        "declared ones.",
     )

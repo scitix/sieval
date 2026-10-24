@@ -14,6 +14,7 @@ from loguru import logger
 from sieval.infer.config import ParamValue
 from sieval.infer.introspect import (
     TARGET_GPU_ENV,
+    LaunchGpuError,
     ModelIdentity,
     bytes_per_param,
     declared_target_gpu,
@@ -415,9 +416,10 @@ async def auto_resolve_plan(
     # 2. The declared GPUs, else this node's
     gpu = declared_target_gpu() or await detect_local_gpu()
     if gpu is None:
-        raise RuntimeError(
+        raise LaunchGpuError(
+            "no_gpu",
             "No GPU detected — cannot auto-resolve deployment plan. On a node "
-            f"without the GPUs, declare them in {TARGET_GPU_ENV}."
+            f"without the GPUs, declare them in {TARGET_GPU_ENV}.",
         )
 
     hw = HardwareEnv(

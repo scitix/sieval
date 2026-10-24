@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Refusals exit with their own code.** `sieval run`, `sieval eval` and `sieval infer start` exit 3 when a resume is refused and 4 when hardware is refused: an engine must launch on a node where `nvidia-smi` finds no GPU, or the GPUs are not the declared ones. Each refusal writes one `SIEVAL_REFUSAL {"v": 1, "kind": ..., "reason": ..., "task": ..., "message": ...}` line to stderr. Crashes still exit 1, and so does a run whose tasks fail in more than one way. Before, all of these exited 1, and a scheduler could tell them apart only by the wording of the message. `StageResumeError` and `ResumeVersionError` gain a `task` attribute; `check_launch_gpu` raises `LaunchGpuError` (a `RuntimeError`). No result file changes. See [Exit codes](docs/guide/configuration.md#exit-codes) (#229).
+
 ### Fixed
 
 - **A model's top-level `extra` reaches the model.** `models.<m>.extra` passed `--dry-run` and was then dropped at binding, so `Model.extra` was `{}` and the inference identity omitted it. It now binds like `args.extra` on every dialect and on derived models; `args.extra` identities are unchanged. A 0.12.0 result directory written from a top-level `extra` ran without it, so its resume is refused as an inference change; start it fresh (#227).

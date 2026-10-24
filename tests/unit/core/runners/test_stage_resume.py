@@ -242,7 +242,7 @@ class TestSameDirectory:
         task, model = _task(n=2)
         with pytest.raises(StageResumeError, match="stage `inference`") as raised:
             await _run(tmp_path, "first", task, resume=True)
-        assert raised.value.stage == "inference"
+        assert (raised.value.stage, raised.value.task) == ("inference", "qa")
         assert model.call_count == 0
         # A refusal leaves the recorded run as it was.
         assert (root / "meta.json").read_bytes() == before
@@ -632,8 +632,9 @@ class TestPreIdentityDirectory:
             ),
             legacy_match={"inference": True},
         )
-        with pytest.raises(StageResumeError, match="stage `data`"):
+        with pytest.raises(StageResumeError, match="stage `data`") as raised:
             await runner.arun()
+        assert (raised.value.stage, raised.value.task) == ("data", "qa")
 
 
 class TestInterruptedBeforeEveryPreprocess:

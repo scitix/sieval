@@ -467,6 +467,39 @@ declares; neither writes under the result directory. A sample that `feedback`
 sends to another iteration after a rerun from `feedback` is not counted, since
 the plan cannot know it.
 
+### Exit codes
+
+`sieval run`, `sieval eval` and `sieval infer start` exit with a fixed code
+when SiEval refuses a run on purpose before evaluating anything. Retrying the
+same command on the same node refuses again:
+
+| Exit | Means |
+| --- | --- |
+| 0 | Success |
+| 1 | Any other failure, including a crash and a failed `--dry-run` |
+| 2 | Usage error |
+| 3 | Resume refused: start fresh, or match the stage the refusal names |
+| 4 | Hardware refused: an engine must launch, or its plan be resolved, and `nvidia-smi` finds no GPU and none is declared; or the node's GPUs are not the ones `SIEVAL_TARGET_GPU` declares. Move the run to a node with those GPUs |
+| 130 / 143 | Interrupted by Ctrl+C / SIGTERM |
+
+Each refusal also writes one line to stderr, beside the human message, for a
+caller that only sees logs:
+
+```text
+SIEVAL_REFUSAL {"v": 1, "kind": "resume", "reason": "inference", "task": "echo", "message": "Resume refused: stage `inference` differs (recorded 3f…, now 9a…)."}
+```
+
+- `kind` is `resume` or `hardware`. `reason` is `schema` (the result schema
+  version), `data` or `inference` for `resume`, and `no_gpu` or `mismatch` for
+  `hardware`.
+- `task` is present for a per-task refusal. `message` is the first line of the
+  human message, at most 200 characters.
+- `v` is bumped when a field, a `kind`, a `reason` or a code changes.
+
+A run whose tasks fail in several ways, with a refusal and a crash or with
+refusals of both kinds, exits 1. It still writes one line per refusal.
+Nothing is written to the result directory.
+
 Removed in 0.12: `--resume-from DIR` (use `--resume DIR`), and
 `runner_config.auto_resume` / `runner_config.resume_from` (use
 `runner_config.resume: true` / `resume: <dir>`). A config that still sets

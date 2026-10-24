@@ -23,7 +23,11 @@ from sieval.cli.output import (
     is_cli_command,
     render,
 )
-from sieval.core.runners import ResultDirExistsError, UnfinishedCopyError
+from sieval.core.runners import (
+    ResultDirExistsError,
+    StageResumeError,
+    UnfinishedCopyError,
+)
 
 
 def _collect_log_user(mock_log_user):
@@ -882,6 +886,11 @@ class TestCliCommand:
                 raise typer.Exit(3)
             if mode == "interrupt":
                 raise KeyboardInterrupt
+            if mode == "refuse":
+                raise ExceptionGroup(
+                    "1 of 1 task(s) failed: t",
+                    [StageResumeError("inference", "Resume refused: x", task="t")],
+                )
 
         return app
 
@@ -945,6 +954,19 @@ class TestCliCommand:
 
         assert code == 130
         assert capsys.readouterr().out == ""
+
+    def test_a_refusal_exits_with_its_code_and_prints_its_line(self, capsys):
+        code = self._invoke(["infer", "start", "--output", "json", "--mode", "refuse"])
+
+        out = capsys.readouterr()
+        assert json.loads(out.out)["ok"] is False
+        assert out.err.startswith('SIEVAL_REFUSAL {"v": 1, "kind": "resume"')
+        assert code == 3
+
+    def test_a_crash_prints_no_refusal_line(self, capsys):
+        self._invoke(["infer", "start", "--output", "json"])
+
+        assert "SIEVAL_REFUSAL" not in capsys.readouterr().err
 
     def test_usage_error_keeps_exit_code_2_in_json(self, capsys):
         code = self._invoke(["infer", "start", "--output", "json", "--mode", "usage"])

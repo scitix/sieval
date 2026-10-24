@@ -859,8 +859,9 @@ class TestShardsMeanStarted:
         root, _ = await self._shards_under(tmp_path, "runs-empty")
         _forget_last_sample(root)
         runner, model = self._other_model_runner(tmp_path, resume=True)
-        with pytest.raises(StageResumeError, match="'other-model'"):
+        with pytest.raises(StageResumeError, match="'other-model'") as refused:
             await runner.arun()
+        assert (refused.value.stage, refused.value.task) == ("inference", "t")
         assert model.call_count == 0
         assert _meta(root)["runs"] == []
 
@@ -869,6 +870,7 @@ class TestShardsMeanStarted:
         root, _ = await self._shards_under(tmp_path, "missing")
         with pytest.raises(ResumeVersionError) as exc:
             self._other_model_runner(tmp_path, resume=True)
+        assert exc.value.task == "t"
         message = str(exc.value)
         assert str(root) in message
         assert "another result_dir" in message

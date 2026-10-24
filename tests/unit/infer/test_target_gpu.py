@@ -19,6 +19,7 @@ from sieval.cli.session import unwrap_proxies
 from sieval.infer.introspect import (
     TARGET_GPU_ENV,
     GPUInfo,
+    LaunchGpuError,
     check_launch_gpu,
     declared_target_gpu,
     format_target_gpu,
@@ -187,9 +188,19 @@ class TestCheckLaunchGpu:
         monkeypatch.setenv(TARGET_GPU_ENV, format_target_gpu(H100))
         with (
             patch(_LAUNCH_GPU, new=AsyncMock(return_value=here)),
-            pytest.raises(RuntimeError, match=named),
+            pytest.raises(LaunchGpuError, match=named) as refused,
         ):
             await check_launch_gpu()
+        assert refused.value.reason == "mismatch"
+
+    @pytest.mark.anyio
+    async def test_an_engine_on_a_node_without_gpus_is_refused(self) -> None:
+        with (
+            patch(_LAUNCH_GPU, new=AsyncMock(return_value=None)),
+            pytest.raises(LaunchGpuError, match="finds no GPU") as refused,
+        ):
+            await check_launch_gpu(required=True)
+        assert refused.value.reason == "no_gpu"
 
     @pytest.mark.anyio
     async def test_the_refusal_names_the_field_that_differs(
