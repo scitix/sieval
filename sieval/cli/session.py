@@ -2097,6 +2097,7 @@ class EvalSession:
     ) -> None:
         """Reject resource overrides before reconciliation, allocation, or I/O."""
 
+        # Refuse both ``extra`` placements before any engine starts.
         model_config_extra(config, f"Model '{model_name}'")
         is_root = config.get("base") is None
         allowed_top_level = (

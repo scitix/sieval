@@ -20,6 +20,7 @@ from sieval.cli.resolution import (
     finalize_inline_model_binding,
     load_class_from_name,
     load_class_from_path,
+    model_config_extra,
     normalize_inline_model_binding,
     resolve_class,
     resolve_config_model_types,
@@ -1046,6 +1047,27 @@ class TestResolveTaskClass:
             pytest.raises(ModuleNotFoundError, match="scipy"),
         ):
             resolve_task_class("SomeTask")
+
+
+class TestModelConfigExtra:
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [
+            ({}, None),
+            ({"extra": {"a": 1}}, {"a": 1}),
+            ({"args": {"extra": {"a": 1}}}, {"a": 1}),
+            ({"extra": None, "args": {"extra": {"a": 1}}}, {"a": 1}),
+            ({"extra": {"a": 1}, "args": {"extra": None}}, {"a": 1}),
+            ({"extra": {"a": 1}, "args": "not-a-mapping"}, {"a": 1}),
+        ],
+        ids=["unset", "top", "args", "top-null", "args-null", "args-malformed"],
+    )
+    def test_reads_either_placement(self, config, expected):
+        assert model_config_extra(config, "Model 'm'") == expected
+
+    def test_both_placements_are_refused(self):
+        with pytest.raises(ValueError, match=r"^Model 'm' sets 'extra' both"):
+            model_config_extra({"extra": {}, "args": {"extra": {}}}, "Model 'm'")
 
 
 class TestNormalizeInlineModelBinding:

@@ -105,11 +105,10 @@ def validate_task_config_args(
 
 
 def model_config_extra(config: Mapping[str, object], subject: str) -> object:
-    """The ``extra`` a model config sets, at its top level or in ``args``.
+    """The ``extra`` a model config sets at its top level or in ``args``.
 
-    Both at once are refused: either one may be the value the author meant,
-    and ``extra`` enters the inference identity, so a silent pick would record
-    a capability set nobody chose. ``None`` when neither is set.
+    Both at once are refused: ``extra`` is identity, so no silent pick.
+    ``None`` (unset or null) on either side defers to the other.
     """
     raw_args = config.get("args")
     nested = (

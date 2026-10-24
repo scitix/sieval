@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- **A model's top-level `extra` reaches the model.** `models.<m>.extra` was checked by `--dry-run` and then dropped when the model was built, so `Model.extra` was `{}` and the inference identity left it out; only `args.extra` worked. Both placements now bind the same value, on every dialect and on a derived model. Setting both is refused before any engine starts. A config that sets `args.extra` keeps its inference identity. A result directory written under 0.12.0 from a top-level `extra` ran without it, so resuming it is refused as an inference change; start it fresh (#227).
+- **A model's top-level `extra` reaches the model.** `models.<m>.extra` passed `--dry-run` and was then dropped at binding, so `Model.extra` was `{}` and the inference identity omitted it. It now binds like `args.extra` on every dialect and on derived models; `args.extra` identities are unchanged. A 0.12.0 result directory written from a top-level `extra` ran without it, so its resume is refused as an inference change; start it fresh (#227).
+- **Breaking: `extra` at both placements is refused** before any engine starts, on named models and inline `grader`/`extractor` configs. Inline configs used to accept both and silently use `args.extra`. Keep one (#227).
 
 ## [0.12.0] - 2026-10-23
 
