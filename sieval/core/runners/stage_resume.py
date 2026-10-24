@@ -73,14 +73,15 @@ if TYPE_CHECKING:
     from sieval.core.tasks.task import Task
 
 
+ResumeStage = Literal["data", "inference"]
+
+
 class StageResumeError(RuntimeError):
-    """A resume refused because a stage it would reuse differs or is unknown.
+    """A resume refused because a stage it would reuse differs or is unknown."""
 
-    ``stage`` is ``data`` or ``inference``; ``task`` names the refused task
-    when the raiser knows it.
-    """
-
-    def __init__(self, stage: str, message: str, *, task: str | None = None) -> None:
+    def __init__(
+        self, stage: ResumeStage, message: str, *, task: str | None = None
+    ) -> None:
         self.stage = stage
         self.task = task
         super().__init__(message)

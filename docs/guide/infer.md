@@ -73,8 +73,8 @@ memory decides tensor parallelism, so only the reported values reproduce it.
 Declared, `sieval infer start` and `sieval run` launch an engine only on a node
 with exactly those GPUs, memory included: two nodes of one model can report
 different `memory.total` (ECC on or off, PCIe or SXM), and the refusal names
-each field that differs. `--dry-run` checks nothing, so it runs on any node.
-A refused launch exits 4 ([Exit codes](configuration.md#exit-codes)).
+each field that differs, and exits 4 ([Exit codes](configuration.md#exit-codes)).
+`--dry-run` checks nothing, so it runs on any node.
 
 `infer_plans.yaml` records as `gpu` the GPUs its plans were resolved for,
 declared or detected. A `sieval run --resume` declaring the same GPUs reuses a

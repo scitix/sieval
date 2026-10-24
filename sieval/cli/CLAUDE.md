@@ -23,8 +23,7 @@
 * Call `configure_logging(verbose)` once per command entry point.
 * CLI framework: `typer` with `Annotated` type hints. Async via `anyio.run()`.
 * Handle `KeyboardInterrupt` gracefully (`sys.exit(130)`).
-* Exit codes 3 and 4 and the `SIEVAL_REFUSAL` line are a documented contract
-  (`refusal.py`, pinned by `tests/unit/cli/test_refusal.py`). A new deliberate
-  refusal raises a typed exception that `refusal.py` classifies; never match
-  on its message.
+* Exit codes 3/4 and the `SIEVAL_REFUSAL` line are a contract (`refusal.py`).
+  A new refusal raises a typed exception that `refusal.py` classifies; never
+  match on its message.
 * Not every CLI command gets a programmatic counterpart — commands that orchestrate subprocesses (`sieval run`, `sieval infer <verb>`) stay CLI-only because OS-level process reaping is load-bearing for cleanup.

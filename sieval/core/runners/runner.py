@@ -399,8 +399,8 @@ def gate_resume_version(
 
     Applies :func:`resume_schema_verdict` to ``root_dir/meta.json``, read once.
     Missing, unreadable, or version-less ``meta.json`` is fail-closed (reject).
-    Raises :class:`ResumeVersionError`, naming *task*, on reject; logs a warning
-    on a resume across SiEval versions; silent on an exact match.
+    Raises :class:`ResumeVersionError` on reject; logs a warning on a resume
+    across SiEval versions; silent on an exact match.
     """
     meta = _read_run_meta(root_dir)
     v_run = _recorded_version(meta)

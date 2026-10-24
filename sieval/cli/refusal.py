@@ -1,24 +1,6 @@
-"""Deliberate refusals: a stable exit code and one machine-readable line.
-
-A refusal is a run SiEval stops on purpose before evaluating anything, where
-retrying the same command on the same node refuses again. A scheduler reacts to
-it differently from a crash, so it is told apart by exit code, and, for callers
-that only see logs, by one stderr line::
-
-    SIEVAL_REFUSAL {"v": 1, "kind": "resume", "reason": "data", "task": "t", ...}
-
-=========  ====  ==========================================================
-kind       exit  reasons
-=========  ====  ==========================================================
-resume     3     ``schema`` (result schema version), ``data``, ``inference``
-hardware   4     ``no_gpu``, ``mismatch`` (not the declared GPUs)
-=========  ====  ==========================================================
-
-Crashes exit 1 and interruptions 130 / 143, as before. A failure that mixes a
-refusal with anything else, or refusals of two kinds, exits 1; the line is
-still printed for each refusal. ``task`` is present only for a per-task
-refusal, and ``message`` is the first line of the human message, capped at
-:data:`MESSAGE_LIMIT` characters. Changing a kind, reason or code bumps
+"""Deliberate refusals: exit code 3 (resume) or 4 (hardware), plus one
+``SIEVAL_REFUSAL {json}`` stderr line each. The contract, documented under
+"Exit codes" in ``docs/guide/configuration.md``, is versioned by
 :data:`REFUSAL_LINE_VERSION`.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
@@ -31,12 +13,12 @@ from typing import Literal
 
 from sieval.core.runners import StageResumeError
 from sieval.core.runners.resume_gate import ResumeVersionError
-from sieval.infer.introspect import LaunchGpuError
+from sieval.core.runners.stage_resume import ResumeStage
+from sieval.infer.introspect import LaunchGpuError, LaunchGpuReason
 
-#: Version of the ``SIEVAL_REFUSAL`` line's fields and of the exit codes.
+#: Bumped when a field, kind, reason or exit code changes.
 REFUSAL_LINE_VERSION = 1
 REFUSAL_PREFIX = "SIEVAL_REFUSAL"
-#: Characters of the human message the line carries.
 MESSAGE_LIMIT = 200
 
 RefusalKind = Literal["resume", "hardware"]
@@ -46,7 +28,7 @@ EXIT_CODES: dict[RefusalKind, int] = {"resume": 3, "hardware": 4}
 @dataclass(frozen=True, slots=True)
 class Refusal:
     kind: RefusalKind
-    reason: str
+    reason: ResumeStage | Literal["schema"] | LaunchGpuReason
     task: str | None
     message: str
 

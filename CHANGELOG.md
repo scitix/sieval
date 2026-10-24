@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Refusals exit with their own code.** `sieval run`, `sieval eval` and `sieval infer start` exit 3 when a resume is refused and 4 when hardware is refused: an engine must launch on a node where `nvidia-smi` finds no GPU, or the GPUs are not the declared ones. Each refusal writes one `SIEVAL_REFUSAL {"v": 1, "kind": ..., "reason": ..., "task": ..., "message": ...}` line to stderr. Crashes still exit 1, and so does a run whose tasks fail in more than one way. Before, all of these exited 1, and a scheduler could tell them apart only by the wording of the message. `StageResumeError` and `ResumeVersionError` gain a `task` attribute; `check_launch_gpu` raises `LaunchGpuError` (a `RuntimeError`). No result file changes. See [Exit codes](docs/guide/configuration.md#exit-codes) (#229).
+- **Refusals exit with their own code.** `sieval run`, `eval` and `infer start` exit 3 on a refused resume and 4 on refused hardware (no GPU for an engine, or not the declared GPUs), and print one `SIEVAL_REFUSAL {json}` line to stderr; both used to exit 1 like a crash. `--dry-run`, and a batch failing in more than one way, still exit 1. An `nvidia-smi` timeout now fails instead of reading as "no GPU". `StageResumeError` and `ResumeVersionError` gain `task`; GPU refusals raise `LaunchGpuError` (a `RuntimeError`). See [Exit codes](docs/guide/configuration.md#exit-codes) (#229).
 
 ### Fixed
 

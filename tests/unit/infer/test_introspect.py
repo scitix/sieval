@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import anyio
 import pytest
 
 from sieval.infer.introspect import (
@@ -617,6 +618,36 @@ class TestDetectLocalGPU:
             return_value=mock_process,
         ):
             assert await detect_local_gpu() is None
+
+    @pytest.mark.anyio
+    async def test_nvidia_smi_timeout_raises(self) -> None:
+        """A hung driver is not "no GPU": it may answer on a retry."""
+
+        async def hang() -> AsyncIterator[bytes]:
+            await anyio.sleep_forever()
+            yield b""
+
+        mock_stdout = MagicMock()
+        mock_stdout.__aiter__ = MagicMock(return_value=hang())
+        mock_process = MagicMock()
+        mock_process.stdout = mock_stdout
+        mock_process.wait = AsyncMock()
+        fail_after = anyio.fail_after
+
+        with (
+            patch(
+                "sieval.infer.introspect.anyio.open_process",
+                new_callable=AsyncMock,
+                return_value=mock_process,
+            ),
+            patch(
+                "sieval.infer.introspect.anyio.fail_after",
+                lambda _s: fail_after(0.01),
+            ),
+            pytest.raises(RuntimeError, match="did not answer"),
+        ):
+            await detect_local_gpu()
+        mock_process.kill.assert_called_once()
 
 
 # ===================================================================

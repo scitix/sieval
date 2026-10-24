@@ -43,10 +43,7 @@ class ResumeVerdict:
 
 
 class ResumeVersionError(RuntimeError):
-    """Raised when a resume crosses an incompatible result schema version.
-
-    ``task`` names the refused task when the caller knows it.
-    """
+    """Raised when a resume crosses an incompatible result schema version."""
 
     def __init__(self, message: str, *, task: str | None = None) -> None:
         self.task = task

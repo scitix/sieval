@@ -740,3 +740,35 @@ class TestRefusalsExitWithTheirCode:
 
         assert code == 1
         assert lines == []
+
+    def test_infer_start_dry_run_without_gpus_exits_1(self, tmp_path: Path) -> None:
+        from typer.testing import CliRunner
+
+        from sieval.cli.main import app
+
+        checkpoint = tmp_path / "ckpt"
+        checkpoint.mkdir()
+        (checkpoint / "config.json").write_text(
+            json.dumps(
+                {
+                    "architectures": ["LlamaForCausalLM"],
+                    "model_type": "llama",
+                    "hidden_size": 64,
+                    "num_hidden_layers": 2,
+                    "num_attention_heads": 4,
+                    "vocab_size": 100,
+                    "torch_dtype": "bfloat16",
+                }
+            )
+        )
+        with patch(
+            "sieval.infer.topology.resolver.detect_local_gpu",
+            new=AsyncMock(return_value=None),
+        ):
+            result = CliRunner().invoke(
+                app, ["infer", "start", str(checkpoint), "--dry-run", "-o", "json"]
+            )
+
+        assert result.exit_code == 1
+        assert "SIEVAL_REFUSAL" not in result.stderr
+        assert json.loads(result.stdout)["ok"] is False

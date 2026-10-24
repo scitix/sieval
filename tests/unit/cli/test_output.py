@@ -876,6 +876,7 @@ class TestCliCommand:
                 OutputFormat, typer.Option("-o", "--output")
             ] = OutputFormat.TEXT,
             mode: Annotated[str, typer.Option("--mode")] = "raise",
+            dry_run: Annotated[bool, typer.Option("--dry-run")] = False,  # noqa: ARG001
         ) -> None:
             if mode == "raise":
                 raise ValueError("kaboom")
@@ -962,6 +963,14 @@ class TestCliCommand:
         assert json.loads(out.out)["ok"] is False
         assert out.err.startswith('SIEVAL_REFUSAL {"v": 1, "kind": "resume"')
         assert code == 3
+
+    def test_a_dry_run_refusal_exits_1_without_a_line(self, capsys):
+        code = self._invoke(
+            ["infer", "start", "-o", "json", "--mode", "refuse", "--dry-run"]
+        )
+
+        assert "SIEVAL_REFUSAL" not in capsys.readouterr().err
+        assert code == 1
 
     def test_a_crash_prints_no_refusal_line(self, capsys):
         self._invoke(["infer", "start", "--output", "json"])

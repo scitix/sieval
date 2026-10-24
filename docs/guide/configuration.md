@@ -470,35 +470,28 @@ the plan cannot know it.
 ### Exit codes
 
 `sieval run`, `sieval eval` and `sieval infer start` exit with a fixed code
-when SiEval refuses a run on purpose before evaluating anything. Retrying the
-same command on the same node refuses again:
+when they refuse a run on purpose. Retrying the same command on the same node
+refuses again.
 
 | Exit | Means |
 | --- | --- |
 | 0 | Success |
-| 1 | Any other failure, including a crash and a failed `--dry-run` |
+| 1 | Any other failure, including a crash, any failed `--dry-run`, and a batch whose tasks fail in more than one way |
 | 2 | Usage error |
 | 3 | Resume refused: start fresh, or match the stage the refusal names |
-| 4 | Hardware refused: an engine must launch, or its plan be resolved, and `nvidia-smi` finds no GPU and none is declared; or the node's GPUs are not the ones `SIEVAL_TARGET_GPU` declares. Move the run to a node with those GPUs |
+| 4 | Hardware refused: an engine is needed and `nvidia-smi` finds no GPU (and none is declared), or the GPUs differ from `SIEVAL_TARGET_GPU` |
 | 130 / 143 | Interrupted by Ctrl+C / SIGTERM |
 
-Each refusal also writes one line to stderr, beside the human message, for a
-caller that only sees logs:
+Each refusal, except under `--dry-run`, also writes one stderr line:
 
 ```text
 SIEVAL_REFUSAL {"v": 1, "kind": "resume", "reason": "inference", "task": "echo", "message": "Resume refused: stage `inference` differs (recorded 3f…, now 9a…)."}
 ```
 
-- `kind` is `resume` or `hardware`. `reason` is `schema` (the result schema
-  version), `data` or `inference` for `resume`, and `no_gpu` or `mismatch` for
-  `hardware`.
-- `task` is present for a per-task refusal. `message` is the first line of the
-  human message, at most 200 characters.
-- `v` is bumped when a field, a `kind`, a `reason` or a code changes.
-
-A run whose tasks fail in several ways, with a refusal and a crash or with
-refusals of both kinds, exits 1. It still writes one line per refusal.
-Nothing is written to the result directory.
+`kind` is `resume` (`reason`: `schema`, `data`, `inference`) or `hardware`
+(`no_gpu`, `mismatch`). `task` is present for a per-task refusal; `message`
+is the error's first line, at most 200 characters. `v` is bumped when any of
+these change.
 
 Removed in 0.12: `--resume-from DIR` (use `--resume DIR`), and
 `runner_config.auto_resume` / `runner_config.resume_from` (use
