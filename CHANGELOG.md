@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.13.1] - 2026-10-25
+
+A patch release: a `max_tokens`-derived context need reserves room for the
+prompt, without moving a task that fits under the native window into a scaled
+group. No on-disk format changes: `meta.json` `identity` stays schema 4 and
+0.13.0 result directories resume, except where the served window changed
+(below).
+
+### Migrating from 0.13.0
+
+- **A task's served window changes when its need comes from `max_tokens`, so its resume is refused.** The window is part of the inference identity, and a resume never reruns inference. On a model `sieval run` launches with a known native window, a `max_tokens` below `native` that 0.13.0 served at exactly `max_tokens`, or at the recipe window with fewer than 4096 tokens to spare, is now served at `native`. The other tasks on that model's default plan share the window, so theirs changes too. A `max_tokens` at or above `native` is served in scaled group `<model>@<max_tokens + 4096>`, where 0.13.0 served it at `max_tokens` (in `<model>@<max_tokens>`, or unscaled when the recipe window held it). Start such a run fresh, or pin the recorded window with `infer.overrides` (`context_length` / `max_model_len`). A model whose tasks all fit the recipe window with 4096 to spare, or all set `min_context` or declare `TaskRequirements.min_context`, keeps its window (#239, #240).
+- **Where 4096 more no longer fits, the task is refused before launch**: a `max_tokens` above `context_limit - 4096` on an endpoint, above the plan's window minus 4096 when the native window is unknown, or above `context.max - 4096` when scaled. Set the task's `min_context` if its prompts are known to be shorter (#239).
+
+### Fixed
+
+- **A raised serving window leaves room for the prompt.** 0.13.0 raised a plan's window to exactly a task's `max_tokens`, so every request with a non-empty prompt was refused as longer than the context. A need derived from `max_tokens` now adds 4096 tokens for the prompt; `min_context` and a task's declared need already count it and are unchanged. A task with longer prompts sets `min_context` (#239, closes #238).
+- **A `max_tokens` below the native window is served at that window, never scaled.** With the 4096 added, a task such as `max_tokens: 38000` on a model with `native: 40960` would move into a scaled (YaRN) group, and scaling changes outputs. Such a task now raises the window to `native`; its prompt gets `native - max_tokens` tokens, and a longer prompt is that sample's context overflow, as before. A `max_tokens` at or above `native` still gets `max_tokens + 4096`, in a scaled group when `context.max` and `scaling` allow (#240, refs #238).
+
 ## [0.13.0] - 2026-10-25
 
 A minor bump: `meta.json` `identity` moves to schema 4, where `inference`
@@ -522,6 +540,7 @@ Mainstream benchmarks registered in `sieval/meta/index.json`:
 - Project-wide preflight (`scripts/check_preflight.py`): links, deps, tasks, datasets, imports, examples, meta-index sync, version.
 - Tooling: `ruff`, `ty`, `mypy strict`, `pytest`.
 
+[0.13.1]: https://github.com/scitix/sieval/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/scitix/sieval/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/scitix/sieval/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/scitix/sieval/compare/v0.10.2...v0.11.0
