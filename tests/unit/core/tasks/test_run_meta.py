@@ -459,6 +459,31 @@ class TestServingFingerprint:
         }
         assert fingerprint["recipe"] is not recipe
 
+    def test_what_a_caller_states_about_an_endpoint_is_recorded_as_given(self):
+        stated = {
+            "engine_version": "0.5.4",
+            "topology": {"prefill": 1, "decode": 3},
+            "hardware": "8x H200",
+        }
+        fingerprint = serving_fingerprint(MockChatModel(), None, stated)
+        assert fingerprint["stated"] == stated
+        assert fingerprint["stated"] is not stated
+        # The deployment reported no version, so the stated one stands in.
+        assert fingerprint["engine_version"] == "0.5.4"
+        assert "stated" not in serving_fingerprint(MockChatModel(), None, {})
+
+    def test_a_reported_engine_version_wins_over_a_stated_one(self):
+        model = MockChatModel()
+        with patch.object(
+            type(model),
+            "deployment",
+            new_callable=PropertyMock,
+            return_value=_launched_deployment(),
+        ):
+            fingerprint = serving_fingerprint(model, None, {"engine_version": "x"})
+        assert fingerprint["engine_version"] == "0.5.4"
+        assert fingerprint["stated"] == {"engine_version": "x"}
+
 
 # ===================================================================
 # Grader

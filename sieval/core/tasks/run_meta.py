@@ -35,7 +35,8 @@ change restarts every sample.
 
 How the candidate is served (its engine and version, whether the run launched
 it, and the recipe: parallel layout, memory fraction, hardware) is the serving
-fingerprint (:func:`serving_fingerprint`). Each run records its own in
+fingerprint (:func:`serving_fingerprint`), with what a caller states about
+an endpoint SiEval cannot observe. Each run records its own in
 ``runs[].serving``; no resume compares it. The model under test is compared
 apart from ``inference``: by ``weights`` when both runs state the weights they
 serve, else by ``model``.
@@ -194,13 +195,22 @@ class ServingFingerprint(TypedDict):
     ``None``. ``launch`` is ``in_run`` for an engine the run launched,
     ``external`` for an endpoint it was given. ``recipe`` is the serving plan
     of an engine SiEval serves, without its checkpoint or where it ran (``None``
-    otherwise): parallel layout, memory fraction, hardware.
+    otherwise): parallel layout, memory fraction, hardware. ``stated`` is what
+    the caller declared about an endpoint SiEval cannot observe
+    (:data:`STATED_SERVING_KEYS`), recorded as given.
     """
 
     engine: str
     engine_version: str | None
     launch: Literal["in_run", "external"]
     recipe: dict[str, JSONValue] | None
+    stated: NotRequired[dict[str, JSONValue]]
+
+
+#: What a caller may state about how an external endpoint serves the model:
+#: the engine build, its topology (such as prefill/decode disaggregation) and
+#: the hardware. The engine id is the model's own ``engine``.
+STATED_SERVING_KEYS: tuple[str, ...] = ("engine_version", "topology", "hardware")
 
 
 class JudgeIdentity(TypedDict):
@@ -643,16 +653,28 @@ def inference_matches(
 
 
 def serving_fingerprint(
-    model: Model, recipe: Mapping[str, JSONValue] | None
+    model: Model,
+    recipe: Mapping[str, JSONValue] | None,
+    stated: Mapping[str, JSONValue] | None = None,
 ) -> ServingFingerprint:
-    """How *model* is served, from its deployment and the run's serving *recipe*."""
+    """How *model* is served, from its deployment and the run's serving *recipe*.
+
+    *stated* is what the caller declared about an external endpoint; a stated
+    ``engine_version`` fills one the deployment did not report.
+    """
     deployment = model.deployment
-    return {
+    fingerprint: ServingFingerprint = {
         "engine": deployment.engine.engine_id,
         "engine_version": deployment.facts.engine_version,
         "launch": "external" if deployment.deployment_id is None else "in_run",
         "recipe": dict(recipe) if recipe is not None else None,
     }
+    if stated:
+        fingerprint["stated"] = dict(stated)
+        version = stated.get("engine_version")
+        if fingerprint["engine_version"] is None and isinstance(version, str):
+            fingerprint["engine_version"] = version
+    return fingerprint
 
 
 # ---------------------------------------------------------------------------

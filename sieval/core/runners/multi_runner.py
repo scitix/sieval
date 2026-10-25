@@ -69,15 +69,16 @@ class MultiTaskRunner:
         inference_recipe: dict[str, JSONValue] | None = None,
         context_limit: int | None = None,
         weights: str | None = None,
+        stated_serving: dict[str, JSONValue] | None = None,
         resume_config_diff: list[str] | None = None,
         legacy_match: LegacyStageMatch | None = None,
         unserved_candidate: bool = False,
     ) -> Self:
         """Register a task for parallel execution.
 
-        *inference_recipe*, *context_limit*, *weights*, *resume_config_diff*,
-        *legacy_match* and *unserved_candidate* pass through to
-        :class:`TaskRunner`.
+        *inference_recipe*, *context_limit*, *weights*, *stated_serving*,
+        *resume_config_diff*, *legacy_match* and *unserved_candidate* pass
+        through to :class:`TaskRunner`.
 
         Auto-sets ``result_dir`` to ``<base_result_dir>/<task.name>`` when
         a base was provided and the task's config lacks its own.
@@ -107,6 +108,7 @@ class MultiTaskRunner:
             inference_recipe=inference_recipe,
             context_limit=context_limit,
             weights=weights,
+            stated_serving=stated_serving,
             resume_config_diff=resume_config_diff,
             legacy_match=legacy_match,
             unserved_candidate=unserved_candidate,

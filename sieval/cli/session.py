@@ -1010,6 +1010,7 @@ class ModelConfigDict(TypedDict, total=False):
     concurrency_limit: int
     context_limit: int  # Context window of an endpoint SiEval does not serve
     weights: str  # The weights served, compared on resume instead of the name
+    serving: dict[str, JSONValue]  # How an endpoint serves it; recorded only
     infer: _InferDict  # infer config for `sieval infer`
     infer_meta: _InferMetaDict  # infer metadata for audit
 
@@ -4912,6 +4913,7 @@ class EvalSession:
                 inference_recipe=self._inference_recipe_for(candidate.config_name),
                 context_limit=self._context_limit_for(candidate.config_name),
                 weights=self._weights_for(candidate.config_name),
+                stated_serving=self._stated_serving_for(candidate.config_name),
                 resume_config_diff=list(self._resume_config_diff),
                 legacy_match=self._legacy_match_for(task_name, runner_config),
                 unserved_candidate=(
@@ -5055,6 +5057,14 @@ class EvalSession:
         ``None``."""
         root = self._root_model(model_name)
         return self._get_named_config_map("models").get(root, {}).get("weights")
+
+    def _stated_serving_for(self, model_name: str) -> dict[str, JSONValue] | None:
+        """What *model_name*'s root states about how its endpoint serves it
+        (``serving``), for ``runs[].serving``; ``None`` when it states nothing.
+        """
+        root = self._root_model(model_name)
+        stated = self._get_named_config_map("models").get(root, {}).get("serving")
+        return dict(stated) if stated else None
 
     def _resolve_task_dataset(
         self, task_cfg: TaskConfigDict, task_name: str

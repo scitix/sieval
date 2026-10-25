@@ -51,6 +51,7 @@ from sieval.core.models.dialect_registry import (
 from sieval.core.models.reconcile import ReconcileResult
 from sieval.core.runners import TaskRunnerConfig
 from sieval.core.tasks.consts import TaskAction
+from sieval.core.tasks.run_meta import STATED_SERVING_KEYS
 
 # Known top-level keys from RootConfigDict
 _ROOT_KEYS: set[str] = set(RootConfigDict.__annotations__)
@@ -171,6 +172,33 @@ def _is_nonempty_str(value: object) -> bool:
     return isinstance(value, str) and bool(value)
 
 
+def _check_stated_serving(
+    name: str, stated: object, *, launched: bool, result: ValidationResult
+) -> None:
+    """Refuse a root model's ``serving`` that is not a mapping of
+    :data:`STATED_SERVING_KEYS`, or that describes an engine the run launches,
+    whose serving SiEval records itself."""
+    if not isinstance(stated, Mapping):
+        return  # absent, or refused as not a mapping with the other root keys
+    stated = cast(Mapping[str, object], stated)
+    where = f"Model '{name}': 'serving'"
+    if launched:
+        result.errors.append(
+            f"{where} describes an external endpoint; an engine `sieval run` "
+            "launches records its own serving"
+        )
+        return
+    unknown = sorted(set(stated) - set(STATED_SERVING_KEYS))
+    if unknown:
+        result.errors.append(
+            f"{where} has unknown key(s) {', '.join(unknown)}; expected "
+            f"{', '.join(STATED_SERVING_KEYS)}"
+        )
+    version = stated.get("engine_version")
+    if version is not None and not _is_nonempty_str(version):
+        result.errors.append(f"{where}.engine_version must be a non-empty string")
+
+
 def _validate_models(cfg: dict, result: ValidationResult) -> None:
     """Validate model configurations."""
     models = cfg.get("models", {})
@@ -223,6 +251,7 @@ def _validate_models(cfg: dict, result: ValidationResult) -> None:
         for key, kind, check in (
             ("context_limit", "a positive integer", _is_positive_int),
             ("weights", "a non-empty string", _is_nonempty_str),
+            ("serving", "a mapping", lambda value: isinstance(value, dict)),
         ):
             if key not in mcfg:
                 continue
@@ -291,6 +320,12 @@ def _validate_models(cfg: dict, result: ValidationResult) -> None:
                     "auto-serve. Add a checkpoint or set api_base explicitly."
                 )
 
+            _check_stated_serving(
+                name,
+                mcfg.get("serving"),
+                launched=bool(checkpoint or path) and not mcfg.get("api_base"),
+                result=result,
+            )
             base_names.add(name)
 
     all_model_names = set(models)

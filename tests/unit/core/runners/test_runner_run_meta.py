@@ -461,6 +461,38 @@ class TestServingIsNotIdentity:
         assert resumed["serving"]["engine"] == "unknown"
 
     @pytest.mark.anyio
+    async def test_a_single_node_run_resumes_on_a_disaggregated_endpoint(
+        self, tmp_path
+    ):
+        """Too slow on one node, resumed against a prefill/decode deployment
+        of the same weights: the requests are the same, so the resume goes on,
+        and `runs[].serving` records the switch as the caller stated it."""
+        task, _ = _counting_task()
+        await TaskRunner(
+            task,
+            make_config(tmp_path),
+            inference_recipe=self.ONE_GPU,
+            weights="sha256:w",
+        ).arun()
+        root = tmp_path / "results"
+        _forget_last_sample(root)
+
+        pd = {"topology": {"prefill": 1, "decode": 3}, "hardware": "4x H200"}
+        task, model = _counting_task()
+        await TaskRunner(
+            task,
+            make_config(tmp_path, resume=True),
+            weights="sha256:w",
+            stated_serving=pd,
+        ).arun()
+        assert model.call_count == 1
+        first, resumed = _meta(root)["runs"]
+        assert first["serving"]["recipe"] == self.ONE_GPU
+        assert "stated" not in first["serving"]
+        assert resumed["serving"]["recipe"] is None
+        assert resumed["serving"]["stated"] == pd
+
+    @pytest.mark.anyio
     async def test_another_context_limit_is_refused(self, tmp_path):
         """It decides which prompts overflow, so the recorded inference would
         not be this run's."""

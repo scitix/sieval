@@ -493,6 +493,7 @@ class TaskRunner:
         inference_recipe: dict[str, JSONValue] | None = None,
         context_limit: int | None = None,
         weights: str | None = None,
+        stated_serving: dict[str, JSONValue] | None = None,
         resume_config_diff: list[str] | None = None,
         legacy_match: LegacyStageMatch | None = None,
         unserved_candidate: bool = False,
@@ -502,8 +503,10 @@ class TaskRunner:
         model is not served by SiEval. *context_limit* is its effective
         context window in tokens, for the inference identity; ``None`` when
         unknown. *weights* names the weights it serves, compared instead of
-        the model name when both runs state one. *resume_config_diff* is the config
-        change a resume made, for ``runs[].config``. *legacy_match* compares a
+        the model name when both runs state one. *stated_serving* is what the
+        caller states about an external endpoint, for ``runs[].serving``.
+        *resume_config_diff* is the config change a resume made, for
+        ``runs[].config``. *legacy_match* compares a
         recorded run without identities through its persisted config.
         *unserved_candidate* says no engine serves the model under test, since
         a plan found nothing to infer: a run that would infer is refused.
@@ -516,6 +519,7 @@ class TaskRunner:
         self._inference_recipe = inference_recipe
         self._context_limit = context_limit
         self._weights = weights
+        self._stated_serving = stated_serving
         self._resume_config_diff = list(resume_config_diff or [])
         self._legacy_match = LegacyStageMatch(**(legacy_match or {}))
         self._unserved_candidate = unserved_candidate
@@ -2669,7 +2673,9 @@ class TaskRunner:
 
     def _serving(self) -> ServingFingerprint | None:
         try:
-            return serving_fingerprint(self._task.model, self._inference_recipe)
+            return serving_fingerprint(
+                self._task.model, self._inference_recipe, self._stated_serving
+            )
         except (TypeError, ValueError, AttributeError) as exc:
             logger.warning("Serving fingerprint unavailable: {}", exc)
             return None

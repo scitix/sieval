@@ -8038,6 +8038,7 @@ class TestInferArgs:
         assert kwargs["resume_config_diff"] == ["concurrency_limit: 8 → 2"]
         assert kwargs["context_limit"] is None
         assert kwargs["weights"] is None
+        assert kwargs["stated_serving"] is None
         # The session's plan is untouched by the projection.
         assert runner._infer_plans["base"]["checkpoint"] == "/ckpt"
 
@@ -8098,6 +8099,17 @@ class TestInferArgs:
             Any, {"m": {"path": "/c", "context_limit": 32768}}
         )
         assert runner._context_limit_for("m") == 32768
+
+    def test_stated_serving_is_the_root_models(self):
+        runner = self._make_runner({}, models={"m": MockChatModel()})
+        pd = {"topology": {"prefill": 1, "decode": 3}}
+        runner.config["models"] = cast(
+            Any,
+            {"base": {"api_base": "http://x/v1", "serving": pd}, "m": {"base": "base"}},
+        )
+        assert runner._stated_serving_for("m") == pd
+        runner.config["models"] = cast(Any, {"m": {"api_base": "http://x/v1"}})
+        assert runner._stated_serving_for("m") is None
 
     def test_weights_are_the_root_models(self):
         runner = self._make_runner({}, models={"m": MockChatModel()})

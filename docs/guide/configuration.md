@@ -340,12 +340,26 @@ models:
     name: qwen3-8b
     context_limit: 32768   # the endpoint's window; refused if a plan says otherwise
     weights: sha256:3f…    # optional: which weights are served, whatever the name
+    serving:               # optional: how the endpoint serves them, recorded as given
+      engine_version: 0.5.4
+      topology: {prefill: 1, decode: 3}
+      hardware: 4x H200
 ```
 
 A resume compares the model under test by `weights` when both runs state one,
 else by name, so the same weights served under another name infer on, and other
 weights under the same name are refused. `meta.json` records `weights` next to
-`model`. Neither key is allowed on a derived model.
+`model`.
+
+SiEval cannot see how an endpoint serves the model, so `serving` states it:
+`engine_version`, `topology` and `hardware`, any of them, with any value.
+`runs[].serving.stated` records it as given; it is never compared, and a stated
+`engine_version` fills one the deployment did not report. It is refused on a
+model `sieval run` launches, which records its own. So a run that starts on a
+single-node engine and proves too slow can resume against a prefill/decode
+deployment of the same weights: the requests are the same, and `runs[]` shows
+the switch. `context_limit`, `weights` and `serving` are not allowed on a
+derived model.
 
 Each grading stage's identity holds the code its Task method reaches, the task
 class and `grader_args()`; `feedback` also holds every judge and service.
