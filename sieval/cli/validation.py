@@ -163,6 +163,14 @@ def _validate_structure(cfg: dict, result: ValidationResult) -> bool:
     return can_continue
 
 
+def _is_positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _is_nonempty_str(value: object) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
 def _validate_models(cfg: dict, result: ValidationResult) -> None:
     """Validate model configurations."""
     models = cfg.get("models", {})
@@ -210,6 +218,21 @@ def _validate_models(cfg: dict, result: ValidationResult) -> None:
                     )
                 except (TypeError, ValueError) as exc:
                     result.errors.append(str(exc))
+
+        # What the root serves: a derived model shares its weights and window.
+        for key, kind, check in (
+            ("context_limit", "a positive integer", _is_positive_int),
+            ("weights", "a non-empty string", _is_nonempty_str),
+        ):
+            if key not in mcfg:
+                continue
+            if has_base:
+                result.errors.append(
+                    f"Model '{name}': derived models cannot set '{key}'; it is "
+                    "inherited from the base model. Set it on the base instead."
+                )
+            elif not check(mcfg[key]):
+                result.errors.append(f"Model '{name}': '{key}' must be {kind}")
 
         raw_model_args = mcfg.get("args")
         for where, extra in (

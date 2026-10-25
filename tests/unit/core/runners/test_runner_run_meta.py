@@ -11,8 +11,15 @@ import anyio
 import orjson
 import pytest
 
+import sieval.core.runners.runner
 from sieval import __version__
-from sieval.core.models import ModelOutput
+from sieval.core.models import (
+    Deployment,
+    DeploymentPlanProjection,
+    Engine,
+    ModelOutput,
+    ServingFacts,
+)
 from sieval.core.runners.resume_gate import ResumeVersionError
 from sieval.core.runners.runner import (
     ResultDirExistsError,
@@ -30,9 +37,11 @@ from sieval.core.tasks import (
 from sieval.core.tasks.consts import TaskStage
 from sieval.core.tasks.loader import TaskLoader
 from sieval.core.tasks.run_meta import (
+    IDENTITY_SCHEMA,
     RESULT_SCHEMA_VERSION,
     aggregate_digest,
     digest,
+    legacy_inference_digest,
     preprocess_identity,
     preprocess_key,
 )
@@ -185,7 +194,7 @@ class TestFreshRun:
         assert meta["deterministic"] is False
         assert meta["model"] == "mock-chat"
         identity = meta["identity"]
-        assert identity["schema"] == 3
+        assert identity["schema"] == IDENTITY_SCHEMA
         assert identity["data"]["samples"] == 3
         # A test task lives outside the followed packages: no code, and `n`
         # is an inference argument, not a preprocess one.
@@ -211,6 +220,13 @@ class TestFreshRun:
         assert "interrupted" not in run
         assert "config" not in run
         assert "from" not in run
+        assert run["serving"] == {
+            "engine": "unknown",
+            "engine_version": None,
+            "launch": "external",
+            "recipe": None,
+        }
+        assert "weights" not in meta
 
     @pytest.mark.anyio
     async def test_data_is_the_samples_and_preprocess_the_code(self, tmp_path):
@@ -320,13 +336,21 @@ class TestInferenceIdentityFromRunner:
         )
 
     @pytest.mark.anyio
-    async def test_recipe_counts(self, tmp_path):
+    async def test_the_recipe_is_recorded_not_digested(self, tmp_path):
+        """The serving recipe is the run's serving fingerprint, not identity."""
         task = RecordTask(dataset=MockDataset(SAMPLES), model=MockChatModel(), name="t")
-        runner = TaskRunner(
-            task,
-            make_config(tmp_path / "a"),
-            inference_recipe={"backend": "vllm"},
-        )
+        recipe = {"backend": "vllm", "assignments": [{"role": "full"}]}
+        runner = TaskRunner(task, make_config(tmp_path / "a"), inference_recipe=recipe)
+        await runner.arun()
+        meta = _meta(runner.root_dir)
+        plain = _meta(await self._root(tmp_path / "b"))
+        assert meta["identity"]["inference"] == plain["identity"]["inference"]
+        assert meta["runs"][-1]["serving"]["recipe"] == recipe
+
+    @pytest.mark.anyio
+    async def test_context_limit_counts(self, tmp_path):
+        task = RecordTask(dataset=MockDataset(SAMPLES), model=MockChatModel(), name="t")
+        runner = TaskRunner(task, make_config(tmp_path / "a"), context_limit=4096)
         await runner.arun()
         assert (
             _meta(runner.root_dir)["identity"]["inference"]
@@ -337,6 +361,263 @@ class TestInferenceIdentityFromRunner:
         runner = _runner(tmp_path)
         await runner.arun()
         return runner.root_dir
+
+
+def _counting_task(model_cls=MockCountingChatModel):
+    model = model_cls(answers=ANSWERS)
+    return RecordTask(dataset=MockDataset(SAMPLES), model=model, name="t"), model
+
+
+class TestServingIsNotIdentity:
+    """A resume compares what the model is asked, not how it is served
+    (issue #232): serving goes in `runs[].serving` and gates nothing."""
+
+    ONE_GPU = {"backend": "sglang", "assignments": [{"topology": {"tp": 1}}]}
+    EIGHT_GPUS = {"backend": "sglang", "assignments": [{"topology": {"tp": 8}}]}
+
+    @pytest.mark.anyio
+    async def test_another_parallel_layout_resumes(self, tmp_path):
+        """1 GPU, then 8: the recorded inference is reused, the rest inferred."""
+        task, _ = _counting_task()
+        await TaskRunner(
+            task, make_config(tmp_path), inference_recipe=self.ONE_GPU
+        ).arun()
+        root = tmp_path / "results"
+        _forget_last_sample(root)
+
+        task, model = _counting_task()
+        runner = TaskRunner(
+            task,
+            make_config(tmp_path, resume=True),
+            inference_recipe=self.EIGHT_GPUS,
+        )
+        await runner.arun()
+        assert model.call_count == 1
+        runs = _meta(root)["runs"]
+        assert [r["serving"]["recipe"] for r in runs] == [
+            self.ONE_GPU,
+            self.EIGHT_GPUS,
+        ]
+
+    @pytest.mark.anyio
+    async def test_a_finished_run_on_other_hardware_fast_resumes(self, tmp_path):
+        task, _ = _counting_task()
+        await TaskRunner(
+            task, make_config(tmp_path), inference_recipe=self.ONE_GPU
+        ).arun()
+        task, model = _counting_task()
+        runner = TaskRunner(
+            task,
+            make_config(tmp_path, resume=True),
+            inference_recipe=self.EIGHT_GPUS,
+        )
+        await runner.arun()
+        assert model.call_count == 0
+        assert _meta(tmp_path / "results")["runs"][-1]["reran"] == []
+
+    @pytest.mark.anyio
+    async def test_a_launched_engine_continued_on_an_endpoint_resumes(
+        self, tmp_path, monkeypatch
+    ):
+        """Part served by an engine the run launched, the rest by an endpoint
+        serving the same weights: the engine id and recipe differ, the
+        requests do not."""
+        launched = Deployment(
+            deployment_id="dep-1",
+            plan=DeploymentPlanProjection(fingerprint="sha256:p", engine_id="sglang"),
+            engine=Engine("sglang"),
+            engine_source="deployment",
+            api_base="http://127.0.0.1:30000/v1",
+            endpoints={},
+            topology=None,
+            metrics_url=None,
+            facts=ServingFacts(engine_version="0.5.4"),
+        )
+
+        class Launched(MockCountingChatModel):
+            @property
+            def deployment(self):
+                return launched
+
+        task, _ = _counting_task(Launched)
+        await TaskRunner(
+            task,
+            make_config(tmp_path),
+            inference_recipe=self.ONE_GPU,
+            weights="sha256:w",
+        ).arun()
+        root = tmp_path / "results"
+        _forget_last_sample(root)
+
+        task, model = _counting_task()
+        await TaskRunner(
+            task, make_config(tmp_path, resume=True), weights="sha256:w"
+        ).arun()
+        assert model.call_count == 1
+        first, resumed = _meta(root)["runs"]
+        assert first["serving"]["launch"] == "in_run"
+        assert first["serving"]["engine"] == "sglang"
+        assert resumed["serving"]["launch"] == "external"
+        assert resumed["serving"]["engine"] == "unknown"
+
+    @pytest.mark.anyio
+    async def test_another_context_limit_is_refused(self, tmp_path):
+        """It decides which prompts overflow, so the recorded inference would
+        not be this run's."""
+        task, _ = _counting_task()
+        await TaskRunner(task, make_config(tmp_path), context_limit=32768).arun()
+        root = tmp_path / "results"
+        _forget_last_sample(root)
+        before = (root / "meta.json").read_bytes()
+
+        task, model = _counting_task()
+        runner = TaskRunner(
+            task, make_config(tmp_path, resume=True), context_limit=4096
+        )
+        with pytest.raises(StageResumeError, match="context limit"):
+            await runner.arun()
+        assert model.call_count == 0
+        assert (root / "meta.json").read_bytes() == before
+
+
+class TestUnavailableFingerprints:
+    @pytest.mark.anyio
+    async def test_a_serving_fingerprint_that_cannot_be_read_is_left_out(
+        self, tmp_path, monkeypatch
+    ):
+        def _broken(*_args):
+            raise AttributeError("no deployment")
+
+        monkeypatch.setattr(sieval.core.runners.runner, "serving_fingerprint", _broken)
+        runner = _runner(tmp_path)
+        await runner.arun()
+        assert "serving" not in _meta(runner.root_dir)["runs"][-1]
+
+    @pytest.mark.anyio
+    async def test_an_old_inference_that_cannot_be_recomputed_is_refused(
+        self, tmp_path, monkeypatch
+    ):
+        """A schema-3 digest is unknown when this run cannot recompute it: a
+        resume that would reuse it is refused, never a guess."""
+        root = tmp_path / "results"
+        await _runner(tmp_path).arun()
+        _forget_last_sample(root)
+        meta = _meta(root)
+        meta["identity"]["schema"] = 3
+        (root / "meta.json").write_bytes(orjson.dumps(meta))
+
+        def _broken(**_kwargs):
+            raise TypeError("undigestable")
+
+        monkeypatch.setattr(
+            sieval.core.runners.runner, "legacy_inference_digest", _broken
+        )
+        with pytest.raises(StageResumeError, match="inference"):
+            await _runner(tmp_path, resume=True).arun()
+
+    @pytest.mark.anyio
+    async def test_an_old_finished_run_upgrades_without_recorded_requests(
+        self, tmp_path
+    ):
+        """A fast resume of a schema-3 run rewrites `inference` in this
+        schema's digest; recorded `requests` are carried when there are any."""
+        root = tmp_path / "results"
+        runner = _runner(tmp_path)
+        await runner.arun()
+        task = runner._task
+        meta = _meta(root)
+        meta["identity"]["schema"] = 3
+        meta["identity"]["inference"] = {
+            "digest": legacy_inference_digest(
+                model=task.model,
+                task_args=task.inference_args(),
+                runner_keys=runner._runner_keys(),
+                recipe=None,
+            )
+        }
+        (root / "meta.json").write_bytes(orjson.dumps(meta))
+
+        model = MockCountingChatModel(answers=ANSWERS)
+        task = RecordTask(dataset=MockDataset(SAMPLES), model=model, name="t")
+        await _runner(tmp_path, task=task, resume=True).arun()
+        assert model.call_count == 0
+        identity = _meta(root)["identity"]
+        assert identity["schema"] == IDENTITY_SCHEMA
+        current = runner._inference_identity()
+        assert current is not None
+        assert identity["inference"] == {"digest": current["digest"]}
+
+
+class TestStatedWeights:
+    """`weights` names the model under test independently of how it is
+    reached, so another name serving the same weights is the same model."""
+
+    class Renamed(MockCountingChatModel):
+        def meta(self):
+            return {**super().meta(), "model": "served-as-another-name"}
+
+    @pytest.mark.anyio
+    async def test_the_same_weights_under_another_name_infer_on(self, tmp_path):
+        task, _ = _counting_task()
+        await TaskRunner(task, make_config(tmp_path), weights="sha256:w").arun()
+        root = tmp_path / "results"
+        _forget_last_sample(root)
+
+        task, model = _counting_task(self.Renamed)
+        await TaskRunner(
+            task, make_config(tmp_path, resume=True), weights="sha256:w"
+        ).arun()
+        assert model.call_count == 1
+        meta = _meta(root)
+        assert meta["model"] == "served-as-another-name"
+        assert meta["weights"] == "sha256:w"
+
+    @pytest.mark.anyio
+    async def test_a_regrade_by_other_weights_keeps_the_recorded_ones(self, tmp_path):
+        """A finished run regraded under other weights: `model` and `weights`
+        stay those whose samples are on disk."""
+        task, _ = _counting_task()
+        await TaskRunner(task, make_config(tmp_path), weights="sha256:w").arun()
+
+        task, model = _counting_task(self.Renamed)
+        await TaskRunner(
+            task, make_config(tmp_path, resume=True), weights="sha256:other"
+        ).arun()
+        assert model.call_count == 0
+        meta = _meta(tmp_path / "results")
+        assert meta["model"] == "mock-chat"
+        assert meta["weights"] == "sha256:w"
+        assert meta["runs"][-1]["model"] == "served-as-another-name"
+
+    @pytest.mark.anyio
+    async def test_other_weights_under_the_same_name_are_refused(self, tmp_path):
+        task, _ = _counting_task()
+        await TaskRunner(task, make_config(tmp_path), weights="sha256:w").arun()
+        root = tmp_path / "results"
+        _forget_last_sample(root)
+
+        task, model = _counting_task()
+        runner = TaskRunner(
+            task, make_config(tmp_path, resume=True), weights="sha256:other"
+        )
+        with pytest.raises(StageResumeError, match="1 sample"):
+            await runner.arun()
+        assert model.call_count == 0
+
+    @pytest.mark.anyio
+    async def test_a_side_without_weights_compares_names(self, tmp_path):
+        task, _ = _counting_task()
+        await TaskRunner(task, make_config(tmp_path)).arun()
+        root = tmp_path / "results"
+        _forget_last_sample(root)
+
+        task, model = _counting_task(self.Renamed)
+        runner = TaskRunner(
+            task, make_config(tmp_path, resume=True), weights="sha256:w"
+        )
+        with pytest.raises(StageResumeError, match="1 sample"):
+            await runner.arun()
+        assert model.call_count == 0
 
     @pytest.mark.anyio
     async def test_a_call_time_stop_counts(self, tmp_path):

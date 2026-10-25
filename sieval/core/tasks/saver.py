@@ -28,6 +28,7 @@ from .run_meta import (
     ResumeOutcomes,
     RunFrom,
     RunRequests,
+    ServingFingerprint,
     carried_identity,
     carried_runs,
     new_run_record,
@@ -195,7 +196,9 @@ class TaskSaver:
         resumed: bool,
         run_from: RunFrom | None = None,
         model: str | None = None,
+        weights: str | None = None,
         keep_recorded_model: bool = False,
+        serving: ServingFingerprint | None = None,
         config_diff: Sequence[str] = (),
         config_path: str | None = None,
         identity: Mapping[str, object] | None = None,
@@ -220,7 +223,9 @@ class TaskSaver:
 
         *keep_recorded_model* keeps a resumed directory's ``model`` when
         *model* differs, since the inference on disk is the recorded model's;
-        *model* then goes in this run's ``runs[]`` entry.
+        *model* then goes in this run's ``runs[]`` entry. *weights* names the
+        weights *model* serves and is kept or replaced with it. *serving* is
+        how this run served the model (``runs[].serving``).
         """
         from sieval import __version__
 
@@ -251,8 +256,13 @@ class TaskSaver:
         recorded_model = (existing or {}).get("model")
         if keep_recorded_model and isinstance(recorded_model, str):
             meta["model"] = recorded_model
+            recorded_weights = (existing or {}).get("weights")
+            if isinstance(recorded_weights, str):
+                meta["weights"] = recorded_weights
         elif model is not None:
             meta["model"] = model
+            if weights is not None:
+                meta["weights"] = weights
         if config_path is not None:
             meta["config"] = config_path
         meta["identity"] = carried_identity(existing)
@@ -265,6 +275,8 @@ class TaskSaver:
             )
         if model is not None and meta.get("model") != model:
             run["model"] = model
+        if serving is not None:
+            run["serving"] = serving
         meta["runs"] = [*carried_runs(existing), run]
         self._run_index = len(meta["runs"])
         self._meta = meta

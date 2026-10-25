@@ -66,9 +66,10 @@ export SIEVAL_TARGET_GPU='NVIDIA H100 80GB HBM3:8:81559'   # <name>:<count>:<mem
 `<name>` and `<memory MiB>` are what
 `nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits` prints
 on a node with those GPUs, and `<count>` is how many it lists. The plan is then
-the one that node resolves, so the inference identity matches too. A shorthand
-like `H100-80G:8` is refused: the name is recorded in a path-only plan and the
-memory decides tensor parallelism, so only the reported values reproduce it.
+the one that node resolves, so `runs[].serving` and the context limit match
+too. A shorthand like `H100-80G:8` is refused: the name is recorded in a
+path-only plan and the memory decides tensor parallelism, so only the reported
+values reproduce it.
 
 Declared, `sieval infer start` and `sieval run` launch an engine only on a node
 with exactly those GPUs, memory included: two nodes of one model can report

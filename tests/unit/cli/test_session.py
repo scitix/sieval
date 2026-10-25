@@ -8036,6 +8036,8 @@ class TestInferArgs:
             "attachments": [{"kind": "kv_cache", "provider": "redis"}],
         }
         assert kwargs["resume_config_diff"] == ["concurrency_limit: 8 → 2"]
+        assert kwargs["context_limit"] is None
+        assert kwargs["weights"] is None
         # The session's plan is untouched by the projection.
         assert runner._infer_plans["base"]["checkpoint"] == "/ckpt"
 
@@ -8046,6 +8048,65 @@ class TestInferArgs:
         assert runner._inference_recipe_for("m") is None
         runner._infer_plans = None
         assert runner._inference_recipe_for("m") is None
+
+    @staticmethod
+    def _plan(**engine_params):
+        return {
+            "backend": "vllm",
+            "assignments": [{"role": "full", "engine_params": engine_params}],
+        }
+
+    def test_context_limit_comes_from_the_plan(self):
+        """vLLM's `max_model_len` and SGLang's `context_length` both set it;
+        across roles the smallest is the one a prompt overflows on."""
+        runner = self._make_runner({}, models={"m": MockChatModel()})
+        runner.config["models"] = cast(
+            Any, {"base": {"path": "/c"}, "m": {"base": "base"}}
+        )
+        runner._infer_plans = {"base": self._plan(max_model_len=32768, dtype="bf16")}
+        assert runner._context_limit_for("m") == 32768
+        runner._infer_plans = {
+            "base": {
+                "backend": "sglang",
+                "assignments": [
+                    {"role": "prefill", "engine_params": {"context_length": 8192}},
+                    {"role": "decode", "engine_params": {"context_length": 4096}},
+                ],
+            }
+        }
+        assert runner._context_limit_for("m") == 4096
+
+    def test_an_endpoint_states_its_context_limit(self):
+        runner = self._make_runner({}, models={"m": MockChatModel()})
+        runner.config["models"] = cast(
+            Any, {"m": {"api_base": "http://x/v1", "context_limit": 32768}}
+        )
+        runner._infer_plans = None
+        assert runner._context_limit_for("m") == 32768
+        runner.config["models"] = cast(Any, {"m": {"api_base": "http://x/v1"}})
+        assert runner._context_limit_for("m") is None
+
+    def test_a_context_limit_the_plan_contradicts_is_refused(self):
+        runner = self._make_runner({}, models={"m": MockChatModel()})
+        runner.config["models"] = cast(
+            Any, {"m": {"path": "/c", "context_limit": 4096}}
+        )
+        runner._infer_plans = {"m": self._plan(max_model_len=32768)}
+        with pytest.raises(ValueError, match="context_limit 4096 differs"):
+            runner._context_limit_for("m")
+        runner.config["models"] = cast(
+            Any, {"m": {"path": "/c", "context_limit": 32768}}
+        )
+        assert runner._context_limit_for("m") == 32768
+
+    def test_weights_are_the_root_models(self):
+        runner = self._make_runner({}, models={"m": MockChatModel()})
+        runner.config["models"] = cast(
+            Any, {"base": {"path": "/c", "weights": "sha256:w"}, "m": {"base": "base"}}
+        )
+        assert runner._weights_for("m") == "sha256:w"
+        runner.config["models"] = cast(Any, {"m": {"path": "/c"}})
+        assert runner._weights_for("m") is None
 
     def test_infer_args_empty_noop(self):
         """Empty or missing infer_args should not create a model copy."""

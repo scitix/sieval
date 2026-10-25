@@ -54,9 +54,11 @@ from sieval.core.tasks.run_meta import (
     grader_task,
     grading_identities,
     inference_identity,
+    inference_matches,
     is_code_identity,
     judge_identities,
     legacy_grader_keys,
+    legacy_inference_digest,
     preprocess_identity,
     preprocess_key,
     prompt_of,
@@ -191,6 +193,7 @@ def plan_resume(
     recorded_meta: Mapping[str, Any] | None,
     current: Mapping[str, Any],
     legacy_grader_keys: Iterable[str] = (),
+    legacy_inference: str | None = None,
 ) -> ResumePlan:
     """Compare a recorded ``meta.json`` with this run's identities, running nothing.
 
@@ -198,7 +201,9 @@ def plan_resume(
     ``data`` may be ``None`` before anything is preprocessed and then
     compares as ``unknown``. *legacy_grader_keys* is
     :func:`~sieval.core.tasks.run_meta.legacy_grader_keys` for this task,
-    read only for a schema-1 directory. The runner plans per sample and is
+    read only for a schema-1 directory; *legacy_inference* this run's
+    :func:`~sieval.core.tasks.run_meta.legacy_inference_digest`, read only for
+    a directory before identity schema 4. The runner plans per sample and is
     authoritative; this says what a resume of a finished directory does.
     """
     block = (recorded_meta or {}).get("identity")
@@ -209,7 +214,16 @@ def plan_resume(
     stages: dict[str, StageComparison] = {
         stage: _compare(stage, recorded.get(stage), current.get(stage))
         for stage in STAGES
+        if stage != "inference"
     }
+    mine = current.get("inference")
+    match = inference_matches(
+        block if isinstance(block, Mapping) else None,
+        mine.get("digest") if isinstance(mine, Mapping) else None,
+        legacy_inference,
+    )
+    stages["inference"] = "unknown" if match is None else _verdict(match)
+    stages = {stage: stages[stage] for stage in STAGES}
     legacy: Literal["kept", "regrade"] | None = None
     legacy_match: bool | None = None
     if grader is not None:
@@ -269,6 +283,7 @@ def task_resume_plan(
     recorded_meta: Mapping[str, Any] | None,
     *,
     runner_keys: Mapping[str, JSONValue],
+    context_limit: int | None = None,
     recipe: Mapping[str, JSONValue] | None = None,
 ) -> ResumePlan:
     """:func:`plan_resume` for *task* against a recorded ``meta.json``.
@@ -277,7 +292,8 @@ def task_resume_plan(
     :class:`~sieval.core.runners.runner.TaskRunner` does, so call it after
     ``task.setup()``, which may resolve an argument the grading identities
     read. *runner_keys* holds :data:`~sieval.core.tasks.run_meta.INFERENCE_RUNNER_KEYS`
-    and *recipe* the serving recipe, as the runner is given them. Reads files,
+    and *context_limit* and *recipe* (the serving recipe, read only to compare
+    a directory before identity schema 4) as the runner is given them. Reads files,
     starts nothing and calls no model.
     """
     task_cls = type(task)
@@ -294,7 +310,7 @@ def task_resume_plan(
             model=task.model,
             task_args=task.inference_args(),
             runner_keys=runner_keys,
-            recipe=recipe,
+            context_limit=context_limit,
         ),
         **grading,
     }
@@ -302,6 +318,12 @@ def task_resume_plan(
         recorded_meta,
         current,
         legacy_grader_keys(task_cls, judges, services, args),
+        legacy_inference_digest(
+            model=task.model,
+            task_args=task.inference_args(),
+            runner_keys=runner_keys,
+            recipe=recipe,
+        ),
     )
 
 
@@ -316,12 +338,15 @@ def _compare(stage: str, recorded: object, current: object) -> StageComparison:
         # A recorded digest of rendered prompts compares as unknown.
         a, b = preprocess_key(theirs), preprocess_key(mine)
     else:
-        # Inference compares as a resume refuses it: by its configuration.
         a = theirs.get("digest") if theirs is not None else None
         b = mine.get("digest") if mine is not None else None
     if not isinstance(a, str) or not isinstance(b, str):
         return "unknown"
-    return "same" if a == b else "differs"
+    return _verdict(a == b)
+
+
+def _verdict(same: bool) -> StageComparison:
+    return "same" if same else "differs"
 
 
 class SampleDigests(TypedDict):

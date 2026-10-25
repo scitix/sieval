@@ -18,6 +18,12 @@ from unittest.mock import PropertyMock, patch
 import numpy as np
 import pytest
 
+from sieval.core.models import (
+    Deployment,
+    DeploymentPlanProjection,
+    Engine,
+    ServingFacts,
+)
 from sieval.core.models.capabilities import RequestDefaults
 from sieval.core.tasks.run_meta import (
     ABSENT,
@@ -41,16 +47,20 @@ from sieval.core.tasks.run_meta import (
     grader_modules,
     grader_task,
     inference_identity,
+    inference_matches,
     is_code_identity,
     judge_identities,
     judge_model_id,
     judge_model_refs,
+    legacy_inference_digest,
+    model_request_args,
     new_run_record,
     ordered_stages,
     prompt_of,
     read_identity,
     request_definition,
     request_digest,
+    serving_fingerprint,
     validate_judge_model_ref,
     warn_unmatched_judge_refs,
 )
@@ -285,7 +295,7 @@ class TestInferenceIdentity:
                 "max_iterations": None,
                 "max_retries": None,
             },
-            "recipe": None,
+            "context_limit": None,
         }
         args.update(overrides)
         return inference_identity(**args)["digest"]
@@ -302,6 +312,20 @@ class TestInferenceIdentity:
         b = MockChatModel(temperature=0.0)
         b._api_base = "http://elsewhere:9000/v1"
         assert self._identity(a) == self._identity(b)
+
+    def test_how_the_model_is_served_is_left_out(self):
+        """An engine the run launched and the same model served elsewhere ask
+        the same: the engine is the serving fingerprint's, not this digest's."""
+        external = self._identity(MockChatModel(temperature=0.0))
+        with patch.object(
+            MockChatModel,
+            "deployment",
+            new_callable=PropertyMock,
+            return_value=_launched_deployment(),
+        ):
+            launched = MockChatModel(temperature=0.0)
+            assert launched.deployment.engine.engine_id == "sglang"
+            assert self._identity(launched) == external
 
     def test_request_arguments_count(self):
         assert self._identity(MockChatModel(temperature=0.0)) != self._identity(
@@ -326,11 +350,114 @@ class TestInferenceIdentity:
             model, task_args={"n": 4}
         )
 
-    def test_recipe_counts(self):
+    def test_context_limit_counts(self):
+        """It decides which prompts overflow, so it changes results."""
         model = MockChatModel()
-        assert self._identity(model, recipe={"backend": "vllm"}) != self._identity(
-            model, recipe={"backend": "sglang"}
+        assert self._identity(model, context_limit=4096) != self._identity(
+            model, context_limit=32768
         )
+        assert self._identity(model, context_limit=4096) != self._identity(model)
+
+
+def _launched_deployment() -> Deployment:
+    return Deployment(
+        deployment_id="dep-1",
+        plan=DeploymentPlanProjection(fingerprint="sha256:p", engine_id="sglang"),
+        engine=Engine("sglang"),
+        engine_source="deployment",
+        api_base="http://127.0.0.1:30000/v1",
+        endpoints={},
+        topology=None,
+        metrics_url=None,
+        facts=ServingFacts(engine_version="0.5.4"),
+    )
+
+
+class TestLegacyInferenceDigest:
+    """The digest identity schemas 1 to 3 wrote, kept so their directories
+    still resume."""
+
+    KEYS = {"deterministic": False, "max_iterations": None, "max_retries": None}
+
+    def _digest(self, model, recipe=None):
+        return legacy_inference_digest(
+            model=model, task_args={"n": 1}, runner_keys=self.KEYS, recipe=recipe
+        )
+
+    def test_matches_the_formula_released_directories_were_written_with(self):
+        model = MockChatModel(temperature=0.0)
+        payload = {
+            "model_args": model_request_args(model),
+            "engine": "unknown",
+            "task_args": {"n": 1},
+            "runner": self.KEYS,
+            "recipe": {"backend": "vllm"},
+        }
+        assert self._digest(model, {"backend": "vllm"}) == digest(payload)
+
+    def test_recipe_and_engine_count(self):
+        model = MockChatModel()
+        assert self._digest(model, {"backend": "vllm"}) != self._digest(
+            model, {"backend": "sglang"}
+        )
+        external = self._digest(model)
+        with patch.object(
+            MockChatModel,
+            "deployment",
+            new_callable=PropertyMock,
+            return_value=_launched_deployment(),
+        ):
+            assert self._digest(MockChatModel()) != external
+
+
+class TestInferenceMatches:
+    def test_this_schema_compares_the_request_identity(self):
+        block = {"schema": IDENTITY_SCHEMA, "inference": {"digest": "sha256:a"}}
+        assert inference_matches(block, "sha256:a", "sha256:old") is True
+        assert inference_matches(block, "sha256:b", "sha256:a") is False
+
+    @pytest.mark.parametrize("schema", [1, 2, 3])
+    def test_an_older_schema_compares_the_digest_it_was_written_with(self, schema):
+        block = {"schema": schema, "inference": {"digest": "sha256:old"}}
+        assert inference_matches(block, "sha256:new", "sha256:old") is True
+        assert inference_matches(block, "sha256:old", "sha256:other") is False
+        assert inference_matches(block, "sha256:old", None) is None
+
+    def test_an_unknown_side_is_unknown(self):
+        assert inference_matches(None, "sha256:a") is None
+        assert inference_matches({"schema": IDENTITY_SCHEMA}, "sha256:a") is None
+        block = {"schema": IDENTITY_SCHEMA, "inference": {"digest": None}}
+        assert inference_matches(block, "sha256:a") is None
+        block = {"schema": IDENTITY_SCHEMA, "inference": {"digest": "sha256:a"}}
+        assert inference_matches(block, None) is None
+
+
+class TestServingFingerprint:
+    def test_an_external_endpoint(self):
+        assert serving_fingerprint(MockChatModel(), None) == {
+            "engine": "unknown",
+            "engine_version": None,
+            "launch": "external",
+            "recipe": None,
+        }
+
+    def test_an_engine_the_run_launched(self):
+        model = MockChatModel()
+        recipe = {"backend": "sglang", "assignments": [{"role": "full"}]}
+        with patch.object(
+            type(model),
+            "deployment",
+            new_callable=PropertyMock,
+            return_value=_launched_deployment(),
+        ):
+            fingerprint = serving_fingerprint(model, recipe)
+        assert fingerprint == {
+            "engine": "sglang",
+            "engine_version": "0.5.4",
+            "launch": "in_run",
+            "recipe": recipe,
+        }
+        assert fingerprint["recipe"] is not recipe
 
 
 # ===================================================================
@@ -1153,28 +1280,30 @@ class TestDocument:
         read = read_identity(block)
         assert read is not None
         identity, legacy = read
-        assert identity["schema"] == IDENTITY_SCHEMA == 3
+        assert identity["schema"] == IDENTITY_SCHEMA == 4
         assert identity["data"] == data
         assert identity["preprocess"] == prompt
         assert identity["inference"] == {"digest": "sha256:i"}
         assert all(identity.get(s) is None for s in GRADING_STAGES)
         assert legacy == grader
-        assert carried_identity({"identity": block}) == identity
+        # Carried, the old inference digest is dropped: schema 4 digests it
+        # without serving, so the old one would read as differing.
+        assert carried_identity({"identity": block}) == {**identity, "inference": None}
 
     def test_a_schema_2_block_is_read_as_written(self):
         prompts = {"digest": "sha256:p", "samples": 1}
         read = read_identity({"schema": 2, "preprocess": prompts})
         assert read is not None
         identity, legacy = read
-        assert identity["schema"] == 3
+        assert identity["schema"] == IDENTITY_SCHEMA
         assert identity["preprocess"] == prompts
         assert not is_code_identity(identity["preprocess"])
         assert legacy is None
 
     def test_another_schema_is_not_read(self):
-        assert read_identity({"schema": 4, "data": {"digest": "x"}}) is None
+        assert read_identity({"schema": 5, "data": {"digest": "x"}}) is None
         assert read_identity("nope") is None
-        assert carried_identity({"identity": {"schema": 4}}) == empty_identity()
+        assert carried_identity({"identity": {"schema": 5}}) == empty_identity()
 
     def test_carried_runs_tolerates_old_and_malformed(self):
         assert carried_runs(None) == []

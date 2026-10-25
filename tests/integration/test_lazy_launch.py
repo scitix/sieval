@@ -28,6 +28,7 @@ from sieval.core.models import connection_factory
 from sieval.core.models.request_log import RecordingOpenAIClient
 from sieval.core.tasks import Task
 from sieval.core.tasks.report_metrics import report_metrics
+from sieval.core.tasks.run_meta import IDENTITY_SCHEMA
 from sieval.infer.backends.translator import BackendCommand
 from sieval.infer.config import InferHandle
 from sieval.infer.deployer import command_endpoint
@@ -433,7 +434,7 @@ class TestDryRunReportsWhatARunWouldDo:
             "metrics": {"names": ["correct", "total"], "patterns": []},
         }
         stages = data["tasks"]["echo"]["stages"]
-        assert stages["identity_schema"] == 3
+        assert stages["identity_schema"] == IDENTITY_SCHEMA
         assert stages["rerun_from"] is None
         # A third sample changes the set's data identity; each recorded sample
         # still matches its own digest, so both are kept.

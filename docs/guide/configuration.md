@@ -307,13 +307,45 @@ run's, and reruns each sample from the earliest stage that changed:
 | --- | --- |
 | `data` (the selected samples) | Those samples rerun from the start; the rest are kept |
 | `preprocess` (prompt rendering: its code and the arguments it reads) | Every sample reruns from the start |
-| `inference` | Refused, naming the stage |
+| `inference` (what the model is asked: request arguments, dialect, the task's inference arguments, `deterministic`, `max_iterations`, `max_retries`, context limit) | Refused, naming the stage |
 | `postprocess` (answer extraction) | `postprocess`, `feedback` and `report` rerun on the recorded inference |
 | `feedback` (scoring: judges, their prompts and sampling, services) | `feedback` and `report` rerun on the recorded `postprocess` |
 | `report` (metric aggregation) | `report.json` is recomputed from the recorded samples: no engine starts, no judge is called |
 
 So a grading or report change is a plain `--resume`. A sample past iteration 0
 restarts instead of rolling back to a grading stage.
+
+How the model is served is not part of `inference`, so it never refuses a
+resume: a run on 1 GPU resumes on 8, and part of a task served by an engine
+`sieval run` launched resumes against an endpoint serving the same weights.
+Each `runs[]` entry records its own `serving`, so a reader sees what changed:
+
+```json
+"serving": {"engine": "sglang", "engine_version": null, "launch": "in_run", "recipe": {"backend": "sglang", "assignments": ["..."]}}
+```
+
+`launch` is `in_run` for an engine the run launched and `external` for an
+`api_base`; `recipe` is the serving plan (parallel layout, memory fraction,
+hardware) without its checkpoint or host, `null` for an endpoint.
+
+The context limit does count: it decides which prompts overflow. For an
+engine the run launches it is the plan's `max_model_len` (vLLM) or
+`context_length` (SGLang), the smallest across roles. An endpoint states it on
+its root model, and a resume across the two needs both to say the same:
+
+```yaml
+models:
+  subject:
+    api_base: http://gpu-node:30000/v1
+    name: qwen3-8b
+    context_limit: 32768   # the endpoint's window; refused if a plan says otherwise
+    weights: sha256:3f…    # optional: which weights are served, whatever the name
+```
+
+A resume compares the model under test by `weights` when both runs state one,
+else by name, so the same weights served under another name infer on, and other
+weights under the same name are refused. `meta.json` records `weights` next to
+`model`. Neither key is allowed on a derived model.
 
 Each grading stage's identity holds the code its Task method reaches, the task
 class and `grader_args()`; `feedback` also holds every judge and service.
@@ -347,7 +379,12 @@ block is upgraded in place; otherwise every sample regrades.
 
 Schemas 1 and 2 recorded `preprocess` as rendered-prompt digests. A resume
 renders each recorded sample once: if all match, the block is upgraded to
-schema 3 in place; otherwise every sample reruns.
+the current schema in place; otherwise every sample reruns.
+
+Schemas 1 to 3 digested `inference` with the engine and serving recipe. A
+resume of such a directory compares that digest as it was written, so the
+engine and recipe must still match once; the block is then rewritten without
+them, and later resumes compare only what the model is asked.
 
 A same-directory resume reruns a sample with no recorded identity, such as one
 interrupted before `preprocess`. Under `record_meta: false` no sample has one,
@@ -413,7 +450,7 @@ in `SIEVAL_TARGET_GPU` ([Resolving for declared GPUs](infer.md#resolving-for-dec
       "samples": 3,
       "resume_plan": {"kept": 2, "rereported": 0, "regraded": 0, "repostprocessed": 0, "restarted": 0, "dropped": 0},
       "stages": {
-        "identity_schema": 3,
+        "identity_schema": 4,
         "stages": {"data": "differs", "preprocess": "same", "inference": "same", "postprocess": "same", "feedback": "same", "report": "same"},
         "rerun_from": null,
         "refused": null,

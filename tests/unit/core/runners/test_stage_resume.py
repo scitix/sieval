@@ -36,7 +36,12 @@ from sieval.core.tasks import (
     build_prompt_record,
     build_rollout_judgement,
 )
-from sieval.core.tasks.run_meta import GRADING_STAGES, grader_key
+from sieval.core.tasks.run_meta import (
+    GRADING_STAGES,
+    IDENTITY_SCHEMA,
+    grader_key,
+    legacy_inference_digest,
+)
 from sieval.core.tasks.task import Task
 from tests.conftest import MockCountingChatModel, MockDataset, make_config
 
@@ -740,7 +745,7 @@ class TestInterruptedBeforeEveryPreprocess:
         assert (root / "meta.json").read_bytes() == before
 
 
-def test_recorded_identity_reads_schemas_1_to_3():
+def test_recorded_identity_reads_schemas_1_to_4():
     assert recorded_identity(None) is None
     assert recorded_identity({"identity": {"schema": 99}}) is None
     identity = recorded_identity({"identity": {"schema": 2, "data": {"digest": "x"}}})
@@ -754,7 +759,7 @@ def test_recorded_identity_reads_schemas_1_to_3():
     }
     identity = recorded_identity({"identity": old})
     assert identity is not None
-    assert identity["schema"] == 3
+    assert identity["schema"] == IDENTITY_SCHEMA
     assert identity["preprocess"] == {"digest": "p"}
     assert identity["postprocess"] is None
     assert recorded_grader({"identity": old}) == old["grader"]
@@ -1332,13 +1337,15 @@ class TestSchema1Directory:
         }
         key = grader_key(meta["identity"]["grader"])
         assert key is not None
-        current = {"inference": {"digest": "sha256:i"}}
-        kept = plan_resume(meta, current, {key})
+        # A schema-1 inference is compared by the digest it was written with.
+        current = {"inference": {"digest": "sha256:new"}}
+        assert plan_resume(meta, current, {key})["refused"] == "inference"
+        kept = plan_resume(meta, current, {key}, legacy_inference="sha256:i")
         assert kept["legacy_grader"] == "kept"
         assert kept["rerun_from"] is None
         assert kept["refused"] is None
         assert all(kept["stages"][s] == "same" for s in GRADING_STAGES)
-        regrade = plan_resume(meta, current, set())
+        regrade = plan_resume(meta, current, set(), legacy_inference="sha256:i")
         assert regrade["legacy_grader"] == "regrade"
         assert regrade["rerun_from"] == "postprocess"
         assert regrade["stages"]["postprocess"] == "differs"
@@ -1372,10 +1379,11 @@ def test_plan_resume_rolls_back_to_the_earliest_changed_stage():
 # preprocess is code: a change restarts every sample, and a directory that
 # recorded rendered prompts (identity schema 1 or 2) is upgraded in place
 # ===================================================================
-def _as_schema_2(root: Path) -> None:
-    """Rewrite *root* as a schema-2 run left it: ``preprocess`` a digest over
-    every sample's rendered prompt, each ``preprocess`` record stamped with
-    its prompt digest instead of a ``preprocess`` key."""
+def _as_schema_2(root: Path, task: Task) -> None:
+    """Rewrite *root* as a schema-2 run of *task* left it: ``preprocess`` a
+    digest over every sample's rendered prompt, each ``preprocess`` record
+    stamped with its prompt digest instead of a ``preprocess`` key, and
+    ``inference`` digested with the engine and recipe."""
     from sieval.core.tasks.run_meta import aggregate_digest, digest, prompt_of
 
     prompts: list[tuple[int, None, str]] = []
@@ -1408,6 +1416,16 @@ def _as_schema_2(root: Path) -> None:
     meta = _meta(root)
     meta["identity"]["schema"] = 2
     meta["identity"]["preprocess"] = aggregate_digest(prompts)
+    meta["identity"]["inference"]["digest"] = legacy_inference_digest(
+        model=task.model,
+        task_args=task.inference_args(),
+        runner_keys={
+            "deterministic": False,
+            "max_iterations": None,
+            "max_retries": None,
+        },
+        recipe=None,
+    )
     (root / "meta.json").write_bytes(orjson.dumps(meta))
 
 
@@ -1505,16 +1523,16 @@ class TestSchema2Upgrade:
     @pytest.mark.anyio
     async def test_unchanged_prompts_upgrade_in_place(self, tmp_path):
         """Rendering the recorded samples once shows nothing changed: every
-        sample is kept, and the block is rewritten as schema 3."""
+        sample is kept, and the block is rewritten as this schema."""
         root = await _first(tmp_path)
-        _as_schema_2(root)
+        _as_schema_2(root, _task()[0])
         task, model = _task()
         await _run(tmp_path, "first", task, resume=True)
         assert model.call_count == 0
         assert task.calls["preprocess"] == 3  # the one upgrade pass
         assert task.calls["postprocess"] == 0
         identity = _meta(root)["identity"]
-        assert identity["schema"] == 3
+        assert identity["schema"] == IDENTITY_SCHEMA
         assert "modules" in identity["preprocess"]
 
         # Upgraded: the next resume renders nothing.
@@ -1526,7 +1544,7 @@ class TestSchema2Upgrade:
     @pytest.mark.anyio
     async def test_unchanged_prompts_upgrade_an_unfinished_run(self, tmp_path):
         root = await _first(tmp_path)
-        _as_schema_2(root)
+        _as_schema_2(root, _task()[0])
         (root / "report.json").unlink()
         task, model = _task()
         await _run(tmp_path, "first", task, resume=True)
@@ -1538,7 +1556,7 @@ class TestSchema2Upgrade:
     @pytest.mark.anyio
     async def test_a_changed_prompt_restarts_every_sample(self, tmp_path):
         root = await _first(tmp_path)
-        _as_schema_2(root)
+        _as_schema_2(root, _task()[0])
         task, model = _task(prefix="Q: ")
         await _run(tmp_path, "first", task, resume=True)
         assert model.call_count == 3
@@ -1549,7 +1567,7 @@ class TestSchema2Upgrade:
         from sieval.core.runners import task_resume_plan
 
         root = await _first(tmp_path)
-        _as_schema_2(root)
+        _as_schema_2(root, _task()[0])
         task, _ = _task()
         keys = {"deterministic": False, "max_iterations": 1, "max_retries": 3}
         plan = task_resume_plan(task, _meta(root), runner_keys=keys)

@@ -426,11 +426,23 @@ class TestResume:
         assert asked.count("Q2") == 1
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("before", "after"),
+        [
+            ("max_retries: 2", "max_retries: 2\n      temperature: 0.5"),
+            # A larger window may fit the prompt: the endpoint's context limit
+            # is part of the request identity, unlike how the model is served.
+            ("api_key: k", "api_key: k\n    context_limit: 131072"),
+        ],
+        ids=["sampling", "context_limit"],
+    )
     async def test_a_refusal_under_another_inference_identity_is_asked_again(
         self,
         tmp_path: Path,
         asked: _Asked,
         monkeypatch: pytest.MonkeyPatch,
+        before: str,
+        after: str,
     ) -> None:
         # Every sample refused, so none keeps an inference and the resume's
         # inference gate lets a changed identity through: only the replay's own
@@ -453,15 +465,11 @@ class TestResume:
         assert _read(task_dir, "report.json")["sieval"]["failed"] == 3
         first_digest = _read(task_dir, "meta.json")["identity"]["inference"]["digest"]
 
-        config.write_text(
-            config.read_text().replace(
-                "max_retries: 2", "max_retries: 2\n      temperature: 0.5"
-            )
-        )
+        config.write_text(config.read_text().replace(before, after))
         await arun_session(config, resume=True)
         meta = _read(task_dir, "meta.json")
         assert meta["identity"]["inference"]["digest"] != first_digest
-        # Asked again under the new sampling, not scored from the old record.
+        # Asked again under the new identity, not scored from the old record.
         assert asked.count("Q2") == 2
         counts = _read(task_dir, "report.json")["sieval"]
         assert counts["failed"] == 0

@@ -60,6 +60,7 @@ from sieval.core.tasks.run_meta import (
     ABSENT,
     GRADING_STAGES,
     IDENTITY_ERRORS,
+    LEGACY_INFERENCE_SCHEMAS,
     RESULT_SCHEMA_VERSION,
     DigestedStage,
     GradingIdentity,
@@ -69,6 +70,7 @@ from sieval.core.tasks.run_meta import (
     ResumeOutcomes,
     RunFrom,
     RunRequests,
+    ServingFingerprint,
     aggregate_digest,
     call_key,
     digest,
@@ -77,12 +79,15 @@ from sieval.core.tasks.run_meta import (
     grader_task,
     grading_identities,
     inference_identity,
+    inference_matches,
     is_code_identity,
     judge_identities,
     legacy_grader_keys,
+    legacy_inference_digest,
     preprocess_key,
     prompt_of,
     request_digest,
+    serving_fingerprint,
     stage_code,
     stage_key,
     validate_judge_model_ref,
@@ -486,13 +491,18 @@ class TaskRunner:
         config: TaskRunnerConfig | None = None,
         *,
         inference_recipe: dict[str, JSONValue] | None = None,
+        context_limit: int | None = None,
+        weights: str | None = None,
         resume_config_diff: list[str] | None = None,
         legacy_match: LegacyStageMatch | None = None,
         unserved_candidate: bool = False,
     ):
         """*inference_recipe* is the serving plan of the model under test,
-        without its checkpoint, for the inference identity; ``None`` when the
-        model is not served by SiEval. *resume_config_diff* is the config
+        without its checkpoint, for ``runs[].serving``; ``None`` when the
+        model is not served by SiEval. *context_limit* is its effective
+        context window in tokens, for the inference identity; ``None`` when
+        unknown. *weights* names the weights it serves, compared instead of
+        the model name when both runs state one. *resume_config_diff* is the config
         change a resume made, for ``runs[].config``. *legacy_match* compares a
         recorded run without identities through its persisted config.
         *unserved_candidate* says no engine serves the model under test, since
@@ -504,6 +514,8 @@ class TaskRunner:
         self._task = task
         self._config = config or TaskRunnerConfig()
         self._inference_recipe = inference_recipe
+        self._context_limit = context_limit
+        self._weights = weights
         self._resume_config_diff = list(resume_config_diff or [])
         self._legacy_match = LegacyStageMatch(**(legacy_match or {}))
         self._unserved_candidate = unserved_candidate
@@ -919,6 +931,8 @@ class TaskRunner:
             resumed=resumed,
             run_from=self._run_from,
             model=self._model_name(),
+            weights=self._weights,
+            serving=self._serving(),
             keep_recorded_model=keeps_recorded_model,
             config_diff=self._resume_config_diff if resumed else (),
             config_path=self._config_path(),
@@ -976,14 +990,7 @@ class TaskRunner:
         """
         if self._task.context_overflow != "score":
             return
-        identity = recorded_identity(self._recorded)
-        recorded = identity["inference"] if identity is not None else None
-        if (
-            inference is None
-            or recorded is None
-            or recorded.get("digest") != inference["digest"]
-            or self._model_differs()
-        ):
+        if self._inference_matches(inference) is not True or self._model_differs():
             return
         for sid, ctx in self._contexts.items():
             if (
@@ -1032,6 +1039,8 @@ class TaskRunner:
         await self._saver.begin_run(
             resumed=True,
             model=self._model_name(),
+            weights=self._weights,
+            serving=self._serving(),
             config_diff=self._resume_config_diff,
             config_path=self._config_path(),
             identity=self._resume_identity_update(),
@@ -1110,6 +1119,8 @@ class TaskRunner:
         await self._saver.begin_run(
             resumed=True,
             model=self._model_name(),
+            weights=self._weights,
+            serving=self._serving(),
             config_diff=self._resume_config_diff,
             config_path=self._config_path(),
             identity=self._resume_identity_update(report_unknown=True),
@@ -1959,8 +1970,17 @@ class TaskRunner:
     def _resume_identity_update(self, *, report_unknown: bool = False) -> dict:
         """This run's preprocess and grading identities, which a fast resume or
         re-report writes at its start to upgrade an older block in place.
-        ``report`` stays unknown until a re-report writes it."""
+        ``report`` stays unknown until a re-report writes it. ``inference``,
+        which matched to get here, is rewritten in this schema's digest with
+        the recorded ``requests``."""
         update: dict = {"preprocess": self._preprocess_identity()}
+        identity = recorded_identity(self._recorded)
+        recorded = identity["inference"] if identity is not None else None
+        inference = self._inference_identity()
+        if inference is not None and recorded is not None:
+            if "requests" in recorded:
+                inference["requests"] = recorded["requests"]
+            update["inference"] = inference
         grading = self._grading_identities()
         if grading is not None:
             update.update(grading)
@@ -2039,9 +2059,9 @@ class TaskRunner:
         """Refuse a resume whose inference differs from the recorded run's."""
         identity = recorded_identity(self._recorded)
         if identity is not None and identity["inference"] is not None:
-            recorded = identity["inference"].get("digest")
-            if current is not None and recorded == current["digest"]:
+            if self._inference_matches(current):
                 return
+            recorded = identity["inference"].get("digest")
             reason = (
                 "this run's inference identity is unknown"
                 if current is None
@@ -2060,8 +2080,8 @@ class TaskRunner:
             f"Resume refused: stage `inference` differs ({reason}).\n"
             f"  recorded: {self._recorded_dir()}\n"
             "  Inference is reused, never rerun, by a resume. Start fresh in a "
-            "new result_dir, or match the model, its request arguments, the "
-            "task's inference arguments and the serving recipe.",
+            "new result_dir, or match the model's request arguments, the "
+            "task's inference arguments and the context limit.",
             task=self._task.name,
         )
 
@@ -2153,6 +2173,10 @@ class TaskRunner:
             **(self._grading_identities() or {}),
         }
         plan = plan_resume(self._recorded, current, self._legacy_grader_keys())
+        match = self._inference_matches(self._inference_identity())
+        plan["stages"]["inference"] = (
+            "unknown" if match is None else "same" if match else "differs"
+        )
         if plan["legacy_preprocess"] and self._legacy_prompts_match is not None:
             plan["stages"]["preprocess"] = (
                 "same" if self._legacy_prompts_match else "differs"
@@ -2254,13 +2278,7 @@ class TaskRunner:
                 and self._legacy_match.get("inference") is not False
             )
             return "all" if trusted else None
-        inference = self._inference_identity()
-        recorded_inference = identity["inference"]
-        if (
-            inference is None
-            or recorded_inference is None
-            or recorded_inference.get("digest") != inference["digest"]
-        ):
+        if self._inference_matches(self._inference_identity()) is not True:
             return None
         recorded_data = identity["data"]
         if (
@@ -2562,7 +2580,14 @@ class TaskRunner:
         return model if isinstance(model, str) else None
 
     def _model_differs(self) -> bool:
-        """Whether the recorded run was for another model under test."""
+        """Whether the recorded run was for another model under test.
+
+        By the weights each run serves when both state them, so one model
+        reached under another name is the same; else by model name.
+        """
+        weights = (self._recorded or {}).get("weights")
+        if isinstance(weights, str) and self._weights is not None:
+            return weights != self._weights
         recorded = self._recorded_model()
         return recorded is not None and recorded != self._model_name()
 
@@ -2604,20 +2629,49 @@ class TaskRunner:
             logger.warning("Identity digest unavailable: {}", exc)
             return None
 
+    def _runner_keys(self) -> dict[str, JSONValue]:
+        return {
+            "deterministic": self._config.deterministic,
+            "max_iterations": self._config.max_iterations,
+            "max_retries": self._config.max_retries,
+        }
+
     def _inference_identity(self) -> InferenceIdentity | None:
         try:
             return inference_identity(
                 model=self._task.model,
                 task_args=self._task.inference_args(),
-                runner_keys={
-                    "deterministic": self._config.deterministic,
-                    "max_iterations": self._config.max_iterations,
-                    "max_retries": self._config.max_retries,
-                },
-                recipe=self._inference_recipe,
+                runner_keys=self._runner_keys(),
+                context_limit=self._context_limit,
             )
         except (TypeError, ValueError, AttributeError) as exc:
             logger.warning("Inference identity unavailable: {}", exc)
+            return None
+
+    def _inference_matches(self, current: InferenceIdentity | None) -> bool | None:
+        """:func:`inference_matches` against the recorded ``meta.json``; a block
+        before schema 4 is compared by the digest it was written with."""
+        block = (self._recorded or {}).get("identity")
+        legacy: str | None = None
+        if isinstance(block, dict) and block.get("schema") in LEGACY_INFERENCE_SCHEMAS:
+            try:
+                legacy = legacy_inference_digest(
+                    model=self._task.model,
+                    task_args=self._task.inference_args(),
+                    runner_keys=self._runner_keys(),
+                    recipe=self._inference_recipe,
+                )
+            except (TypeError, ValueError, AttributeError) as exc:
+                logger.warning("Inference identity unavailable: {}", exc)
+        return inference_matches(
+            block, current["digest"] if current is not None else None, legacy
+        )
+
+    def _serving(self) -> ServingFingerprint | None:
+        try:
+            return serving_fingerprint(self._task.model, self._inference_recipe)
+        except (TypeError, ValueError, AttributeError) as exc:
+            logger.warning("Serving fingerprint unavailable: {}", exc)
             return None
 
     def _grading_identities(self) -> dict[str, GradingIdentity] | None:

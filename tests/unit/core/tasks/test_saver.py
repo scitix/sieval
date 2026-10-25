@@ -12,7 +12,7 @@ import pytest
 
 from sieval.core.tasks.consts import TaskStage
 from sieval.core.tasks.context import TaskContext, TaskRunIdentity
-from sieval.core.tasks.run_meta import RESULT_SCHEMA_VERSION
+from sieval.core.tasks.run_meta import IDENTITY_SCHEMA, RESULT_SCHEMA_VERSION
 from sieval.core.tasks.saver import TaskSaver
 from sieval.core.utils import atomic as saver_module
 
@@ -392,7 +392,7 @@ class TestRunMeta:
         assert meta["task"] == _IDENTITY
         assert meta["model"] == "candidate"
         assert meta["identity"] == {
-            "schema": 3,
+            "schema": IDENTITY_SCHEMA,
             "data": None,
             "preprocess": None,
             "inference": None,
@@ -565,7 +565,7 @@ class TestRunMeta:
         )
         await TaskSaver(root_dir=root).begin_run(resumed=True)
         meta = _read_meta(root)
-        assert meta["identity"]["schema"] == 3
+        assert meta["identity"]["schema"] == IDENTITY_SCHEMA
         assert meta["identity"]["data"] is None
         # Malformed entries are dropped, well-formed ones kept.
         assert [r["start"] for r in meta["runs"]] == ["fresh", "resume"]
@@ -596,9 +596,10 @@ class TestRunMeta:
             await saver.set_identity(grader=None)
 
     @pytest.mark.anyio
-    async def test_a_schema_1_identity_is_carried_as_schema_3(self, tmp_path):
+    async def test_a_schema_1_identity_is_carried_as_this_schema(self, tmp_path):
         """`prompt` becomes `preprocess`; the unsplittable `grader` is dropped,
-        leaving the grading stages unknown until the run writes them."""
+        leaving the grading stages unknown until the run writes them, and so is
+        the `inference` digest, which included how the model was served."""
         root = tmp_path / "old"
         root.mkdir()
         (root / "meta.json").write_bytes(
@@ -618,10 +619,10 @@ class TestRunMeta:
         )
         await TaskSaver(root_dir=root).begin_run(resumed=True)
         assert _read_meta(root)["identity"] == {
-            "schema": 3,
+            "schema": IDENTITY_SCHEMA,
             "data": {"digest": "sha256:d", "samples": 1},
             "preprocess": {"digest": "sha256:p", "samples": 1},
-            "inference": {"digest": "sha256:i"},
+            "inference": None,
             "postprocess": None,
             "feedback": None,
             "report": None,

@@ -4,7 +4,7 @@ The fixtures are ``human_eval_0shot_gen`` task directories that SiEval 0.10.0,
 0.10.2 and 0.11.0 wrote for five HumanEval problems against a fake model.
 ``human_eval-5.jsonl`` holds those five problems, so the data identity they
 recorded matches. All three recorded identity schema 1; a resume reads it and
-writes schema 3, rendering the five recorded prompts once to check that
+writes schema 4, rendering the five recorded prompts once to check that
 ``preprocess`` is unchanged.
 
 The grading tests point ``SIEVAL_CODE_EVAL_API`` at a fake code evaluator and
@@ -229,14 +229,18 @@ class TestResumeAcrossReleases:
         assert resumed["resume"]["repostprocessed"] == 0
         assert resumed["resume"]["restarted"] == 0
         identity = meta["identity"]
-        assert identity["schema"] == IDENTITY_SCHEMA == 3
+        assert identity["schema"] == IDENTITY_SCHEMA == 4
         assert "grader" not in identity and "prompt" not in identity
         old = recorded["identity"]
         assert identity["data"] == old["data"]
         # The rendered prompts became the code identity a fresh run writes.
         assert is_code_identity(identity["preprocess"])
         assert identity["preprocess"] != old["prompt"]
-        assert identity["inference"] == old["inference"]
+        # Matched by the digest schema 1 wrote; rewritten in schema 4's, which
+        # leaves serving out, with the requests the recorded run sent.
+        assert identity["inference"]["digest"] != old["inference"]["digest"]
+        assert identity["inference"]["requests"] == old["inference"]["requests"]
+        assert "serving" in resumed
         assert all(identity[stage] is not None for stage in GRADING_STAGES)
         assert identity["feedback"]["services"] == old["grader"]["services"]
         assert report["score"] == 20.0
@@ -309,7 +313,7 @@ class TestResumeAcrossReleases:
         assert resumed["reran"] == ["postprocess", "feedback", "report"]
         assert resumed["resume"]["repostprocessed"] == 5
         identity = _meta(root)["identity"]
-        assert identity["schema"] == 3
+        assert identity["schema"] == IDENTITY_SCHEMA
         assert identity["feedback"]["args"]["timeout"] == 4.0
         # `timeout` is a grading argument, never read by preprocess.
         assert "timeout" not in identity["preprocess"]["args"]

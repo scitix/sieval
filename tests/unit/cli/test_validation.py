@@ -281,6 +281,22 @@ class TestValidateModels:
         result = validate_eval_config(cfg)
         assert result.ok, result.errors
 
+    @pytest.mark.parametrize(
+        ("key", "good", "bad"),
+        [("context_limit", 32768, 0), ("weights", "sha256:w", "")],
+    )
+    def test_what_a_root_serves(self, key, good, bad):
+        def check(models):
+            return validate_eval_config({"models": models, "datasets": {}, "tasks": {}})
+
+        assert check({"m": {"name": "x", key: good}}).ok
+        result = check({"m": {"name": "x", key: bad}})
+        assert any(f"'{key}' must be" in e for e in result.errors)
+        result = check({"m": {"name": "x", key: True}})
+        assert any(f"'{key}' must be" in e for e in result.errors)
+        result = check({"b": {"name": "x"}, "d": {"base": "b", key: good}})
+        assert any(f"cannot set '{key}'" in e for e in result.errors)
+
     def test_engine_on_derived_model(self):
         cfg = {
             "models": {

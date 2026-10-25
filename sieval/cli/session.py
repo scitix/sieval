@@ -1008,6 +1008,8 @@ class ModelConfigDict(TypedDict, total=False):
     max_retries: int
     client_timeout: dict[str, float]  # connect/read/write/pool seconds
     concurrency_limit: int
+    context_limit: int  # Context window of an endpoint SiEval does not serve
+    weights: str  # The weights served, compared on resume instead of the name
     infer: _InferDict  # infer config for `sieval infer`
     infer_meta: _InferMetaDict  # infer metadata for audit
 
@@ -1222,6 +1224,25 @@ def _configured_credential(
 def _nested_args(config: Mapping[str, object]) -> Mapping[str, object]:
     args = config.get("args")
     return cast(Mapping[str, object], args) if isinstance(args, Mapping) else {}
+
+
+#: Engine parameters that set the context window an engine serves.
+_CONTEXT_LIMIT_PARAMS = ("max_model_len", "context_length")
+
+
+def _planned_context_limit(plan: Mapping[str, Any]) -> int | None:
+    """The context window a serving plan launches its engine with, else ``None``.
+
+    The smallest across roles: a prompt overflows on the first that refuses it.
+    """
+    limits = [
+        value
+        for assignment in plan.get("assignments") or ()
+        if isinstance(assignment, Mapping)
+        for key, value in (assignment.get("engine_params") or {}).items()
+        if key in _CONTEXT_LIMIT_PARAMS and isinstance(value, int)
+    ]
+    return min(limits) if limits else None
 
 
 def _default_client_timeout(deployment: Deployment | None) -> httpx.Timeout:
@@ -4889,6 +4910,8 @@ class EvalSession:
                 task,
                 config=runner_config,
                 inference_recipe=self._inference_recipe_for(candidate.config_name),
+                context_limit=self._context_limit_for(candidate.config_name),
+                weights=self._weights_for(candidate.config_name),
                 resume_config_diff=list(self._resume_config_diff),
                 legacy_match=self._legacy_match_for(task_name, runner_config),
                 unserved_candidate=(
@@ -5004,6 +5027,34 @@ class EvalSession:
             if isinstance(attachment, dict):
                 attachment.pop("address", None)
         return cast(dict[str, JSONValue], recipe)
+
+    def _context_limit_for(self, model_name: str) -> int | None:
+        """*model_name*'s effective context window in tokens, for the inference
+        identity: the limit its serving plan launches the engine with, else the
+        root model's ``context_limit``. ``None`` when neither says.
+
+        A served model whose ``context_limit`` disagrees with its plan is
+        refused: the engine enforces the plan's.
+        """
+        root = self._root_model(model_name)
+        configured = (
+            self._get_named_config_map("models").get(root, {}).get("context_limit")
+        )
+        plan = (self._infer_plans or {}).get(root)
+        planned = _planned_context_limit(plan) if plan is not None else None
+        if planned is not None and configured is not None and configured != planned:
+            raise ValueError(
+                f"Model '{root}': context_limit {configured} differs from the "
+                f"{planned} its serving plan launches the engine with; remove "
+                "context_limit, or set the limit in infer.overrides"
+            )
+        return planned if planned is not None else configured
+
+    def _weights_for(self, model_name: str) -> str | None:
+        """The weights *model_name*'s root states it serves (``weights``), else
+        ``None``."""
+        root = self._root_model(model_name)
+        return self._get_named_config_map("models").get(root, {}).get("weights")
 
     def _resolve_task_dataset(
         self, task_cfg: TaskConfigDict, task_name: str
