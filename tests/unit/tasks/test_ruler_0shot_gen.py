@@ -390,6 +390,70 @@ class TestThinkBudgetReserveContract:
         task.model.agenerate.assert_awaited_once_with(["msg"], max_tokens=8316)
 
 
+class TestMinContext:
+    """The window a RULER dataset's longest request needs from serving."""
+
+    @staticmethod
+    def _min_context(args: dict) -> int | None:
+        from sieval.core.models.requirements import (
+            NamedModelBinding,
+            RequirementContext,
+        )
+
+        binding = NamedModelBinding(
+            binding_id="model:m",
+            root_deployment_key="model:m",
+            requested_model_id="qwen3-8b",
+            config_name="m",
+        )
+        context = RequirementContext(
+            model_bindings={"candidate": binding},
+            dataset_config={"class": "RulerDataset", "args": args},
+        )
+        (record,) = RulerZeroShotGenTask.model_requirements_for(context)
+        return record.requires.min_context
+
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [
+            ({}, 4096),
+            ({"max_seq_length": 32768}, 32768),
+            # Not reserved while packing: thinking needs headroom past the window.
+            (
+                {"max_seq_length": 8192, "enable_thinking": True, "think_budget": 8192},
+                16384,
+            ),
+            # 128k reserves it while packing (the legacy fallback), so no headroom.
+            (
+                {
+                    "max_seq_length": 131072,
+                    "enable_thinking": True,
+                    "think_budget": 8192,
+                },
+                131072,
+            ),
+            (
+                {
+                    "max_seq_length": 8192,
+                    "enable_thinking": True,
+                    "think_budget": 8192,
+                    "reserve_think_budget": True,
+                },
+                8192,
+            ),
+            # Thinking off: the budget is never added at inference.
+            ({"max_seq_length": 8192, "think_budget": 8192}, 8192),
+        ],
+    )
+    def test_min_context_is_the_packed_window_plus_unreserved_thinking(
+        self, args: dict, expected: int
+    ) -> None:
+        assert self._min_context(args) == expected
+
+    def test_an_unreadable_length_declares_nothing(self) -> None:
+        assert self._min_context({"max_seq_length": "${LEN}"}) is None
+
+
 class TestReport:
     """Test report() score aggregation: cell → per-length mean → mean-of-means."""
 

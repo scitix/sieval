@@ -497,6 +497,7 @@ class TaskRunner:
         resume_config_diff: list[str] | None = None,
         legacy_match: LegacyStageMatch | None = None,
         unserved_candidate: bool = False,
+        serving_group: str | None = None,
     ):
         """*inference_recipe* is the serving plan of the model under test,
         without its checkpoint (``None`` when SiEval does not serve it), and
@@ -509,6 +510,8 @@ class TaskRunner:
         recorded run without identities through its persisted config.
         *unserved_candidate* says no engine serves the model under test, since
         a plan found nothing to infer: a run that would infer is refused.
+        *serving_group* is the key of the serving group whose engine serves
+        it, recorded in ``runs[].serving``.
         """
         # A malformed judge reference would leave every grader identity
         # unknown; refuse it before any work.
@@ -522,6 +525,7 @@ class TaskRunner:
         self._resume_config_diff = list(resume_config_diff or [])
         self._legacy_match = LegacyStageMatch(**(legacy_match or {}))
         self._unserved_candidate = unserved_candidate
+        self._serving_group = serving_group
         # Per-stage resume: what was copied in, and what the comparison chose.
         self._run_from: RunFrom | None = None
         self._copied: list[Path] = []
@@ -2678,7 +2682,10 @@ class TaskRunner:
     def _serving(self) -> ServingFingerprint | None:
         try:
             return serving_fingerprint(
-                self._task.model, self._inference_recipe, self._stated_serving
+                self._task.model,
+                self._inference_recipe,
+                self._stated_serving,
+                group=self._serving_group,
             )
         except (TypeError, ValueError, AttributeError) as exc:
             logger.warning("Serving fingerprint unavailable: {}", exc)

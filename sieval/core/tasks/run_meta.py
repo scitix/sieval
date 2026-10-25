@@ -186,7 +186,8 @@ class ServingFingerprint(TypedDict):
 
     ``recipe`` is the serving plan of an engine the run launched, without its
     checkpoint or host; ``stated`` is what the caller declared about an
-    endpoint (:data:`STATED_SERVING_KEYS`), as given.
+    endpoint (:data:`STATED_SERVING_KEYS`), as given. ``group`` is the key of
+    the serving group the orchestration layer launched that engine for.
     """
 
     engine: str
@@ -194,6 +195,7 @@ class ServingFingerprint(TypedDict):
     launch: Literal["in_run", "external"]
     recipe: dict[str, JSONValue] | None
     stated: NotRequired[dict[str, JSONValue]]
+    group: NotRequired[str]
 
 
 #: What a caller may state about how an external endpoint serves the model.
@@ -637,6 +639,8 @@ def serving_fingerprint(
     model: Model,
     recipe: Mapping[str, JSONValue] | None,
     stated: Mapping[str, JSONValue] | None = None,
+    *,
+    group: str | None = None,
 ) -> ServingFingerprint:
     """How *model* is served. A *stated* ``engine_version`` fills one the
     deployment did not report."""
@@ -652,6 +656,8 @@ def serving_fingerprint(
         version = stated.get("engine_version")
         if fingerprint["engine_version"] is None and isinstance(version, str):
             fingerprint["engine_version"] = version
+    if group is not None:
+        fingerprint["group"] = group
     return fingerprint
 
 

@@ -174,6 +174,69 @@ again, which planning cannot foresee. With no engine started it fails at
 `infer`, before any request, and a later `--resume` that starts the engine
 retries it.
 
+### Serving plans: context window and dialect
+
+`sieval run` sizes each served model's context window from what its tasks
+need, before any engine starts (`--dry-run` included).
+
+A task needs its `min_context` when it sets one, else the larger of the window
+its class declares (`TaskRequirements.min_context`; RULER declares
+`max_seq_length` plus any thinking budget not reserved while packing) and its
+effective `max_tokens` (`infer_args`, else the model's `args`). A model states
+what it can serve in a `context:` block on its root entry:
+
+```yaml
+models:
+  qwen3-8b:
+    path: /models/Qwen3-8B
+    context:                 # only for a model sieval run launches
+      native: 40960          # default: config.json max_position_embeddings
+      max: 131072            # longest window reachable with scaling
+      scaling:               # engine parameters that reach it
+        json_model_override_args: '{"rope_scaling": {"rope_type": "yarn", "factor": 4, "original_max_position_embeddings": 32768}}'
+tasks:
+  long_math:
+    class: AIME2025ZeroShotGenTask
+    dataset: aime
+    min_context: 38000       # optional: override the derived need
+```
+
+- A need within the recipe plan's window changes nothing.
+- A need beyond it but within `native` raises the plan's `context_length` /
+  `max_model_len` to the largest such need, for every task on that model.
+- A need beyond `native` and within `max` gets a serving plan of its own: the
+  recipe plan with `scaling` at the largest such need. Scaling changes
+  short-context outputs, so no other task shares that engine. Its serving group
+  is keyed `<model>@<window>`; its engine's handle and logs use that key, and
+  its plans go to `infer_plans.<model>@<window>.yaml`.
+- Any other shortfall is refused before anything starts, naming the task, the
+  tokens it needs and the model's limit. So is a need beyond an
+  `infer.overrides` that pins the window: the override wins, and the plan is
+  not changed under it.
+
+With no `context:` block and no readable `config.json`, the native window is
+unknown, and a need beyond the recipe window is refused (set `context.native`).
+A model with an `api_base` is checked against its `context_limit`; without one,
+an overflow shows per sample, as before.
+
+The window a plan serves is the context limit in each task's inference identity
+(see [Resume](configuration.md#resume)). So raising it, or giving a task a
+plan of its own, changes the identity of the tasks that plan serves, and a
+resume of a run recorded at the old window reruns their inference. That is
+deliberate: a different window overflows different prompts.
+
+The groups run one after another in one `sieval run`, each group's engines
+stopped before the next one's start. `--serving-group KEY` runs one group's
+tasks only; the keys are the ones `--dry-run` lists under `serving`, so each
+group can run as a job of its own, on its own hardware. Groups never share a
+task, so jobs writing one `result_dir` do not collide. A task SiEval serves
+records its group in `meta.json` `runs[].serving.group`, beside the plan in
+`recipe`.
+
+A `gen` model served by SGLang with no `dialect:` gets `dialect: sglang_legacy`
+when one of its tasks scores input (`ppl` tasks): SGLang's `/v1/completions`
+cannot score input. Otherwise `openai_completions` / `openai_chat`, as before.
+
 ### Anthropic Messages
 
 To call the native Anthropic Messages API, select the dialect explicitly and

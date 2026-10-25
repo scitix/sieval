@@ -391,6 +391,28 @@ def introspect_checkpoint_with_config(
     return identity, config
 
 
+def native_context_window(checkpoint: str) -> int | None:
+    """The context window *checkpoint* was trained for, in tokens.
+
+    ``max_position_embeddings`` from its ``config.json``, or from the nested
+    ``text_config`` of a multimodal checkpoint. ``None`` when the file is
+    missing or unreadable, or holds no such positive integer.
+    """
+    try:
+        config = orjson.loads((Path(checkpoint) / "config.json").read_bytes())
+    except (OSError, orjson.JSONDecodeError):
+        return None
+    if not isinstance(config, dict):
+        return None
+    for source in (config, config.get("text_config")):
+        if not isinstance(source, dict):
+            continue
+        value = source.get("max_position_embeddings")
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None
+
+
 async def introspect_checkpoint(checkpoint: str) -> ModelIdentity:
     """Read config.json from a local checkpoint and return ModelIdentity.
 

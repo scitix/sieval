@@ -20,6 +20,7 @@ mode is supported for thinking model compatibility.
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
+import dataclasses
 from collections import defaultdict
 
 from sieval.community.ruler.eval.constants import (
@@ -33,7 +34,9 @@ from sieval.core.tasks import (
     PredictionRecord,
     PromptRecord,
     ReferenceImpl,
+    RequirementContext,
     Task,
+    TaskModelRequirement,
     build_judgement_record,
     build_prediction_record,
     build_prompt_record,
@@ -45,7 +48,12 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
 )
-from sieval.datasets.ruler import RulerDatasetSample, len_tag, thinking_prefill
+from sieval.datasets.ruler import (
+    RulerDatasetSample,
+    len_tag,
+    resolve_reserve_think_budget,
+    thinking_prefill,
+)
 
 _QA_SUBTASKS: frozenset[str] = frozenset({"qa_squad", "qa_hotpotqa"})
 
@@ -129,6 +137,37 @@ class RulerZeroShotGenTask(
         dict[str, float | int | str],
     ]
 ):
+    @classmethod
+    def model_requirements_for(
+        cls, context: RequirementContext
+    ) -> tuple[TaskModelRequirement, ...]:
+        """Declare the served window this dataset's longest request needs.
+
+        Packing fits prompt + ``gen_budget`` into ``max_seq_length``; a
+        ``think_budget`` not reserved while packing is added at inference, so
+        it needs that much headroom beyond the window.
+        """
+        args = context.dataset_config.get("args")
+        args = args if isinstance(args, dict) else {}
+        max_seq_length = args.get("max_seq_length", 4096)
+        if isinstance(max_seq_length, bool) or not isinstance(max_seq_length, int):
+            return super().model_requirements_for(context)
+        think_budget = args.get("think_budget", 0)
+        reserve = args.get("reserve_think_budget")
+        headroom = (
+            think_budget
+            if args.get("enable_thinking")
+            and isinstance(think_budget, int)
+            and not resolve_reserve_think_budget(
+                max_seq_length, reserve if isinstance(reserve, bool) else None
+            )
+            else 0
+        )
+        requires = dataclasses.replace(
+            cls.requires, min_context=max_seq_length + headroom
+        )
+        return cls._bind_model_requirements(context, requires)
+
     async def preprocess(self, raw, ctx):  # noqa: ARG002
         # Support both message patterns:
         # 1. User-message pattern: answer_prefix appended to user message

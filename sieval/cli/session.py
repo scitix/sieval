@@ -43,6 +43,7 @@ from sieval.cli._filter_spec import (
 from sieval.cli.resolution import (
     TASK_MODEL_ROLES,
     binding_resource_argument_paths,
+    default_dialect,
     derive_model_type,
     finalize_inline_model_binding,
     is_task_model_role_sentinel,
@@ -59,6 +60,7 @@ from sieval.cli.resolution import (
     validate_task_model_requirements,
 )
 from sieval.cli.services import RESERVED_LOG_DIR, vendored_services_for
+from sieval.cli.serving import check_context_fits, plan_window
 from sieval.core.datasets import Dataset, TFilterKey
 from sieval.core.datasets.meta import get_dataset_meta
 from sieval.core.models import ChatModel, GenModel, Model, SglangGenModel
@@ -979,6 +981,23 @@ class _PR1CompositeServingReconciler:
         return injected_outcomes
 
 
+@dataclasses.dataclass(frozen=True)
+class SessionServing:
+    """The serving group one session runs (:mod:`sieval.cli.serving`).
+
+    *tasks* are the tasks it runs, ``None`` for all of them. *group* is its
+    key, recorded in each served task's ``runs[].serving.group``. The plans go
+    to *infer_plans_file*, so groups sharing a ``result_dir`` keep one each.
+    """
+
+    tasks: frozenset[str] | None = None
+    group: str | None = None
+    infer_plans_file: str = "infer_plans.yaml"
+
+    def runs(self, task_name: str) -> bool:
+        return self.tasks is None or task_name in self.tasks
+
+
 # Type Definitions for YAML Configuration
 class _InferDict(TypedDict, total=False):
     """YAML-level infer configuration for a model (inline in core/)."""
@@ -1018,6 +1037,7 @@ class ModelConfigDict(TypedDict, total=False):
     serving: dict[str, JSONValue]  # How an endpoint serves it; recorded only
     infer: _InferDict  # infer config for `sieval infer`
     infer_meta: _InferMetaDict  # infer metadata for audit
+    context: dict[str, Any]  # native/max/scaling, see cli/serving.py
 
 
 # Use functional syntax to support "class" key which is a Python keyword
@@ -1042,6 +1062,7 @@ TaskConfigDict = TypedDict(
         "args": dict[str, Any],
         "infer_args": dict[str, JSONValue],  # per-task overrides (scalar + structured)
         "runner_config": dict[str, Any],
+        "min_context": int,  # overrides the derived context need
     },
     total=False,
 )
@@ -1230,33 +1251,6 @@ def _configured_credential(
 def _nested_args(config: Mapping[str, object]) -> Mapping[str, object]:
     args = config.get("args")
     return cast(Mapping[str, object], args) if isinstance(args, Mapping) else {}
-
-
-#: Engine parameters that set the context window an engine serves.
-_CONTEXT_LIMIT_PARAMS = ("max_model_len", "context_length")
-
-
-def _planned_context_limit(plan: Mapping[str, Any]) -> int | None:
-    """The context window a serving plan launches its engine with: the
-    smallest across roles, since a prompt overflows on the first that refuses
-    it. ``None`` when a role leaves it to the checkpoint's default.
-    """
-    limits: list[int] = []
-    for assignment in plan.get("assignments") or ():
-        params = (
-            assignment.get("engine_params") if isinstance(assignment, Mapping) else None
-        ) or {}
-        role = [
-            value
-            for key, value in params.items()
-            if key in _CONTEXT_LIMIT_PARAMS
-            and isinstance(value, int)
-            and not isinstance(value, bool)
-        ]
-        if not role:
-            return None
-        limits.extend(role)
-    return min(limits) if limits else None
 
 
 def _default_client_timeout(deployment: Deployment | None) -> httpx.Timeout:
@@ -1688,6 +1682,9 @@ class EvalSession:
     ```
     """
 
+    # Every task; a run of one serving group replaces it in `__init__`.
+    _serving: SessionServing = SessionServing()
+
     def __init__(
         self,
         config_path: str | Path,
@@ -1705,8 +1702,10 @@ class EvalSession:
         cli_model: CliModel | None = None,
         infer_gpu: str | None = None,
         unlaunched_deployments: Mapping[str, Deployment] | None = None,
+        serving: SessionServing | None = None,
     ):
         self.config_path = Path(config_path)
+        self._serving = serving or SessionServing()
         self.model_override = model_override
         # `True`, or a recorded session dir each task starts from; see
         # `_cli_resume_for`.
@@ -2101,17 +2100,22 @@ class EvalSession:
         binding: NamedModelBinding,
         model_type: Literal["chat", "gen"],
         models_cfg: Mapping[str, dict[str, Any]],
+        root_requirements: AggregatedTaskRequirements | None = None,
     ) -> NamedModelBinding:
-        """Select a dialect from explicit protocol or the derived model kind."""
+        """Select a dialect from explicit protocol, else from the derived model
+        kind, the serving engine and the root's task requirements
+        (:func:`default_dialect`)."""
 
         chain = self._model_config_chain(binding.config_name, models_cfg)
         dialect_declared = any("dialect" in config for _, config in chain)
         explicit_dialect = self._merged_model_value(chain, "dialect")
+        requirements = root_requirements or AggregatedTaskRequirements()
         validate_omitted_dialect_migration(
             binding.config_name,
             model_type,
             self._merged_model_value(chain, "engine"),
             dialect_declared=dialect_declared,
+            input_scoring=requirements.input_scoring,
         )
         if dialect_declared and (
             not isinstance(explicit_dialect, str) or not explicit_dialect
@@ -2124,8 +2128,21 @@ class EvalSession:
             assert isinstance(explicit_dialect, str)
             dialect_id = explicit_dialect
         else:
-            dialect_id = "openai_chat" if model_type == "chat" else "openai_completions"
+            dialect_id = default_dialect(
+                model_type, self._root_engine_id(chain), requirements
+            )
         return dataclasses.replace(binding, dialect_id=dialect_id)
+
+    def _root_engine_id(
+        self, chain: tuple[tuple[str, dict[str, Any]], ...]
+    ) -> object | None:
+        """The engine serving *chain*'s root: the backend of the plan SiEval
+        launches it with, else its ``engine`` assertion."""
+        root_name, root_config = chain[0]
+        plan = (self._infer_plans or {}).get(root_name)
+        if isinstance(plan, Mapping) and plan.get("backend") is not None:
+            return plan.get("backend")
+        return root_config.get("engine")
 
     def _validate_named_resource_config(
         self,
@@ -3321,7 +3338,7 @@ class EvalSession:
             model_types_by_root[root_key] = model_type
             for binding in root_bindings:
                 finalized = self._finalize_named_binding(
-                    binding, model_type, models_cfg
+                    binding, model_type, models_cfg, root_requirements
                 )
                 assert finalized.dialect_id is not None
                 validate_model_type_dialect(
@@ -3496,6 +3513,7 @@ class EvalSession:
         self._validate_external_runtime_obligations(result)
         for diagnostic in result.diagnostics:
             logger.warning(self._format_reconcile_diagnostic(diagnostic))
+        check_context_fits(self.config, self._infer_plans, self._serving.tasks)
 
         self._task_model_requirements = tuple(records)
         self._aggregated_requirements = aggregated
@@ -4870,6 +4888,8 @@ class EvalSession:
         runner_defaults = runner_defaults_raw
 
         for task_name, raw_task_cfg in tasks_cfg.items():
+            if not self._serving.runs(task_name):
+                continue
             task_cfg = cast(TaskConfigDict, raw_task_cfg)
             # Resolve task class
             task_spec = task_cfg.get("class")
@@ -4968,6 +4988,11 @@ class EvalSession:
                 unserved_candidate=(
                     self._root_model(candidate.config_name) in self._unlaunched_roots
                 ),
+                serving_group=(
+                    self._serving.group
+                    if self._inference_recipe_for(candidate.config_name) is not None
+                    else None
+                ),
             )
             logger.info("Added task '{}' with class '{}'", task_name, task_spec)
 
@@ -5046,6 +5071,8 @@ class EvalSession:
         """
         out: dict[str, str] = {}
         for task_name, context in self._task_requirement_contexts.items():
+            if not self._serving.runs(task_name):
+                continue
             candidate = context.model_bindings.get("candidate")
             if isinstance(candidate, NamedModelBinding):
                 out[task_name] = self._root_model(candidate.config_name)
@@ -5094,7 +5121,7 @@ class EvalSession:
         plan = (self._infer_plans or {}).get(root)
         if plan is None:
             return configured
-        planned = _planned_context_limit(plan)
+        planned = plan_window(plan)
         if configured is not None and configured != planned:
             launched = (
                 f"the {planned} its serving plan launches the engine with"
@@ -5411,7 +5438,7 @@ class EvalSession:
             ],
         )
         await self._persist_audit_yaml(
-            target_name="infer_plans.yaml",
+            target_name=self._serving.infer_plans_file,
             body=body,
             header=header,
             audit_label="infer plans",
@@ -5516,6 +5543,7 @@ async def arun_session(
     cli_model: CliModel | None = None,
     infer_gpu: str | None = None,
     unlaunched_deployments: Mapping[str, Deployment] | None = None,
+    serving: SessionServing | None = None,
 ) -> dict[str, Any]:
     """Run tasks defined in a YAML configuration file asynchronously.
 
@@ -5551,6 +5579,9 @@ async def arun_session(
             not launch, since no task had anything for it to infer: the
             deployment launching it would realize, nothing listening. Its
             tasks bind and resume as if it were launched, and refuse to infer.
+        serving: The serving group this session runs, for ``sieval run``: its
+            tasks, each one's ``runs[].serving`` fact, and its plans file.
+            ``None`` runs every task.
 
     Returns:
         A dictionary mapping task names to their reports.
@@ -5569,6 +5600,7 @@ async def arun_session(
         cli_model=cli_model,
         infer_gpu=infer_gpu,
         unlaunched_deployments=unlaunched_deployments,
+        serving=serving,
     )
 
     return await runner.arun()
@@ -5586,6 +5618,7 @@ async def aplan_session(
     self_managed_endpoints: frozenset[str] | set[str] = frozenset(),
     unlaunched_deployments: Mapping[str, Deployment] | None = None,
     cli_model: CliModel | None = None,
+    serving: SessionServing | None = None,
 ) -> tuple[dict[str, str], dict[str, RunPlan | Exception]]:
     """Plan the run :func:`arun_session` would make with the same arguments.
 
@@ -5604,6 +5637,7 @@ async def aplan_session(
         self_managed_endpoints=self_managed_endpoints,
         unlaunched_deployments=unlaunched_deployments,
         cli_model=cli_model,
+        serving=serving,
     )
     plans = await session.aplan()
     return session.task_models(), plans

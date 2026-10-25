@@ -357,6 +357,20 @@ class TestInferenceIdentityFromRunner:
             != _meta(await self._root(tmp_path / "b"))["identity"]["inference"]
         )
 
+    @pytest.mark.anyio
+    async def test_serving_group_is_recorded_but_not_identity(self, tmp_path):
+        """The serving group is a fact of the run, not of what it computed."""
+        task = RecordTask(dataset=MockDataset(SAMPLES), model=MockChatModel(), name="t")
+        runner = TaskRunner(task, make_config(tmp_path / "a"), serving_group="m@1")
+        await runner.arun()
+
+        meta = _meta(runner.root_dir)
+        assert meta["runs"][-1]["serving"]["group"] == "m@1"
+        assert (
+            meta["identity"]["inference"]
+            == _meta(await self._root(tmp_path / "b"))["identity"]["inference"]
+        )
+
     async def _root(self, tmp_path):
         runner = _runner(tmp_path)
         await runner.arun()

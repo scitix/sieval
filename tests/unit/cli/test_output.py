@@ -461,6 +461,31 @@ class TestRenderTextDryRunPlan:
         ) in lines
         assert "needs inference: yes" in lines
 
+    def test_serving_groups_get_a_line_each_when_there_are_several(self) -> None:
+        task = {"start": "fresh", "resume_plan": None, "to_infer": 1, "to_grade": 1}
+        engines = {"m": {"window": 32768}}
+        lines = self._render(
+            True,
+            models={"m": {"needs_inference": True}},
+            serving={
+                "default": {"tasks": ["a"], "engines": engines},
+                "m@100000": {
+                    "tasks": ["b"],
+                    "engines": {"m@100000": {"window": 100000}},
+                },
+            },
+            tasks={"a": task, "b": task},
+        )
+        assert "serving group default: 1 task(s), m at 32768" in lines
+        assert "serving group m@100000: 1 task(s), m@100000 at 100000" in lines
+
+        single = self._render(
+            True,
+            serving={"default": {"tasks": ["a"], "engines": engines}},
+            tasks={"a": task},
+        )
+        assert not any(line.startswith("serving group") for line in single)
+
     def test_a_refused_task_is_named_on_a_failed_dry_run(self) -> None:
         lines = self._render(
             False,

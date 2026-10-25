@@ -243,6 +243,52 @@ class TestValidateModels:
         assert not result.ok
         assert any("type" in e for e in result.errors)
 
+    def test_context_block_is_validated_and_root_only(self):
+        cfg = {
+            "models": {
+                "m": {"name": "x", "context": {"native": 0}},
+                "child": {"base": "m", "context": {"native": 4096}},
+            },
+            "datasets": {},
+            "tasks": {},
+        }
+        result = validate_eval_config(cfg)
+        assert any("context.native must be a positive" in e for e in result.errors)
+        assert any("derived models cannot set 'context'" in e for e in result.errors)
+
+    def test_context_block_is_refused_on_an_endpoint(self):
+        cfg = {
+            "models": {
+                "m": {
+                    "name": "x",
+                    "api_base": "http://x/v1",
+                    "context": {"native": 32768},
+                }
+            },
+            "datasets": {},
+            "tasks": {},
+        }
+        result = validate_eval_config(cfg)
+        assert any(
+            "state an endpoint's window as 'context_limit'" in e for e in result.errors
+        )
+
+    @pytest.mark.parametrize("value", [0, True, "4096"])
+    def test_invalid_task_min_context(self, value):
+        cfg = {
+            "models": {"m": {"name": "x"}},
+            "datasets": {"d": {"class": "GSM8KDataset"}},
+            "tasks": {
+                "t": {
+                    "class": "GSM8KZeroShotGenTask",
+                    "dataset": "d",
+                    "min_context": value,
+                }
+            },
+        }
+        result = validate_eval_config(cfg)
+        assert "Task 't': 'min_context' must be a positive integer" in result.errors
+
     @pytest.mark.parametrize("engine", [None, "", 7, ["vllm"]])
     def test_invalid_engine_value(self, engine):
         cfg = {

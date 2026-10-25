@@ -670,16 +670,21 @@ def validate_omitted_dialect_migration(
     engine_id: object | None,
     *,
     dialect_declared: bool,
+    input_scoring: bool = False,
 ) -> None:
     """Reject an omitted dialect where the old selector changed wire protocol.
 
     Before engine identity and request protocol were separated, ``engine:
     sglang`` selected the native ``/generate`` compatibility path for ``gen``
     models. Defaulting that config to OpenAI Completions would silently change
-    its wire protocol, so require the migration choice to be explicit.
+    its wire protocol, so require the migration choice to be explicit. A root
+    whose tasks need ``input_scoring`` is exempt: :func:`default_dialect`
+    keeps it on the native path.
     """
 
     if dialect_declared or model_type != "gen" or engine_id != "sglang":
+        return
+    if input_scoring:
         return
     raise ValueError(
         f"Model '{model_name}' declares engine: sglang with type: gen but omits "
@@ -687,6 +692,26 @@ def validate_omitted_dialect_migration(
         "dialect: sglang_legacy to preserve the native /generate path, or set "
         "dialect: openai_completions to migrate explicitly."
     )
+
+
+def default_dialect(
+    model_type: Literal["chat", "gen"],
+    engine_id: object | None,
+    requirements: AggregatedTaskRequirements,
+) -> str:
+    """The dialect of a named model that declares none.
+
+    ``openai_chat`` or ``openai_completions`` by model kind, except that a
+    ``gen`` root served by SGLang whose tasks need ``input_scoring`` gets
+    ``sglang_legacy``: SGLang's ``/v1/completions`` rejects ``echo`` with
+    ``logprobs``, so only its native ``/generate`` path can score input.
+    """
+
+    if model_type == "chat":
+        return "openai_chat"
+    if engine_id == "sglang" and requirements.input_scoring:
+        return "sglang_legacy"
+    return "openai_completions"
 
 
 def finalize_inline_model_binding(
@@ -748,51 +773,18 @@ def resolve_config_model_types(
 
     chains = {name: _config_model_chain(name, models) for name in models}
     bindings = {name: _config_named_binding(name, chains[name]) for name in models}
-    records: list[TaskModelRequirement] = []
+    records_by_task, unresolved_tasks = _config_task_records(
+        models, tasks, datasets, bindings
+    )
+    records = [record for group in records_by_task.values() for record in group]
     roots_with_unresolved_task_classes: set[str] = set()
-
-    def mark_unresolved_task_root(
-        task_name: str,
-        task_config: Mapping[str, Any],
-    ) -> None:
-        """Remember where missing task evidence could change model-kind choice."""
-
+    for task_name in unresolved_tasks:
         try:
-            model_name = _config_task_model_name(task_name, task_config, models)
+            model_name = _config_task_model_name(task_name, tasks[task_name], models)
         except ValueError:
             # Normal configuration validation owns malformed/missing references.
-            return
+            continue
         roots_with_unresolved_task_classes.add(bindings[model_name].root_deployment_key)
-
-    for task_name, task_config in tasks.items():
-        class_spec = task_config.get("class")
-        if not isinstance(class_spec, str) or not class_spec:
-            mark_unresolved_task_root(task_name, task_config)
-            continue
-        try:
-            task_class = resolve_task_class(class_spec)
-        except (ImportError, AttributeError):
-            mark_unresolved_task_root(task_name, task_config)
-            continue
-
-        model_name = _config_task_model_name(task_name, task_config, models)
-        candidate = bindings[model_name]
-        context = _config_requirement_context(
-            task_name,
-            task_config,
-            task_class,
-            candidate,
-            datasets,
-        )
-        requirement_hook = getattr(task_class, "model_requirements_for", None)
-        if not callable(requirement_hook):
-            continue
-        task_records = validate_task_model_requirements(
-            task_class,
-            context,
-            requirement_hook(context),
-        )
-        records.extend(task_records)
 
     by_root_bindings: dict[str, list[NamedModelBinding]] = {}
     for binding in bindings.values():
@@ -856,6 +848,100 @@ def resolve_config_model_types(
         finalize_inline_model_binding(binding, model_type)
 
     return ConfigModelTypeResolution(by_root, by_config)
+
+
+def config_task_candidates(
+    config: Mapping[str, Any],
+) -> dict[str, tuple[str, AggregatedTaskRequirements]]:
+    """Each task's candidate root model and the requirements it declares on it.
+
+    The root is the model config at the top of the candidate's ``base:`` chain,
+    the one that is served. The requirements are those of the task's
+    ``model_requirements_for()`` hook for its candidate role, unioned; a task
+    whose class does not resolve maps to empty requirements, as
+    :func:`resolve_config_model_types` leaves it to configuration validation.
+    A task whose model reference is malformed is left out.
+    """
+
+    if not isinstance(config, Mapping):
+        raise TypeError("config must be a mapping")
+    models = validate_named_config_map("models", config.get("models", {}))
+    tasks = validate_named_config_map("tasks", config.get("tasks", {}))
+    datasets = validate_named_config_map("datasets", config.get("datasets", {}))
+    chains = {name: _config_model_chain(name, models) for name in models}
+    bindings = {name: _config_named_binding(name, chains[name]) for name in models}
+    records_by_task, _ = _config_task_records(
+        models, tasks, datasets, bindings, skip_unbound=True
+    )
+
+    out: dict[str, tuple[str, AggregatedTaskRequirements]] = {}
+    for task_name, task_config in tasks.items():
+        try:
+            model_name = _config_task_model_name(task_name, task_config, models)
+        except ValueError:
+            continue
+        candidate = bindings[model_name]
+        out[task_name] = (
+            chains[model_name][0][0],
+            aggregate_task_requirements(
+                record
+                for record in records_by_task.get(task_name, ())
+                if record.binding == candidate
+            ),
+        )
+    return out
+
+
+def _config_task_records(
+    models: Mapping[str, dict[str, Any]],
+    tasks: Mapping[str, dict[str, Any]],
+    datasets: Mapping[str, dict[str, Any]],
+    bindings: Mapping[str, NamedModelBinding],
+    *,
+    skip_unbound: bool = False,
+) -> tuple[dict[str, tuple[TaskModelRequirement, ...]], list[str]]:
+    """Run each task's requirement hook with dialect-free bindings.
+
+    Returns the validated records by task, and the tasks whose class did not
+    resolve. A task with no hook contributes no records. A malformed model
+    reference raises, or with *skip_unbound* leaves the task out.
+    """
+
+    records: dict[str, tuple[TaskModelRequirement, ...]] = {}
+    unresolved: list[str] = []
+    for task_name, task_config in tasks.items():
+        class_spec = task_config.get("class")
+        if not isinstance(class_spec, str) or not class_spec:
+            unresolved.append(task_name)
+            continue
+        try:
+            task_class = resolve_task_class(class_spec)
+        except (ImportError, AttributeError):
+            unresolved.append(task_name)
+            continue
+
+        try:
+            model_name = _config_task_model_name(task_name, task_config, models)
+        except ValueError:
+            if skip_unbound:
+                continue
+            raise
+        context = _config_requirement_context(
+            task_name,
+            task_config,
+            task_class,
+            bindings[model_name],
+            datasets,
+        )
+        requirement_hook = getattr(task_class, "model_requirements_for", None)
+        if not callable(requirement_hook):
+            continue
+        records[task_name] = validate_task_model_requirements(
+            task_class,
+            context,
+            requirement_hook(context),
+        )
+    return records, unresolved
 
 
 def _config_model_chain(

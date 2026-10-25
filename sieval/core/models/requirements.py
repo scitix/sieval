@@ -39,6 +39,11 @@ class TaskRequirements:
 
     Serving facts and engine constraints intentionally do not belong here.
     They are reconciled after task requirements have been aggregated.
+
+    ``min_context`` is the served context window, in tokens, the task's
+    longest request needs: its prompt plus the tokens it may generate. ``None``
+    when the task does not know; the orchestration layer then derives a floor
+    from the effective ``max_tokens``.
     """
 
     input: InputKind | None = None
@@ -49,6 +54,7 @@ class TaskRequirements:
     sampled_logprobs: bool = False
     min_top_logprobs: int | None = None
     function_tools: bool = False
+    min_context: int | None = None
 
     def __post_init__(self) -> None:
         if self.input is not None and not isinstance(self.input, InputKind):
@@ -78,6 +84,7 @@ class TaskRequirements:
             if minimum < 1:
                 raise ValueError("min_top_logprobs must be >= 1")
             object.__setattr__(self, "sampled_logprobs", True)
+        _validate_min_context(self.min_context)
 
 
 @dataclass(frozen=True)
@@ -201,6 +208,7 @@ class AggregatedTaskRequirements:
     input_scoring: bool = False
     sampled_logprobs: bool = False
     min_top_logprobs: int | None = None
+    min_context: int | None = None
     input_sources: Mapping[InputKind, frozenset[str]] = field(default_factory=dict)
     modality_sources: Mapping[InputModality, frozenset[str]] = field(
         default_factory=dict
@@ -208,6 +216,7 @@ class AggregatedTaskRequirements:
     input_scoring_sources: frozenset[str] = frozenset()
     sampled_logprobs_sources: frozenset[str] = frozenset()
     min_top_logprobs_sources: Mapping[int, frozenset[str]] = field(default_factory=dict)
+    min_context_sources: Mapping[int, frozenset[str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         inputs = frozenset(self.input)
@@ -231,6 +240,7 @@ class AggregatedTaskRequirements:
                 raise ValueError(
                     "min_top_logprobs requires sampled_logprobs to be true"
                 )
+        _validate_min_context(self.min_context)
 
         object.__setattr__(self, "input", inputs)
         object.__setattr__(self, "input_modalities", modalities)
@@ -263,7 +273,14 @@ class AggregatedTaskRequirements:
         object.__setattr__(
             self,
             "min_top_logprobs_sources",
-            _freeze_minimum_sources(self.min_top_logprobs_sources),
+            _freeze_minimum_sources(
+                self.min_top_logprobs_sources, "min_top_logprobs_sources"
+            ),
+        )
+        object.__setattr__(
+            self,
+            "min_context_sources",
+            _freeze_minimum_sources(self.min_context_sources, "min_context_sources"),
         )
 
 
@@ -285,6 +302,8 @@ def aggregate_task_requirements(
     sampled_logprobs_sources: set[str] = set()
     minimum_sources: dict[int, set[str]] = {}
     minimum: int | None = None
+    context_sources: dict[int, set[str]] = {}
+    context: int | None = None
 
     for requirement in requirements:
         if not isinstance(requirement, TaskModelRequirement):
@@ -306,6 +325,10 @@ def aggregate_task_requirements(
             value = required.min_top_logprobs
             minimum = value if minimum is None else max(minimum, value)
             minimum_sources.setdefault(value, set()).add(source)
+        if required.min_context is not None:
+            value = required.min_context
+            context = value if context is None else max(context, value)
+            context_sources.setdefault(value, set()).add(source)
 
     return AggregatedTaskRequirements(
         input=frozenset(inputs),
@@ -313,6 +336,7 @@ def aggregate_task_requirements(
         input_scoring=bool(input_scoring_sources),
         sampled_logprobs=bool(sampled_logprobs_sources),
         min_top_logprobs=minimum,
+        min_context=context,
         input_sources={key: frozenset(value) for key, value in input_sources.items()},
         modality_sources={
             key: frozenset(value) for key, value in modality_sources.items()
@@ -322,7 +346,19 @@ def aggregate_task_requirements(
         min_top_logprobs_sources={
             key: frozenset(value) for key, value in minimum_sources.items()
         },
+        min_context_sources={
+            key: frozenset(value) for key, value in context_sources.items()
+        },
     )
+
+
+def _validate_min_context(value: int | None) -> None:
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("min_context must be an integer")
+    if value < 1:
+        raise ValueError("min_context must be >= 1")
 
 
 def _validate_binding_identity(binding: NormalizedModelBinding) -> None:
@@ -364,14 +400,13 @@ def _freeze_enum_sources[T: (InputKind, InputModality)](
 
 def _freeze_minimum_sources(
     sources: Mapping[int, frozenset[str]],
+    name: str,
 ) -> Mapping[int, frozenset[str]]:
     copied: dict[int, frozenset[str]] = {}
     for minimum, names in sources.items():
         if isinstance(minimum, bool) or not isinstance(minimum, int):
-            raise TypeError("min_top_logprobs_sources keys must be integers")
+            raise TypeError(f"{name} keys must be integers")
         if minimum < 1:
-            raise ValueError("min_top_logprobs_sources keys must be >= 1")
-        copied[minimum] = _validate_and_freeze_sources(
-            names, f"min_top_logprobs_sources[{minimum}]"
-        )
+            raise ValueError(f"{name} keys must be >= 1")
+        copied[minimum] = _validate_and_freeze_sources(names, f"{name}[{minimum}]")
     return MappingProxyType(copied)

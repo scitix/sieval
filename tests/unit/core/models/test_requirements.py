@@ -341,6 +341,45 @@ class TestAggregation:
         }
 
 
+class TestMinContext:
+    def test_min_context_defaults_to_unknown(self) -> None:
+        assert TaskRequirements().min_context is None
+
+    @pytest.mark.parametrize(
+        ("value", "error", "message"),
+        [
+            (True, TypeError, "min_context must be an integer"),
+            (4096.0, TypeError, "min_context must be an integer"),
+            (0, ValueError, "min_context must be >= 1"),
+        ],
+    )
+    def test_invalid_min_context_is_rejected(
+        self, value: object, error: type[Exception], message: str
+    ) -> None:
+        with pytest.raises(error, match=message):
+            TaskRequirements(min_context=cast(Any, value))
+
+    def test_aggregation_takes_the_largest_and_keeps_each_source(self) -> None:
+        result = aggregate_task_requirements(
+            [
+                _requirement("short", TaskRequirements(min_context=4096)),
+                _requirement("long", TaskRequirements(min_context=40960)),
+                _requirement("unknown", TaskRequirements()),
+            ]
+        )
+
+        assert result.min_context == 40960
+        assert result.min_context_sources == {4096: {"short"}, 40960: {"long"}}
+
+    def test_no_declaration_aggregates_to_unknown(self) -> None:
+        result = aggregate_task_requirements(
+            [_requirement("unknown", TaskRequirements())]
+        )
+
+        assert result.min_context is None
+        assert result.min_context_sources == {}
+
+
 class TestAggregatedRequirementValidation:
     @pytest.mark.parametrize(
         ("kwargs", "message"),
@@ -355,6 +394,7 @@ class TestAggregatedRequirementValidation:
                 {"min_top_logprobs": 1, "sampled_logprobs": False},
                 "requires sampled_logprobs",
             ),
+            ({"min_context": 0}, "min_context must be >= 1"),
         ],
     )
     def test_invalid_aggregate_values_are_rejected(
@@ -378,6 +418,10 @@ class TestAggregatedRequirementValidation:
             (
                 {"min_top_logprobs_sources": {0: frozenset({"task"})}},
                 "keys must be >= 1",
+            ),
+            (
+                {"min_context_sources": {0: frozenset({"task"})}},
+                "min_context_sources keys must be >= 1",
             ),
         ],
     )

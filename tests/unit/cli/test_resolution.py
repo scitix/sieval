@@ -16,6 +16,7 @@ import pytest
 
 from sieval.cli.resolution import (
     _guess_submodule_names,
+    default_dialect,
     derive_model_type,
     finalize_inline_model_binding,
     load_class_from_name,
@@ -27,6 +28,7 @@ from sieval.cli.resolution import (
     resolve_key_function,
     validate_configured_engine_id,
     validate_model_type_dialect,
+    validate_omitted_dialect_migration,
 )
 from sieval.core.models.requirements import (
     AggregatedTaskRequirements,
@@ -338,6 +340,38 @@ class TestValidateModelTypeDialect:
             match=rf"legacy type.*{expected_input}.*dialect.*must agree",
         ):
             validate_model_type_dialect("m", model_type, dialect_id)
+
+
+class TestDefaultDialect:
+    SCORING = AggregatedTaskRequirements(input_scoring=True)
+
+    @pytest.mark.parametrize(
+        ("model_type", "engine", "requirements", "expected"),
+        [
+            ("chat", "sglang", SCORING, "openai_chat"),
+            ("gen", "sglang", AggregatedTaskRequirements(), "openai_completions"),
+            ("gen", "sglang", SCORING, "sglang_legacy"),
+            ("gen", "vllm", SCORING, "openai_completions"),
+            ("gen", None, SCORING, "openai_completions"),
+        ],
+    )
+    def test_dialect_follows_kind_engine_and_input_scoring(
+        self, model_type, engine, requirements, expected
+    ):
+        assert default_dialect(model_type, engine, requirements) == expected
+
+
+class TestValidateOmittedDialectMigration:
+    def test_sglang_gen_without_dialect_is_refused(self):
+        with pytest.raises(ValueError, match="dialect: sglang_legacy"):
+            validate_omitted_dialect_migration(
+                "m", "gen", "sglang", dialect_declared=False
+            )
+
+    def test_input_scoring_root_is_exempt(self):
+        validate_omitted_dialect_migration(
+            "m", "gen", "sglang", dialect_declared=False, input_scoring=True
+        )
 
 
 class TestResolveConfigModelTypes:

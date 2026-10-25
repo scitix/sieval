@@ -361,6 +361,19 @@ def _render_dry_run_plan(data: dict) -> None:
     for name, entry in (data.get("models") or {}).items():
         starts = "starts" if entry.get("needs_inference") else "not started"
         log_user("model {}: engine {}", name, starts)
+    serving = data.get("serving") or {}
+    if len(serving) > 1:
+        for key, entry in serving.items():
+            windows = ", ".join(
+                f"{engine} at {spec['window']}"
+                for engine, spec in (entry.get("engines") or {}).items()
+            )
+            log_user(
+                "serving group {}: {} task(s){}",
+                key,
+                len(entry.get("tasks") or ()),
+                f", {windows}" if windows else "",
+            )
     for name, entry in tasks.items():
         if "error" in entry:
             log_user("task {}: refused", name)

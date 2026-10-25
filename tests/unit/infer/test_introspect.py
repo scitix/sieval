@@ -25,6 +25,7 @@ from sieval.infer.introspect import (
     detect_local_gpu,
     extract_moe_info,
     introspect_checkpoint,
+    native_context_window,
 )
 
 
@@ -703,3 +704,27 @@ class TestExtractMoeInfo:
         assert is_moe is False
         assert num_experts is None
         assert num_layers == 0
+
+
+class TestNativeContextWindow:
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [
+            ({"max_position_embeddings": 40960}, 40960),
+            ({"text_config": {"max_position_embeddings": 32768}}, 32768),
+            ({"max_position_embeddings": 0}, None),
+            ({"max_position_embeddings": True}, None),
+            ({}, None),
+            ([], None),
+        ],
+    )
+    def test_reads_max_position_embeddings(
+        self, tmp_path: Path, config: object, expected: int | None
+    ) -> None:
+        (tmp_path / "config.json").write_text(json.dumps(config))
+        assert native_context_window(str(tmp_path)) == expected
+
+    def test_missing_or_unreadable_config_is_none(self, tmp_path: Path) -> None:
+        assert native_context_window(str(tmp_path)) is None
+        (tmp_path / "config.json").write_text("{not json")
+        assert native_context_window(str(tmp_path)) is None

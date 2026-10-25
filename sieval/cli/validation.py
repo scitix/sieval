@@ -33,7 +33,8 @@ from sieval.cli.resolution import (
     validate_configured_engine_id,
     validate_task_config_args,
 )
-from sieval.cli.session import EvalSession, RootConfigDict
+from sieval.cli.serving import parse_model_context
+from sieval.cli.session import EvalSession, RootConfigDict, SessionServing
 from sieval.core.models import check_extra
 from sieval.core.models.capabilities import (
     CAPABILITY_KEYS,
@@ -253,6 +254,7 @@ def _validate_models(cfg: dict, result: ValidationResult) -> None:
             ("context_limit", "a positive integer", _is_positive_int),
             ("weights", "a non-empty string", _is_nonempty_str),
             ("serving", "a mapping", lambda value: isinstance(value, dict)),
+            ("context", "a mapping", lambda value: isinstance(value, dict)),
         ):
             if key not in mcfg:
                 continue
@@ -263,6 +265,17 @@ def _validate_models(cfg: dict, result: ValidationResult) -> None:
                 )
             elif not check(mcfg[key]):
                 result.errors.append(f"Model '{name}': '{key}' must be {kind}")
+
+        if not has_base and isinstance(mcfg.get("context"), dict):
+            try:
+                parse_model_context(name, mcfg)
+            except ValueError as exc:
+                result.errors.append(str(exc))
+            if mcfg.get("api_base"):
+                result.errors.append(
+                    f"Model '{name}': 'context' describes a model `sieval run` "
+                    "launches; state an endpoint's window as 'context_limit'"
+                )
 
         raw_model_args = mcfg.get("args")
         for where, extra in (
@@ -588,6 +601,16 @@ def _validate_tasks(cfg: dict, result: ValidationResult) -> None:
                 except (TypeError, ValueError) as exc:
                     result.errors.append(str(exc))
 
+        min_context = tcfg.get("min_context")
+        if min_context is not None and (
+            isinstance(min_context, bool)
+            or not isinstance(min_context, int)
+            or min_context < 1
+        ):
+            result.errors.append(
+                f"Task '{name}': 'min_context' must be a positive integer"
+            )
+
         infer_args = tcfg.get("infer_args")
         if infer_args is not None:
             if not isinstance(infer_args, dict):
@@ -829,6 +852,7 @@ def _prelaunch_session(
     invocation: str | None,
     self_managed_endpoints: frozenset[str],
     cli_model: CliModel | None,
+    serving: SessionServing | None = None,
 ) -> EvalSession:
     # Looked up at call time, so the session module stays the one seam.
     from sieval.cli.session import EvalSession, unwrap_proxies
@@ -854,6 +878,7 @@ def _prelaunch_session(
         invocation=invocation,
         self_managed_endpoints=self_managed_endpoints,
         cli_model=cli_model,
+        serving=serving,
     )
 
 
@@ -870,6 +895,7 @@ def prepare_prelaunch_reconciliation(
     check_services: bool = False,
     check_python_requires: bool = False,
     cli_model: CliModel | None = None,
+    serving: SessionServing | None = None,
 ) -> ReconcileResult:
     """Run the shared pure prelaunch reconciliation and fail loud on errors.
 
@@ -877,7 +903,8 @@ def prepare_prelaunch_reconciliation(
     service the run would start, and *check_python_requires* raises
     :class:`~sieval.core.tasks.python_requires.MissingPythonRequirementsError`
     for a task's unmet ``python_requires``. ``infer start`` asks for neither:
-    it only serves a model.
+    it only serves a model. *serving* limits the session to one serving
+    group's tasks (:class:`~sieval.cli.session.SessionServing`).
 
     This root-level CLI seam keeps the ``infer`` subpackage off the eval
     engine.  It also converts typed infer-layer plans into the plain mapping
@@ -896,6 +923,7 @@ def prepare_prelaunch_reconciliation(
         invocation=invocation,
         self_managed_endpoints=self_managed_endpoints,
         cli_model=cli_model,
+        serving=serving,
     )
     result = session.prepare_prelaunch(enforce_python_requires=check_python_requires)
     if check_services:
@@ -952,6 +980,7 @@ def _capability_reconcile_check(
     invocation: str | None = None,
     self_managed_endpoints: frozenset[str] = frozenset(),
     cli_model: CliModel | None = None,
+    serving: SessionServing | None = None,
 ) -> list[DryRunCheck]:
     """Run the same pure prelaunch reconcile used by normal execution.
 
@@ -970,6 +999,7 @@ def _capability_reconcile_check(
             invocation=invocation,
             self_managed_endpoints=self_managed_endpoints,
             cli_model=cli_model,
+            serving=serving,
         )
         result = session.prepare_prelaunch(enforce_python_requires=False)
     except Exception as exc:
@@ -1012,10 +1042,12 @@ def run_dry_run(
     invocation: str | None = None,
     self_managed_endpoints: frozenset[str] = frozenset(),
     cli_model: CliModel | None = None,
+    serving: SessionServing | None = None,
 ) -> DryRunResult:
     """Run config validation and return structured result.
 
     *cli_model* is added to the config first, shown as the ``cli_model`` check.
+    *serving* is the serving group *infer_plans* belong to.
     """
     checks: list[DryRunCheck] = []
 
@@ -1123,6 +1155,7 @@ def run_dry_run(
                 invocation=invocation,
                 self_managed_endpoints=self_managed_endpoints,
                 cli_model=cli_model,
+                serving=serving,
             )
             for prelaunch_check in prelaunch_checks:
                 checks.append(prelaunch_check)

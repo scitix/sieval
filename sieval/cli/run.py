@@ -46,7 +46,14 @@ from sieval.cli.output import (
 )
 from sieval.cli.resolution import resolve_config_model_types
 from sieval.cli.services import SERVICE_LOG_DIR
+from sieval.cli.serving import (
+    DEFAULT_GROUP,
+    ServingGroup,
+    plan_serving_groups,
+    served_window,
+)
 from sieval.cli.session import (
+    SessionServing,
     config_resumes,
     holds_secret,
     read_persisted_config,
@@ -277,21 +284,123 @@ async def _prepare_launch_batch(
             plan = dataclasses.replace(plan, deterministic=True)
 
         plan_dicts[model_name] = unwrap_proxies(plan)
-
-        from sieval.infer.topology.validator import validate_plan
-
-        errors = validate_plan(plan)
-        if errors:
-            raise RuntimeError(
-                f"Invalid deployment plan for {model_name}: " + "; ".join(errors)
-            )
-
-        translator = get_translator(plan.backend)
-        commands = translator.translate(plan)
-        inject_user_env(commands, user_env)
-        prepared_launches[model_name] = (plan, commands)
+        prepared_launches[model_name] = (plan, _translate(model_name, plan, user_env))
 
     return plan_dicts, prepared_launches
+
+
+def _translate(
+    model_name: str, plan: DeploymentPlan, user_env: dict[str, str]
+) -> list[BackendCommand]:
+    """Validate *plan* and translate it into its launch commands."""
+    from sieval.infer.topology.validator import validate_plan
+
+    errors = validate_plan(plan)
+    if errors:
+        raise RuntimeError(
+            f"Invalid deployment plan for {model_name}: " + "; ".join(errors)
+        )
+    commands = get_translator(plan.backend).translate(plan)
+    inject_user_env(commands, user_env)
+    return commands
+
+
+def _user_env(model_config: Mapping[str, Any]) -> dict[str, str]:
+    """The ``infer.env`` a model's launch commands carry."""
+    infer_dict = model_config.get("infer") or {}
+    return {str(k): str(v) for k, v in (infer_dict.get("env") or {}).items()}
+
+
+@dataclasses.dataclass(frozen=True)
+class _GroupLaunch:
+    """One serving group, ready to launch: what its session binds and runs.
+
+    *prepared* and *plan_dicts* hold every served root, this group's plans over
+    the default group's, so a task outside the group still binds; *own* are the
+    roots this group launches. A root's engine is named *names*[root]: its
+    model name in the default group, the group key otherwise.
+    """
+
+    group: ServingGroup
+    prepared: dict[str, tuple[DeploymentPlan, list[BackendCommand]]]
+    plan_dicts: dict[str, dict[str, Any]]
+    own: frozenset[str]
+    names: dict[str, str]
+
+    @property
+    def key(self) -> str:
+        return self.group.key
+
+    def serving(self) -> SessionServing:
+        """What this group's session runs and records. The default group
+        holds every task no other group took, so a config with one group runs
+        all its tasks and writes ``infer_plans.yaml`` as before."""
+        return SessionServing(
+            tasks=frozenset(self.group.tasks),
+            group=self.key,
+            infer_plans_file=(
+                "infer_plans.yaml"
+                if self.key == DEFAULT_GROUP
+                else f"infer_plans.{self.key}.yaml"
+            ),
+        )
+
+
+def _serving_groups(
+    config: Mapping[str, Any],
+    plan_dicts: Mapping[str, dict[str, Any]],
+    prepared_launches: Mapping[str, tuple[DeploymentPlan, list[BackendCommand]]],
+) -> list[_GroupLaunch]:
+    """Group the tasks by serving plan (:func:`plan_serving_groups`), the
+    default group first, each with its launches translated.
+
+    A plan the grouping left unchanged keeps its *plan_dicts* entry and its
+    commands, as :func:`_prepare_launch_batch` resolved them.
+    """
+    models = config.get("models") or {}
+    groups = plan_serving_groups(
+        config, {name: plan for name, (plan, _) in prepared_launches.items()}
+    )
+
+    def entry(
+        name: str, plan: DeploymentPlan
+    ) -> tuple[tuple[DeploymentPlan, list[BackendCommand]], dict[str, Any]]:
+        base, commands = prepared_launches[name]
+        if plan == base:
+            return (plan, commands), plan_dicts[name]
+        user_env = _user_env(models.get(name) or {})
+        return (plan, _translate(name, plan, user_env)), unwrap_proxies(plan)
+
+    default = {name: entry(name, plan) for name, plan in groups[0].plans.items()}
+    out: list[_GroupLaunch] = []
+    for group in groups:
+        entries = dict(default)
+        names = {name: name for name in default}
+        if group.key != DEFAULT_GROUP:
+            for name, plan in group.plans.items():
+                entries[name] = entry(name, plan)
+                names[name] = group.key
+        out.append(
+            _GroupLaunch(
+                group=group,
+                prepared={name: launch for name, (launch, _) in entries.items()},
+                plan_dicts={name: raw for name, (_, raw) in entries.items()},
+                own=frozenset(group.plans),
+                names=names,
+            )
+        )
+    return out
+
+
+def _select_group(groups: list[_GroupLaunch], key: str | None) -> list[_GroupLaunch]:
+    """The groups a run executes: all of them, or the one *key* names."""
+    if key is None:
+        return groups
+    for group in groups:
+        if group.key == key:
+            return [group]
+    known = ", ".join(repr(group.key) for group in groups)
+    raise ValueError(f"Unknown serving group {key!r}; this config has {known}")
 
 
 def _resumes(resume: bool | str | Path | None, config: Mapping[str, Any]) -> bool:
@@ -319,6 +428,7 @@ async def _plan_tasks(
     deterministic: bool | None,
     invocation: str,
     cli_model: CliModel | None,
+    serving: SessionServing | None = None,
 ) -> tuple[dict[str, str], dict[str, RunPlan | Exception]]:
     """Each task's served model and resume plan, with no engine launched.
 
@@ -337,6 +447,7 @@ async def _plan_tasks(
         self_managed_endpoints=frozenset(prepared_launches),
         unlaunched_deployments=_unlaunched(prepared_launches, set(prepared_launches)),
         cli_model=cli_model,
+        serving=serving,
     )
 
 
@@ -438,11 +549,13 @@ async def _run_dry_run(
     result_dir: str | None = None,
     deterministic: bool | None = None,
     cli_model: CliModel | None = None,
+    serving_group: str | None = None,
 ) -> dict[str, object]:
     """Report what the run would do, launching no engine.
 
-    The checks, then each served model's plan and launch argv, and each task's
-    plan; see ``docs/guide/configuration.md``. Reads ``--resume`` directories in
+    The checks, then each served model's plan and launch argv, each serving
+    group (*serving_group* only, when given) and each task's plan; see
+    ``docs/guide/configuration.md``. Reads ``--resume`` directories in
     place and writes no result directory. Planning loads the datasets and
     starts each vendored service a task declares, as the run does.
     """
@@ -452,6 +565,7 @@ async def _run_dry_run(
     def checks(
         infer_plans: dict[str, dict[str, Any]] | None = None,
         self_managed_endpoints: frozenset[str] = frozenset(),
+        serving: SessionServing | None = None,
     ) -> dict[str, object]:
         return dict(
             cast(
@@ -466,13 +580,14 @@ async def _run_dry_run(
                     invocation=shlex.join(sys.argv),
                     self_managed_endpoints=self_managed_endpoints,
                     cli_model=cli_model,
+                    serving=serving,
                 ),
             )
         )
 
     def unplanned(result: dict[str, object]) -> dict[str, object]:
         # Every report key is present; ``None`` where the dry-run stopped first.
-        for key in ("gpu", "models", "tasks", "needs_inference"):
+        for key in ("gpu", "models", "serving", "tasks", "needs_inference"):
             result.setdefault(key, None)
         return result
 
@@ -488,13 +603,30 @@ async def _run_dry_run(
     except ValueError:
         return unplanned(checks())  # reported as the failed cli_model check
     effective_deterministic = resolve_deterministic(deterministic, loaded)
-    plan_dicts, prepared_launches = await _prepare_launch_batch(
+    batch_plans, prepared_launches = await _prepare_launch_batch(
         config_path,
         loaded,
         effective_deterministic=effective_deterministic,
         recorded=_recorded_plans(resume, result_dir or loaded.get("result_dir")),
     )
-    result = checks(plan_dicts or None, frozenset(prepared_launches))
+    groups: list[_GroupLaunch] = []
+    serving_error: Exception | None = None
+    try:
+        groups = _select_group(
+            _serving_groups(loaded, batch_plans, prepared_launches), serving_group
+        )
+    except ValueError as exc:
+        serving_error = exc
+    # The plans the first group launches: the recipe plans, unless a shortfall
+    # left no group to read them from.
+    first = groups[0] if groups else None
+    plan_dicts = first.plan_dicts if first is not None else batch_plans
+    prepared = first.prepared if first is not None else dict(prepared_launches)
+    result = checks(
+        plan_dicts or None,
+        frozenset(prepared),
+        first.serving() if first is not None else None,
+    )
     # ``needs_inference`` stays ``None`` until the tasks are planned.
     models: dict[str, dict[str, object]] = {
         name: {
@@ -502,10 +634,28 @@ async def _run_dry_run(
             "launch": [_launch_json(command) for command in commands],
             "needs_inference": None,
         }
-        for name, (_, commands) in prepared_launches.items()
+        for name, (_, commands) in prepared.items()
     }
     result["gpu"] = await _plan_gpu_text() if prepared_launches else None
     result["models"] = models
+    checks_list = cast(list[dict[str, object]], result["checks"])
+    if serving_error is not None:
+        checks_list.append(
+            {"name": "serving", "ok": False, "detail": cli_error_message(serving_error)}
+        )
+        result["n_errors"] = cast(int, result["n_errors"]) + 1
+    elif len(groups) > 1 or serving_group is not None:
+        checks_list.append(
+            {
+                "name": "serving",
+                "ok": True,
+                "detail": ", ".join(
+                    f"{group.key}: {len(group.group.tasks)} task(s)" for group in groups
+                ),
+            }
+        )
+    serving = {group.key: _serving_json(group) for group in groups}
+    result["serving"] = serving or None
     if result["n_errors"]:
         return unplanned(result)
 
@@ -513,25 +663,40 @@ async def _run_dry_run(
     # Planning sets the session up as the run does: it loads every dataset
     # (downloading one not yet cached) and starts each vendored service a task
     # declares, writing nothing under the result directory.
-    checks_list = cast(list[dict[str, object]], result["checks"])
-    try:
-        task_models, plans = await _plan_tasks(
-            config_path,
-            prepared_launches,
-            plan_dicts,
-            model=model,
-            resume=resume,
-            result_dir=result_dir,
-            deterministic=deterministic,
-            invocation=shlex.join(sys.argv),
-            cli_model=cli_model,
+    task_models: dict[str, str] = {}
+    plans: dict[str, RunPlan | Exception] = {}
+    launches_by_group: dict[str, set[str]] = {}
+    for group in groups:
+        try:
+            group_models, group_plans = await _plan_tasks(
+                config_path,
+                group.prepared,
+                group.plan_dicts,
+                model=model,
+                resume=resume,
+                result_dir=result_dir,
+                deterministic=deterministic,
+                invocation=shlex.join(sys.argv),
+                cli_model=cli_model,
+                serving=group.serving(),
+            )
+        except Exception as exc:
+            # Raised before any task would start: the run fails the same way.
+            detail = cli_error_message(exc)
+            checks_list.append({"name": "resume_plan", "ok": False, "detail": detail})
+            result["n_errors"] = cast(int, result["n_errors"]) + 1
+            return unplanned(result)
+        task_models |= group_models
+        plans |= group_plans
+        # The launch decision `_models_to_infer` makes for the run.
+        launches_by_group[group.key] = set(
+            group.own
+            & (
+                _models_to_launch(group.prepared, group_models, group_plans)
+                if _resumes(resume, loaded)
+                else set(group.prepared)
+            )
         )
-    except Exception as exc:
-        # Raised before any task would start: the run fails the same way.
-        detail = cli_error_message(exc)
-        checks_list.append({"name": "resume_plan", "ok": False, "detail": detail})
-        result["n_errors"] = cast(int, result["n_errors"]) + 1
-        return unplanned(result)
     refused = {t: p for t, p in plans.items() if isinstance(p, Exception)}
     metrics: dict[str, dict[str, list[str]] | None] = {}
     malformed: dict[str, TypeError] = {}
@@ -569,18 +734,36 @@ async def _run_dry_run(
         checks_list.append(
             {"name": "resume_plan", "ok": True, "detail": _plan_summary(plans)}
         )
-    # The launch decision `_models_to_infer` makes for the run.
-    launches = (
-        _models_to_launch(prepared_launches, task_models, plans)
-        if _resumes(resume, loaded)
-        else set(prepared_launches)
-    )
+    first_launches = launches_by_group.get(first.key, set()) if first else set()
     for name, entry in models.items():
-        entry["needs_inference"] = name in launches
+        entry["needs_inference"] = name in first_launches
+    for key, entry in serving.items():
+        entry["needs_inference"] = bool(launches_by_group.get(key))
     # Whether an engine starts. A task inferring through an `api_base` model
     # needs no engine, so it does not count.
-    result["needs_inference"] = bool(launches)
+    result["needs_inference"] = any(launches_by_group.values())
     return result
+
+
+def _serving_json(group: _GroupLaunch) -> dict[str, object]:
+    """A serving group's entry in the dry-run report: the tasks it runs, each
+    one's served window, and the engines it launches."""
+    return {
+        "tasks": list(group.group.tasks),
+        "windows": {
+            task: window.window for task, window in group.group.windows.items()
+        },
+        "engines": {
+            group.names[name]: {
+                "model": name,
+                "window": served_window(plan, None),
+                "launch": [_launch_json(command) for command in commands],
+            }
+            for name, (plan, commands) in group.prepared.items()
+            if name in group.own
+        },
+        "needs_inference": None,
+    }
 
 
 async def _run_all(
@@ -593,6 +776,7 @@ async def _run_all(
     ready_timeout: float = DEFAULT_READY_TIMEOUT,
     keep_logs: int | None = None,
     cli_model: CliModel | None = None,
+    serving_group: str | None = None,
 ) -> dict[str, object]:
     """Orchestrate: start services -> run eval -> stop services.
 
@@ -602,9 +786,14 @@ async def _run_all(
 
     *cli_model* is added to the config before either of those is decided.
 
+    The tasks run one serving group after another (:mod:`sieval.cli.serving`),
+    each group's engines stopped before the next one's start; *serving_group*
+    runs that group only. A group other than the default names its engine by
+    the group key.
+
     Handles go under ``run-<pid>/``, removed when the run ends. Engine logs go
-    to ``<result_dir>/logs/<model>/<role>.log`` when a result_dir is set,
-    otherwise to ``~/.sieval/logs/<model>/`` pruned to *keep_logs* per role.
+    to ``<result_dir>/logs/<engine>/<role>.log`` when a result_dir is set,
+    otherwise to ``~/.sieval/logs/<engine>/`` pruned to *keep_logs* per role.
 
     Returns:
         Report dict from arun_session (task_name → report string).
@@ -629,9 +818,6 @@ async def _run_all(
     effective_result_dir = result_dir or config.get("result_dir")
     # Retention applies only to ~/.sieval/logs, not to result_dir logs.
     keep = None if effective_result_dir else resolve_keep_logs(keep_logs)
-    plan_dicts: dict[str, dict[str, Any]] = {}
-    prepared_launches: dict[str, tuple[DeploymentPlan, list[BackendCommand]]] = {}
-    realized_deployments: dict[str, Deployment] = {}
     deployer = LocalDeployer()
     invocation = shlex.join(sys.argv)
 
@@ -646,6 +832,17 @@ async def _run_all(
             recorded=_recorded_plans(resume, effective_result_dir),
         )
 
+        # Each serving group's plans, with the shortfalls refused, before the
+        # first subprocess starts.
+        groups = _select_group(
+            _serving_groups(config, plan_dicts, prepared_launches), serving_group
+        )
+        if SERVICE_LOG_DIR in {n for g in groups for n in g.names.values()}:
+            raise ValueError(
+                f"Model name {SERVICE_LOG_DIR!r} is reserved for "
+                f"<result_dir>/logs/{SERVICE_LOG_DIR}/; rename the model."
+            )
+
         # Task requirements, model declarations, and every managed desired
         # plan must reconcile as one batch before the first subprocess starts.
         # The final EvalSession intentionally repeats this pure check so its
@@ -653,158 +850,112 @@ async def _run_all(
         from sieval.cli.session import arun_session
         from sieval.cli.validation import prepare_prelaunch_reconciliation
 
-        prelaunch_result = prepare_prelaunch_reconciliation(
-            config_path,
-            model_override=model,
-            resume=resume,
-            result_dir_override=result_dir,
-            deterministic_override=deterministic,
-            infer_plans=plan_dicts or None,
-            invocation=invocation,
-            self_managed_endpoints=frozenset(prepared_launches),
-            check_services=True,
-            check_python_requires=True,
-            cli_model=cli_model,
-        )
-        launch_patches = {
-            root_key: dict(deployment_plan.launch_patch)
-            for root_key, deployment_plan in prelaunch_result.deployment_plans.items()
-            if deployment_plan.launch_patch
-        }
-        if launch_patches:
-            details = "; ".join(
-                f"{root_key}: {patch_values!r}"
-                for root_key, patch_values in sorted(launch_patches.items())
+        for index, group in enumerate(groups):
+            prelaunch_result = prepare_prelaunch_reconciliation(
+                config_path,
+                model_override=model,
+                resume=resume,
+                result_dir_override=result_dir,
+                deterministic_override=deterministic,
+                infer_plans=group.plan_dicts or None,
+                invocation=invocation,
+                self_managed_endpoints=frozenset(group.prepared),
+                # Each covers every task, whichever group runs it: once.
+                check_services=index == 0,
+                check_python_requires=index == 0,
+                cli_model=cli_model,
+                serving=group.serving(),
             )
-            raise RuntimeError(
-                "Pre-launch reconciliation produced engine launch parameters, "
-                "but `sieval run` has no #47 launch-patch translator yet; "
-                f"refusing to ignore them: {details}"
-            )
-
-        if SERVICE_LOG_DIR in prepared_launches:
-            raise ValueError(
-                f"Model name {SERVICE_LOG_DIR!r} is reserved for "
-                f"<result_dir>/logs/{SERVICE_LOG_DIR}/; rename the model."
-            )
-        # Plan the resume first: an engine starts only for a model some task
-        # still has samples to infer with.
-        to_launch = await _models_to_infer(
-            config_path,
-            config,
-            prepared_launches,
-            plan_dicts,
-            model=model,
-            resume=resume,
-            result_dir=result_dir,
-            deterministic=deterministic,
-            invocation=invocation,
-            cli_model=cli_model,
-        )
-        if to_launch:
-            await check_launch_gpu(required=True)
-        for model_name in sorted(set(prepared_launches) - to_launch):
-            log_user("No inference needed for model {}; not starting it", model_name)
-        for model_name, (plan, commands) in prepared_launches.items():
-            if model_name not in to_launch:
-                continue
-            log_user("Starting inference for model: {}", model_name)
-
-            last_status = None
-            last_log_time = 0.0
-
-            # Capture model_name in closure via default arg
-            def _progress(
-                elapsed: float,
-                status_value: str,
-                _name: str = model_name,
-            ) -> None:
-                nonlocal last_status, last_log_time
-                if sys.stderr.isatty():
-                    logger.opt(raw=True).log(
-                        "USER",
-                        f"\r\x1b[K[{_name}] Waiting... "
-                        f"(elapsed {elapsed:.0f}s, "
-                        f"status: {status_value})",
-                    )
-                else:
-                    now = time.perf_counter()
-                    status_changed = status_value != last_status
-                    heartbeat_due = (now - last_log_time) >= 15.0
-                    if status_changed or heartbeat_due:
-                        last_status = status_value
-                        last_log_time = now
-                        log_user(
-                            "[{}] Status: {} (elapsed {:.0f}s)",
-                            _name,
-                            status_value,
-                            elapsed,
-                        )
-
-            # Claim → deploy → save handle (shared with infer start). The
-            # handle lives under this process's own run-<pid>/ directory, so
-            # an `infer start` of the same model name does not collide.
-            try:
-                new_handles, env = await launch_model(
-                    model_name,
-                    commands,
-                    backend=plan.backend,
-                    deployer=deployer,
-                    handle_path=handle_dir / f"{model_name}.json",
-                    log_dir=(
-                        Path(effective_result_dir) / "logs" / model_name
-                        if effective_result_dir
-                        else None
-                    ),
-                    keep_logs=keep,
-                    on_progress=_progress,
-                    timeout=ready_timeout,
-                    # A leftover run-<pid>/ from an earlier process with this PID.
-                    replace_stale=True,
+            launch_patches = {
+                root_key: dict(deployment_plan.launch_patch)
+                for root_key, deployment_plan in (
+                    prelaunch_result.deployment_plans.items()
                 )
-            except HandleHeldError as held:
-                msg = (
-                    f"Model {model_name!r}: engine PID {held.pid} from an earlier "
-                    f"process still holds {held.path}. Run `sieval infer stop "
-                    f"{handle_dir.name}/{model_name}`, then retry."
+                if deployment_plan.launch_patch
+            }
+            if launch_patches:
+                details = "; ".join(
+                    f"{root_key}: {patch_values!r}"
+                    for root_key, patch_values in sorted(launch_patches.items())
                 )
-                raise HandleHeldError(held.path, held.data, held.pid, msg) from None
+                raise RuntimeError(
+                    "Pre-launch reconciliation produced engine launch parameters, "
+                    "but `sieval run` has no #47 launch-patch translator yet; "
+                    f"refusing to ignore them: {details}"
+                )
 
-            if sys.stderr.isatty():
-                logger.opt(raw=True).log("USER", "\n")
-            launched[model_name] = new_handles
-
-            deployment = deployer.build_deployment(plan, new_handles)
-            realized_deployments[model_name] = deployment
-
-            if env is not None:
+        reports: dict[str, object] = {}
+        for group in groups:
+            if len(groups) > 1:
                 log_user(
-                    "  env: {} / CUDA {} / {} x {}",
-                    env.framework or "unknown",
-                    env.cuda_version or "?",
-                    env.gpu_model or "?",
-                    env.gpu_count,
+                    "Serving group {}: {}", group.key, ", ".join(group.group.tasks)
+                )
+            serving = group.serving()
+            # Plan the resume first: an engine starts only for a model some task
+            # still has samples to infer with.
+            to_launch = group.own & await _models_to_infer(
+                config_path,
+                config,
+                group.prepared,
+                group.plan_dicts,
+                model=model,
+                resume=resume,
+                result_dir=result_dir,
+                deterministic=deterministic,
+                invocation=invocation,
+                cli_model=cli_model,
+                serving=serving,
+            )
+            if to_launch:
+                await check_launch_gpu(required=True)
+            for model_name in sorted(group.own - to_launch):
+                log_user(
+                    "No inference needed for model {}; not starting it",
+                    group.names[model_name],
+                )
+            realized_deployments: dict[str, Deployment] = {}
+            for model_name, (plan, commands) in group.prepared.items():
+                if model_name not in to_launch:
+                    continue
+                realized_deployments[model_name] = await _launch(
+                    group.names[model_name],
+                    plan,
+                    commands,
+                    deployer=deployer,
+                    launched=launched,
+                    handle_dir=handle_dir,
+                    result_dir=effective_result_dir,
+                    keep_logs=keep,
+                    ready_timeout=ready_timeout,
                 )
 
-        # `self_managed_endpoints` scopes the best-effort warning away
-        # from endpoints we launched ourselves.
-        reports = await arun_session(
-            config_path,
-            model=model,
-            resume=resume,
-            result_dir=result_dir,
-            deterministic=deterministic,
-            self_managed_endpoints=frozenset(prepared_launches),
-            infer_plans=plan_dicts or None,
-            invocation=invocation,
-            realized_deployments=realized_deployments or None,
-            unlaunched_deployments=(
-                _unlaunched(prepared_launches, set(prepared_launches) - to_launch)
-                or None
-            ),
-            cli_model=cli_model,
-            infer_gpu=await _plan_gpu_text() if plan_dicts else None,
-        )
+            # `self_managed_endpoints` scopes the best-effort warning away
+            # from endpoints we launched ourselves.
+            reports |= await arun_session(
+                config_path,
+                model=model,
+                resume=resume,
+                result_dir=result_dir,
+                deterministic=deterministic,
+                self_managed_endpoints=frozenset(group.prepared),
+                infer_plans=group.plan_dicts or None,
+                invocation=invocation,
+                realized_deployments=realized_deployments or None,
+                unlaunched_deployments=(
+                    _unlaunched(group.prepared, set(group.prepared) - to_launch) or None
+                ),
+                cli_model=cli_model,
+                infer_gpu=await _plan_gpu_text() if group.plan_dicts else None,
+                serving=serving,
+            )
+            # The next group's engines need the GPUs this one holds.
+            for name in [group.names[m] for m in to_launch]:
+                await cleanup_model(
+                    name,
+                    launched.pop(name),
+                    deployer=deployer,
+                    handle_path=handle_dir / f"{name}.json",
+                )
         return reports
 
     finally:
@@ -817,6 +968,88 @@ async def _run_all(
                 handle_path=handle_dir / f"{name}.json",
             )
         remove_run_handle_dir(handle_dir)
+
+
+async def _launch(
+    model_name: str,
+    plan: DeploymentPlan,
+    commands: list[BackendCommand],
+    *,
+    deployer: LocalDeployer,
+    launched: dict[str, list[InferHandle]],
+    handle_dir: Path,
+    result_dir: str | None,
+    keep_logs: int | None,
+    ready_timeout: float,
+) -> Deployment:
+    """Start one engine under *model_name*, wait until it is ready, and record
+    its handles in *launched*."""
+    log_user("Starting inference for model: {}", model_name)
+
+    last_status = None
+    last_log_time = 0.0
+
+    def _progress(elapsed: float, status_value: str) -> None:
+        nonlocal last_status, last_log_time
+        if sys.stderr.isatty():
+            logger.opt(raw=True).log(
+                "USER",
+                f"\r\x1b[K[{model_name}] Waiting... "
+                f"(elapsed {elapsed:.0f}s, "
+                f"status: {status_value})",
+            )
+        else:
+            now = time.perf_counter()
+            status_changed = status_value != last_status
+            heartbeat_due = (now - last_log_time) >= 15.0
+            if status_changed or heartbeat_due:
+                last_status = status_value
+                last_log_time = now
+                log_user(
+                    "[{}] Status: {} (elapsed {:.0f}s)",
+                    model_name,
+                    status_value,
+                    elapsed,
+                )
+
+    # Claim → deploy → save handle (shared with infer start). The handle lives
+    # under this process's own run-<pid>/ directory, so an `infer start` of the
+    # same model name does not collide.
+    try:
+        new_handles, env = await launch_model(
+            model_name,
+            commands,
+            backend=plan.backend,
+            deployer=deployer,
+            handle_path=handle_dir / f"{model_name}.json",
+            log_dir=(Path(result_dir) / "logs" / model_name if result_dir else None),
+            keep_logs=keep_logs,
+            on_progress=_progress,
+            timeout=ready_timeout,
+            # A leftover run-<pid>/ from an earlier process with this PID.
+            replace_stale=True,
+        )
+    except HandleHeldError as held:
+        msg = (
+            f"Model {model_name!r}: engine PID {held.pid} from an earlier "
+            f"process still holds {held.path}. Run `sieval infer stop "
+            f"{handle_dir.name}/{model_name}`, then retry."
+        )
+        raise HandleHeldError(held.path, held.data, held.pid, msg) from None
+
+    if sys.stderr.isatty():
+        logger.opt(raw=True).log("USER", "\n")
+    launched[model_name] = new_handles
+
+    if env is not None:
+        log_user(
+            "  env: {} / CUDA {} / {} x {}",
+            env.framework or "unknown",
+            env.cuda_version or "?",
+            env.gpu_model or "?",
+            env.gpu_count,
+        )
+    return deployer.build_deployment(plan, new_handles)
 
 
 def register_run_command(app: typer.Typer) -> None:
@@ -882,6 +1115,17 @@ def register_run_command(app: typer.Typer) -> None:
                 ),
             ),
         ] = None,
+        serving_group: Annotated[
+            str | None,
+            typer.Option(
+                "--serving-group",
+                help=(
+                    "Run only the tasks of this serving group, a key `--dry-run` "
+                    "lists under `serving`, so each group can run as a job of its "
+                    "own. Default: every group, one after another."
+                ),
+            ),
+        ] = None,
         verbose: Annotated[
             bool,
             typer.Option("--verbose", "-v", help="Verbose output"),
@@ -918,6 +1162,7 @@ def register_run_command(app: typer.Typer) -> None:
                     result_dir=result_dir,
                     deterministic=deterministic,
                     cli_model=cli_model,
+                    serving_group=serving_group,
                 )
 
             try:
@@ -962,6 +1207,7 @@ def register_run_command(app: typer.Typer) -> None:
                 ready_timeout=ready_timeout,
                 keep_logs=keep_logs,
                 cli_model=cli_model,
+                serving_group=serving_group,
             )
 
         try:

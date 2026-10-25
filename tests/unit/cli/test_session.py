@@ -3612,7 +3612,48 @@ models:
         assert result.is_valid
         assert result.binding_plans["model:m"].dialect_id == "openai_completions"
 
-    def test_managed_sglang_completions_rejects_input_scoring(
+    def test_managed_sglang_input_scoring_defaults_to_the_legacy_dialect(
+        self, tmp_path: Path
+    ) -> None:
+        # No dialect declared: the root's input_scoring need selects the one
+        # SGLang path that can score input, instead of refusing.
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: org/model
+    type: gen
+    infer:
+      backend: sglang
+      checkpoint: /models/org-model
+tasks:
+  score:
+    class: fake.CompletionScoringTask
+    dataset:
+      class: fake.Dataset
+    model: m
+""",
+        )
+        raw_plan = {
+            "backend": "sglang",
+            "checkpoint": "/models/org-model",
+            "assignments": [],
+        }
+        session = EvalSession(config_path, infer_plans={"m": raw_plan})
+
+        with patch(
+            "sieval.cli.session.resolve_task_class",
+            return_value=self.CompletionScoringTask,
+        ):
+            session.prepare_prelaunch()
+
+        assert session._normalized_model_bindings["model:m"].dialect_id == (
+            "sglang_legacy"
+        )
+        assert session._legacy_bypass_bindings == {"model:m"}
+
+    def test_managed_sglang_explicit_completions_still_rejects_input_scoring(
         self, tmp_path: Path
     ) -> None:
         config_path = self._config(
@@ -3622,6 +3663,7 @@ models:
   m:
     name: org/model
     type: gen
+    dialect: openai_completions
     infer:
       backend: sglang
       checkpoint: /models/org-model
@@ -3648,6 +3690,42 @@ tasks:
             pytest.raises(ValueError, match=r"engine 'sglang'.*input_scoring"),
         ):
             session.prepare_prelaunch()
+
+    def test_managed_vllm_input_scoring_keeps_completions(self, tmp_path: Path) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: org/model
+    type: gen
+    infer:
+      backend: vllm
+      checkpoint: /models/org-model
+tasks:
+  score:
+    class: fake.CompletionScoringTask
+    dataset:
+      class: fake.Dataset
+    model: m
+""",
+        )
+        raw_plan = {
+            "backend": "vllm",
+            "checkpoint": "/models/org-model",
+            "assignments": [],
+        }
+        session = EvalSession(config_path, infer_plans={"m": raw_plan})
+
+        with patch(
+            "sieval.cli.session.resolve_task_class",
+            return_value=self.CompletionScoringTask,
+        ):
+            session.prepare_prelaunch()
+
+        assert session._normalized_model_bindings["model:m"].dialect_id == (
+            "openai_completions"
+        )
 
     @pytest.mark.parametrize("dialect", ["openai_completions", "sglang_legacy"])
     @pytest.mark.parametrize(
@@ -7676,6 +7754,7 @@ class TestEvalSessionWrappers:
             cli_model=None,
             infer_gpu=None,
             unlaunched_deployments=None,
+            serving=None,
         )
         assert result == {"task_a": {"ok": True}}
 
@@ -7710,6 +7789,7 @@ class TestEvalSessionWrappers:
             cli_model=None,
             infer_gpu=None,
             unlaunched_deployments=None,
+            serving=None,
         )
         assert result == {"task_a": {"ok": True}}
 
@@ -7772,6 +7852,7 @@ class TestEvalSessionWrappers:
             cli_model=None,
             infer_gpu=None,
             unlaunched_deployments=None,
+            serving=None,
         )
 
     def test_run_session_forwards_legacy_external_endpoint_adapter_positionally(
@@ -8041,6 +8122,35 @@ class TestInferArgs:
         assert kwargs["stated_serving"] is None
         # The session's plan is untouched by the projection.
         assert runner._infer_plans["base"]["checkpoint"] == "/ckpt"
+
+    def test_a_serving_group_sets_up_only_its_tasks_with_its_key(self):
+        from sieval.cli.session import SessionServing
+
+        mock_task_cls = MagicMock(return_value=MagicMock())
+        runner = self._make_runner(
+            {
+                "short": {"class": "fake.Task", "dataset": "ds", "model": "m"},
+                "long": {"class": "fake.Task", "dataset": "ds", "model": "m"},
+            },
+            models={"m": MockChatModel()},
+            datasets={"ds": MagicMock()},
+        )
+        runner.config["models"] = cast(Any, {"m": {"path": "/ckpt"}})
+        runner._infer_plans = {"m": {"backend": "vllm", "assignments": []}}
+        runner._serving = SessionServing(tasks=frozenset({"long"}), group="m@100000")
+        add_task = MagicMock()
+        runner.runner = MagicMock(add_task=add_task)
+
+        with patch(
+            "sieval.cli.session.resolve_task_class",
+            return_value=mock_task_cls,
+        ):
+            runner._setup_tasks()
+
+        (call,) = add_task.call_args_list
+        assert call.args[0] is mock_task_cls.return_value
+        assert mock_task_cls.call_args.kwargs["name"] == "long"
+        assert call.kwargs["serving_group"] == "m@100000"
 
     def test_unserved_model_has_no_recipe(self):
         runner = self._make_runner({}, models={"m": MockChatModel()})
