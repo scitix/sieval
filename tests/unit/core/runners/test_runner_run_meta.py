@@ -652,6 +652,29 @@ class TestStatedWeights:
         assert model.call_count == 0
 
     @pytest.mark.anyio
+    async def test_a_resume_without_weights_keeps_the_recorded_ones(self, tmp_path):
+        """A resume that states no weights keeps the recorded ones, so a later
+        resume by other weights under the same name is still refused."""
+        task, _ = _counting_task()
+        await TaskRunner(task, make_config(tmp_path), weights="sha256:w").arun()
+        root = tmp_path / "results"
+        _forget_last_sample(root)
+
+        task, model = _counting_task()
+        await TaskRunner(task, make_config(tmp_path, resume=True)).arun()
+        assert model.call_count == 1
+        assert _meta(root)["weights"] == "sha256:w"
+
+        _forget_last_sample(root)
+        task, model = _counting_task()
+        runner = TaskRunner(
+            task, make_config(tmp_path, resume=True), weights="sha256:other"
+        )
+        with pytest.raises(StageResumeError, match="1 sample"):
+            await runner.arun()
+        assert model.call_count == 0
+
+    @pytest.mark.anyio
     async def test_a_call_time_stop_counts(self, tmp_path):
         """A `stop` the task passes to `agenerate` is in no config the run sees
         up front; the inference identity still moves, through what was sent."""

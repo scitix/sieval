@@ -33,13 +33,10 @@ produced the current ``report.json``:
 A change to one stage reruns it and every stage after it; a ``preprocess``
 change restarts every sample.
 
-How the candidate is served (its engine and version, whether the run launched
-it, and the recipe: parallel layout, memory fraction, hardware) is the serving
-fingerprint (:func:`serving_fingerprint`), with what a caller states about
-an endpoint SiEval cannot observe. Each run records its own in
-``runs[].serving``; no resume compares it. The model under test is compared
-apart from ``inference``: by ``weights`` when both runs state the weights they
-serve, else by ``model``.
+How the candidate is served is recorded per run in ``runs[].serving``
+(:func:`serving_fingerprint`) and never compared. The model under test is
+compared apart from ``inference``: by ``weights`` when both runs state them,
+else by ``model``.
 
 ``preprocess`` is code, not the prompts it renders: a prompt is code,
 arguments, data and the model's ``extra``, and ``extra`` reaches the request,
@@ -54,10 +51,8 @@ folded the grading stages into one ``grader``. :func:`legacy_grader_keys`
 recomputes it with the walk that wrote it: equal means nothing changed.
 Schemas 1 and 2 hold ``preprocess`` as a digest of rendered prompts; a resume
 renders the recorded samples once to compare (:func:`is_code_identity`).
-Schemas 1 to 3 digest ``inference`` with the engine and serving recipe, which
-holds the context limit; :func:`inference_matches` compares such a block by
-that formula (:func:`legacy_inference_digest`), so equal still means the
-requests are the same.
+Schemas 1 to 3 digest ``inference`` with the engine and serving recipe; such
+a block is compared by that formula (:func:`legacy_inference_digest`).
 
 Every digest is ``sha256:`` over canonical JSON (sorted keys, no whitespace).
 A stage whose input could not be read is ``None``: unknown, never a guess. A
@@ -99,8 +94,8 @@ RESULT_SCHEMA_VERSION = 1
 
 #: Version of the ``identity`` block's layout. A digest computed differently is
 #: not a layout change: it reruns one stage, a new schema would discard them all.
-#: Schema 1 is still read (:func:`read_identity`). Schema 4 took how the
-#: candidate is served out of ``inference`` (:func:`inference_matches`).
+#: Schema 1 is still read (:func:`read_identity`). Schema 4 took serving out of
+#: ``inference``.
 IDENTITY_SCHEMA = 4
 
 #: Identity schemas whose ``inference`` digest covers the engine and serving
@@ -180,24 +175,18 @@ class DigestedStage(TypedDict):
 
 
 class InferenceIdentity(TypedDict):
-    """``digest`` covers what is asked, known up front; ``requests`` what was
-    sent."""
+    """``digest`` covers what is asked; ``requests`` what was sent."""
 
     digest: str
     requests: NotRequired[DigestedStage]
 
 
 class ServingFingerprint(TypedDict):
-    """How one run served the candidate, as ``runs[].serving``; never compared.
+    """How one run served the candidate (``runs[].serving``); never compared.
 
-    ``engine`` is the engine id (``unknown`` for an endpoint that did not
-    declare one), ``engine_version`` what the deployment reported, else
-    ``None``. ``launch`` is ``in_run`` for an engine the run launched,
-    ``external`` for an endpoint it was given. ``recipe`` is the serving plan
-    of an engine SiEval serves, without its checkpoint or where it ran (``None``
-    otherwise): parallel layout, memory fraction, hardware. ``stated`` is what
-    the caller declared about an endpoint SiEval cannot observe
-    (:data:`STATED_SERVING_KEYS`), recorded as given.
+    ``recipe`` is the serving plan of an engine the run launched, without its
+    checkpoint or host; ``stated`` is what the caller declared about an
+    endpoint (:data:`STATED_SERVING_KEYS`), as given.
     """
 
     engine: str
@@ -207,9 +196,7 @@ class ServingFingerprint(TypedDict):
     stated: NotRequired[dict[str, JSONValue]]
 
 
-#: What a caller may state about how an external endpoint serves the model:
-#: the engine build, its topology (such as prefill/decode disaggregation) and
-#: the hardware. The engine id is the model's own ``engine``.
+#: What a caller may state about how an external endpoint serves the model.
 STATED_SERVING_KEYS: tuple[str, ...] = ("engine_version", "topology", "hardware")
 
 
@@ -377,8 +364,7 @@ stopped by an interrupt writes ``ended`` and ``interrupted: true``, and no
 killed or failed before it could say so. ``config`` is the config diff a resume
 made, present when non-empty. ``model`` is this run's model under test, present
 only when it differs from the directory's ``model``, which stays the one whose
-samples are on disk. ``serving`` is how this run served the candidate
-(:class:`ServingFingerprint`), absent when it was not told. ``from`` names
+samples are on disk. ``serving`` is :class:`ServingFingerprint`. ``from`` names
 the directory a resume across tasks copied, with that directory's identity when
 it was copied (``None`` stages for a directory that recorded none).
 ``requests`` counts the run's model requests by phase and model; absent when
@@ -593,10 +579,8 @@ def inference_identity(
 ) -> InferenceIdentity:
     """Digest what the candidate is asked, leaving out which model and how served.
 
-    *context_limit* is the candidate's effective context window in tokens,
-    ``None`` when unknown. What the candidate was actually sent is folded per
-    sample into ``requests`` once the run ends; this digest is the part known
-    up front. How the candidate is served is :func:`serving_fingerprint`.
+    *context_limit* is its context window in tokens, ``None`` when unknown.
+    What was actually sent is folded per sample into ``requests`` at the end.
     """
     payload = {
         "model_args": model_request_args(model),
@@ -616,9 +600,7 @@ def legacy_inference_digest(
 ) -> str:
     """The ``inference`` digest of identity schemas 1 to 3, with engine and recipe.
 
-    The recipe holds the context limit, so a match here is a match of
-    :func:`inference_identity` too. Frozen: the released directories it reads
-    were written with it.
+    Frozen: released directories were written with it.
     """
     payload = {
         "model_args": model_request_args(model),
@@ -637,10 +619,9 @@ def inference_matches(
 ) -> bool | None:
     """Whether a recorded ``identity`` block's ``inference`` is this run's.
 
-    *current* is this run's :func:`inference_identity` digest; *legacy* its
-    :func:`legacy_inference_digest`, read for a block of a
-    :data:`LEGACY_INFERENCE_SCHEMAS` schema. ``None`` when either side is
-    unknown: no block, no ``inference`` in it, or no digest of this run.
+    *legacy* is this run's :func:`legacy_inference_digest`, used for a block
+    of a :data:`LEGACY_INFERENCE_SCHEMAS` schema. ``None`` when either side is
+    unknown.
     """
     if not isinstance(recorded, Mapping):
         return None
@@ -657,11 +638,8 @@ def serving_fingerprint(
     recipe: Mapping[str, JSONValue] | None,
     stated: Mapping[str, JSONValue] | None = None,
 ) -> ServingFingerprint:
-    """How *model* is served, from its deployment and the run's serving *recipe*.
-
-    *stated* is what the caller declared about an external endpoint; a stated
-    ``engine_version`` fills one the deployment did not report.
-    """
+    """How *model* is served. A *stated* ``engine_version`` fills one the
+    deployment did not report."""
     deployment = model.deployment
     fingerprint: ServingFingerprint = {
         "engine": deployment.engine.engine_id,
@@ -2396,9 +2374,7 @@ def read_identity(
     """A recorded ``identity`` block as this schema, with a schema-1 ``grader``.
 
     Schemas 2 to 4 are read as written; schema 2's ``preprocess`` is a digest
-    of rendered prompts, which :func:`is_code_identity` tells apart, and an
-    ``inference`` before schema 4 is compared by :func:`inference_matches`
-    against the raw block. Schema 1
+    of rendered prompts, which :func:`is_code_identity` tells apart. Schema 1
     maps ``data`` and ``inference`` across and ``prompt`` to ``preprocess``
     (:data:`SCHEMA_1_STAGES`); its ``grader`` cannot be split, so the grading
     stages read as unknown and the ``grader`` is returned beside them, for the
@@ -2428,8 +2404,7 @@ def carried_identity(existing: Mapping[str, Any] | None) -> RunIdentity:
     """The previous run's identity as this schema (:func:`read_identity`), else empty.
 
     A schema-1 block's grading stages are unknown until the run writes them,
-    and so is an ``inference`` digested before schema 4: under this schema's
-    label it would be compared by the wrong formula.
+    and so is a pre-schema-4 ``inference``, which this label would misread.
     """
     block = (existing or {}).get("identity")
     read = read_identity(block)

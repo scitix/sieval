@@ -8077,6 +8077,24 @@ class TestInferArgs:
         }
         assert runner._context_limit_for("m") == 4096
 
+    def test_a_role_without_a_limit_leaves_it_unknown(self):
+        """A role that does not pin the window serves the checkpoint's, which
+        may be smaller than the other role's; a bool is not a limit."""
+        runner = self._make_runner({}, models={"m": MockChatModel()})
+        runner.config["models"] = cast(Any, {"m": {"path": "/c"}})
+        runner._infer_plans = {
+            "m": {
+                "backend": "sglang",
+                "assignments": [
+                    {"role": "prefill", "engine_params": {"context_length": 8192}},
+                    {"role": "decode", "engine_params": {"dtype": "bf16"}},
+                ],
+            }
+        }
+        assert runner._context_limit_for("m") is None
+        runner._infer_plans = {"m": self._plan(max_model_len=True)}
+        assert runner._context_limit_for("m") is None
+
     def test_an_endpoint_states_its_context_limit(self):
         runner = self._make_runner({}, models={"m": MockChatModel()})
         runner.config["models"] = cast(
@@ -8093,12 +8111,16 @@ class TestInferArgs:
             Any, {"m": {"path": "/c", "context_limit": 4096}}
         )
         runner._infer_plans = {"m": self._plan(max_model_len=32768)}
-        with pytest.raises(ValueError, match="context_limit 4096 differs"):
+        with pytest.raises(ValueError, match="context_limit 4096 is not the 32768"):
             runner._context_limit_for("m")
         runner.config["models"] = cast(
             Any, {"m": {"path": "/c", "context_limit": 32768}}
         )
         assert runner._context_limit_for("m") == 32768
+        # The engine enforces only its plan's: an unpinned plan cannot honour it.
+        runner._infer_plans = {"m": self._plan(dtype="bf16")}
+        with pytest.raises(ValueError, match="context_limit 32768 is not pinned"):
+            runner._context_limit_for("m")
 
     def test_stated_serving_is_the_root_models(self):
         runner = self._make_runner({}, models={"m": MockChatModel()})

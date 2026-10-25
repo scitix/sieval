@@ -224,8 +224,8 @@ class TaskSaver:
         *keep_recorded_model* keeps a resumed directory's ``model`` when
         *model* differs, since the inference on disk is the recorded model's;
         *model* then goes in this run's ``runs[]`` entry. *weights* names the
-        weights *model* serves and is kept or replaced with it. *serving* is
-        how this run served the model (``runs[].serving``).
+        weights *model* serves; ``None`` keeps the recorded ones for the same
+        model. *serving* is ``runs[].serving``.
         """
         from sieval import __version__
 
@@ -254,15 +254,17 @@ class TaskSaver:
             if self._task_identity is not None:
                 meta["task"] = self._task_identity
         recorded_model = (existing or {}).get("model")
+        recorded_weights = (existing or {}).get("weights")
         if keep_recorded_model and isinstance(recorded_model, str):
             meta["model"] = recorded_model
-            recorded_weights = (existing or {}).get("weights")
-            if isinstance(recorded_weights, str):
-                meta["weights"] = recorded_weights
         elif model is not None:
             meta["model"] = model
-            if weights is not None:
-                meta["weights"] = weights
+        if not keep_recorded_model and weights is not None:
+            meta["weights"] = weights
+        elif isinstance(recorded_weights, str) and meta.get("model") == recorded_model:
+            # Unstated weights keep the recorded ones, or a later resume by
+            # other weights under the same name would pass.
+            meta["weights"] = recorded_weights
         if config_path is not None:
             meta["config"] = config_path
         meta["identity"] = carried_identity(existing)

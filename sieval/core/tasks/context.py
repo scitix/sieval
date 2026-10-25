@@ -52,7 +52,7 @@ class TaskRunMeta(TypedDict):
     version gate compares; ``version`` is provenance only.
     ``model``, ``config``, ``identity`` and ``runs`` are rewritten by every
     run — see :mod:`sieval.core.tasks.run_meta` for their shape. ``weights``
-    names the weights ``model`` serves, present when the run stated them. ``config`` is
+    names the weights ``model`` serves, when stated. ``config`` is
     the run's ``effective_config.yaml``, relative to this directory.
 
     Readers tolerate older files: ``result_schema_version`` absent is a run

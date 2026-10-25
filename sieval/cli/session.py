@@ -1232,17 +1232,25 @@ _CONTEXT_LIMIT_PARAMS = ("max_model_len", "context_length")
 
 
 def _planned_context_limit(plan: Mapping[str, Any]) -> int | None:
-    """The context window a serving plan launches its engine with, else ``None``.
-
-    The smallest across roles: a prompt overflows on the first that refuses it.
+    """The context window a serving plan launches its engine with: the
+    smallest across roles, since a prompt overflows on the first that refuses
+    it. ``None`` when a role leaves it to the checkpoint's default.
     """
-    limits = [
-        value
-        for assignment in plan.get("assignments") or ()
-        if isinstance(assignment, Mapping)
-        for key, value in (assignment.get("engine_params") or {}).items()
-        if key in _CONTEXT_LIMIT_PARAMS and isinstance(value, int)
-    ]
+    limits: list[int] = []
+    for assignment in plan.get("assignments") or ():
+        params = (
+            assignment.get("engine_params") if isinstance(assignment, Mapping) else None
+        ) or {}
+        role = [
+            value
+            for key, value in params.items()
+            if key in _CONTEXT_LIMIT_PARAMS
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+        ]
+        if not role:
+            return None
+        limits.extend(role)
     return min(limits) if limits else None
 
 
@@ -5031,37 +5039,47 @@ class EvalSession:
         return cast(dict[str, JSONValue], recipe)
 
     def _context_limit_for(self, model_name: str) -> int | None:
-        """*model_name*'s effective context window in tokens, for the inference
-        identity: the limit its serving plan launches the engine with, else the
-        root model's ``context_limit``. ``None`` when neither says.
+        """*model_name*'s context window in tokens, for the inference identity:
+        its serving plan's for an engine the run launches, else the root
+        model's ``context_limit``; ``None`` when unknown.
 
-        A served model whose ``context_limit`` disagrees with its plan is
-        refused: the engine enforces the plan's.
+        A launched engine enforces only its plan's, so a ``context_limit`` the
+        plan does not pin to the same value is refused.
         """
         root = self._root_model(model_name)
         configured = (
             self._get_named_config_map("models").get(root, {}).get("context_limit")
         )
         plan = (self._infer_plans or {}).get(root)
-        planned = _planned_context_limit(plan) if plan is not None else None
-        if planned is not None and configured is not None and configured != planned:
-            raise ValueError(
-                f"Model '{root}': context_limit {configured} differs from the "
-                f"{planned} its serving plan launches the engine with; remove "
-                "context_limit, or set the limit in infer.overrides"
+        if plan is None:
+            return configured
+        planned = _planned_context_limit(plan)
+        if configured is not None and configured != planned:
+            launched = (
+                f"the {planned} its serving plan launches the engine with"
+                if planned is not None
+                else "pinned by its serving plan"
             )
-        return planned if planned is not None else configured
+            raise ValueError(
+                f"Model '{root}': context_limit {configured} is not {launched}; "
+                "remove context_limit, or set the limit in infer.overrides"
+            )
+        if planned is None:
+            logger.warning(
+                "Model '{}': its serving plan leaves the context window to the "
+                "checkpoint, so the inference identity records it as unknown; "
+                "set it in infer.overrides to make it comparable",
+                root,
+            )
+        return planned
 
     def _weights_for(self, model_name: str) -> str | None:
-        """The weights *model_name*'s root states it serves (``weights``), else
-        ``None``."""
+        """The root model's ``weights``, else ``None``."""
         root = self._root_model(model_name)
         return self._get_named_config_map("models").get(root, {}).get("weights")
 
     def _stated_serving_for(self, model_name: str) -> dict[str, JSONValue] | None:
-        """What *model_name*'s root states about how its endpoint serves it
-        (``serving``), for ``runs[].serving``; ``None`` when it states nothing.
-        """
+        """The root model's ``serving``; ``None`` when absent or empty."""
         root = self._root_model(model_name)
         stated = self._get_named_config_map("models").get(root, {}).get("serving")
         return dict(stated) if stated else None

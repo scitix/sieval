@@ -201,9 +201,9 @@ def plan_resume(
     ``data`` may be ``None`` before anything is preprocessed and then
     compares as ``unknown``. *legacy_grader_keys* is
     :func:`~sieval.core.tasks.run_meta.legacy_grader_keys` for this task,
-    read only for a schema-1 directory; *legacy_inference* this run's
-    :func:`~sieval.core.tasks.run_meta.legacy_inference_digest`, read only for
-    a directory before identity schema 4. The runner plans per sample and is
+    read only for a schema-1 directory, and *legacy_inference*
+    :func:`~sieval.core.tasks.run_meta.legacy_inference_digest`, only for one
+    before identity schema 4. The runner plans per sample and is
     authoritative; this says what a resume of a finished directory does.
     """
     block = (recorded_meta or {}).get("identity")
@@ -292,8 +292,8 @@ def task_resume_plan(
     :class:`~sieval.core.runners.runner.TaskRunner` does, so call it after
     ``task.setup()``, which may resolve an argument the grading identities
     read. *runner_keys* holds :data:`~sieval.core.tasks.run_meta.INFERENCE_RUNNER_KEYS`
-    and *context_limit* and *recipe* (the serving recipe, read only to compare
-    a directory before identity schema 4) as the runner is given them. Reads files,
+    and *context_limit* and *recipe* as the runner is given them; *recipe* is
+    read only for a directory before identity schema 4. Reads files,
     starts nothing and calls no model.
     """
     task_cls = type(task)

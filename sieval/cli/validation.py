@@ -320,6 +320,7 @@ def _validate_models(cfg: dict, result: ValidationResult) -> None:
                     "auto-serve. Add a checkpoint or set api_base explicitly."
                 )
 
+            # As `sieval run` decides: `args.api_base` does not stop a launch.
             _check_stated_serving(
                 name,
                 mcfg.get("serving"),

@@ -316,50 +316,40 @@ So a grading or report change is a plain `--resume`. A sample past iteration 0
 restarts instead of rolling back to a grading stage.
 
 How the model is served is not part of `inference`, so it never refuses a
-resume: a run on 1 GPU resumes on 8, and part of a task served by an engine
-`sieval run` launched resumes against an endpoint serving the same weights.
-Each `runs[]` entry records its own `serving`, so a reader sees what changed:
+resume: a run on 1 GPU resumes on 8, and one served by an engine `sieval run`
+launched resumes against an endpoint serving the same weights. Each `runs[]`
+entry records its own `serving` (`engine`, `engine_version`, `launch`:
+`in_run` or `external`, and `recipe`: the plan without checkpoint or host), so
+a reader sees what changed.
 
-```json
-"serving": {"engine": "sglang", "engine_version": null, "launch": "in_run", "recipe": {"backend": "sglang", "assignments": ["..."]}}
-```
-
-`launch` is `in_run` for an engine the run launched and `external` for an
-`api_base`; `recipe` is the serving plan (parallel layout, memory fraction,
-hardware) without its checkpoint or host, `null` for an endpoint.
-
-The context limit does count: it decides which prompts overflow. For an
-engine the run launches it is the plan's `max_model_len` (vLLM) or
-`context_length` (SGLang), the smallest across roles. An endpoint states it on
-its root model, and a resume across the two needs both to say the same:
+The context limit does count, since it decides which prompts overflow. A
+launched engine's is the plan's `max_model_len` (vLLM) or `context_length`
+(SGLang), the smallest across roles; a plan with a role that pins neither
+records it as unknown, with a warning. An endpoint states it on its root
+model, along with two optional keys:
 
 ```yaml
 models:
   subject:
     api_base: http://gpu-node:30000/v1
     name: qwen3-8b
-    context_limit: 32768   # the endpoint's window; refused if a plan says otherwise
-    weights: sha256:3f…    # optional: which weights are served, whatever the name
-    serving:               # optional: how the endpoint serves them, recorded as given
+    context_limit: 32768   # refused unless a launched engine's plan pins the same
+    weights: sha256:3f…    # compared on resume instead of the name
+    serving:               # recorded as given in runs[].serving.stated
       engine_version: 0.5.4
       topology: {prefill: 1, decode: 3}
       hardware: 4x H200
 ```
 
-A resume compares the model under test by `weights` when both runs state one,
-else by name, so the same weights served under another name infer on, and other
-weights under the same name are refused. `meta.json` records `weights` next to
-`model`.
+- `weights`: a resume compares the model under test by it when both runs
+  state one, else by name. Recorded next to `model` in `meta.json`, and kept
+  by a resume that does not state it.
+- `serving`: `engine_version`, `topology` and `hardware`, any value; never
+  compared. Refused on a model `sieval run` launches, which records its own.
+  So a single-node run can resume on a prefill/decode deployment of the same
+  weights.
 
-SiEval cannot see how an endpoint serves the model, so `serving` states it:
-`engine_version`, `topology` and `hardware`, any of them, with any value.
-`runs[].serving.stated` records it as given; it is never compared, and a stated
-`engine_version` fills one the deployment did not report. It is refused on a
-model `sieval run` launches, which records its own. So a run that starts on a
-single-node engine and proves too slow can resume against a prefill/decode
-deployment of the same weights: the requests are the same, and `runs[]` shows
-the switch. `context_limit`, `weights` and `serving` are not allowed on a
-derived model.
+None of the three is allowed on a derived model.
 
 Each grading stage's identity holds the code its Task method reaches, the task
 class and `grader_args()`; `feedback` also holds every judge and service.

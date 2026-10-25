@@ -499,12 +499,11 @@ class TaskRunner:
         unserved_candidate: bool = False,
     ):
         """*inference_recipe* is the serving plan of the model under test,
-        without its checkpoint, for ``runs[].serving``; ``None`` when the
-        model is not served by SiEval. *context_limit* is its effective
-        context window in tokens, for the inference identity; ``None`` when
-        unknown. *weights* names the weights it serves, compared instead of
-        the model name when both runs state one. *stated_serving* is what the
-        caller states about an external endpoint, for ``runs[].serving``.
+        without its checkpoint (``None`` when SiEval does not serve it), and
+        *stated_serving* what the caller states about an endpoint; both go to
+        ``runs[].serving``. *context_limit* is its context window in tokens,
+        for the inference identity. *weights* names the weights it serves,
+        compared instead of the model name when both runs state one.
         *resume_config_diff* is the config change a resume made, for
         ``runs[].config``. *legacy_match* compares a
         recorded run without identities through its persisted config.
@@ -1974,9 +1973,8 @@ class TaskRunner:
     def _resume_identity_update(self, *, report_unknown: bool = False) -> dict:
         """This run's preprocess and grading identities, which a fast resume or
         re-report writes at its start to upgrade an older block in place.
-        ``report`` stays unknown until a re-report writes it. ``inference``,
-        which matched to get here, is rewritten in this schema's digest with
-        the recorded ``requests``."""
+        ``report`` stays unknown until a re-report writes it; ``inference`` is
+        rewritten in this schema, keeping the recorded ``requests``."""
         update: dict = {"preprocess": self._preprocess_identity()}
         identity = recorded_identity(self._recorded)
         recorded = identity["inference"] if identity is not None else None
@@ -2176,10 +2174,11 @@ class TaskRunner:
             "inference": self._inference_identity(),
             **(self._grading_identities() or {}),
         }
-        plan = plan_resume(self._recorded, current, self._legacy_grader_keys())
-        match = self._inference_matches(self._inference_identity())
-        plan["stages"]["inference"] = (
-            "unknown" if match is None else "same" if match else "differs"
+        plan = plan_resume(
+            self._recorded,
+            current,
+            self._legacy_grader_keys(),
+            self._legacy_inference_digest(),
         )
         if plan["legacy_preprocess"] and self._legacy_prompts_match is not None:
             plan["stages"]["preprocess"] = (
@@ -2584,11 +2583,8 @@ class TaskRunner:
         return model if isinstance(model, str) else None
 
     def _model_differs(self) -> bool:
-        """Whether the recorded run was for another model under test.
-
-        By the weights each run serves when both state them, so one model
-        reached under another name is the same; else by model name.
-        """
+        """Whether the recorded run was for another model under test: by
+        ``weights`` when both runs state them, else by name."""
         weights = (self._recorded or {}).get("weights")
         if isinstance(weights, str) and self._weights is not None:
             return weights != self._weights
@@ -2652,23 +2648,31 @@ class TaskRunner:
             logger.warning("Inference identity unavailable: {}", exc)
             return None
 
-    def _inference_matches(self, current: InferenceIdentity | None) -> bool | None:
-        """:func:`inference_matches` against the recorded ``meta.json``; a block
-        before schema 4 is compared by the digest it was written with."""
+    def _legacy_inference_digest(self) -> str | None:
+        """This run's :func:`legacy_inference_digest`, computed only when the
+        recorded block predates identity schema 4."""
         block = (self._recorded or {}).get("identity")
-        legacy: str | None = None
-        if isinstance(block, dict) and block.get("schema") in LEGACY_INFERENCE_SCHEMAS:
-            try:
-                legacy = legacy_inference_digest(
-                    model=self._task.model,
-                    task_args=self._task.inference_args(),
-                    runner_keys=self._runner_keys(),
-                    recipe=self._inference_recipe,
-                )
-            except (TypeError, ValueError, AttributeError) as exc:
-                logger.warning("Inference identity unavailable: {}", exc)
+        if not (
+            isinstance(block, dict) and block.get("schema") in LEGACY_INFERENCE_SCHEMAS
+        ):
+            return None
+        try:
+            return legacy_inference_digest(
+                model=self._task.model,
+                task_args=self._task.inference_args(),
+                runner_keys=self._runner_keys(),
+                recipe=self._inference_recipe,
+            )
+        except (TypeError, ValueError, AttributeError) as exc:
+            logger.warning("Inference identity unavailable: {}", exc)
+            return None
+
+    def _inference_matches(self, current: InferenceIdentity | None) -> bool | None:
+        """:func:`inference_matches` against the recorded ``meta.json``."""
         return inference_matches(
-            block, current["digest"] if current is not None else None, legacy
+            (self._recorded or {}).get("identity"),
+            current["digest"] if current is not None else None,
+            self._legacy_inference_digest(),
         )
 
     def _serving(self) -> ServingFingerprint | None:
