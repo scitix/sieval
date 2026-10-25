@@ -183,7 +183,8 @@ included).
 A task needs its `min_context` if set, else the larger of what its class
 declares (`TaskRequirements.min_context`; RULER: `max_seq_length` plus any
 unreserved thinking budget) and its effective `max_tokens` plus 4096 for the
-prompt. A task whose prompts are longer (or known to be shorter) sets
+prompt. Both `min_context` forms already count prompt and output and are used
+as they are. A task whose prompts are longer (or known to be shorter) sets
 `min_context`. A root model states what it can serve:
 
 ```yaml
@@ -204,7 +205,11 @@ tasks:
 
 - Within the recipe window: nothing changes.
 - Within `native`: the plan's `context_length` / `max_model_len` is raised to
-  the largest such need, for every task on that model.
+  the largest such need, for every task on that model. A `max_tokens` below
+  `native` raises it to `native` itself, even when the 4096 would not fit:
+  such a task is never scaled, and its prompt gets `native - max_tokens`
+  tokens. A longer prompt is that sample's
+  [context overflow](metrics.md#always-present), as before.
 - Within `max`: a plan of its own with `scaling`, in serving group
   `<model>@<window>`. Scaling changes short-context outputs, so no other task
   shares that engine.

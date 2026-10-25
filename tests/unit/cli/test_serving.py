@@ -201,11 +201,12 @@ class TestPlanServingGroups:
 
         (group,) = plan_serving_groups(config, {"m": _plan(32768)})
 
-        assert plan_window(group.plans["m"]) == 40096
+        assert plan_window(group.plans["m"]) == 40960
         assert group.tasks == ("short", "long")
-        assert group.windows["short"].window == 40096
+        assert group.windows["short"].window == 40960
 
-    def test_max_tokens_equal_to_the_recipe_window_raises_it(self) -> None:
+    def test_max_tokens_below_native_raises_to_native(self) -> None:
+        """Not to max_tokens plus headroom: the prompt gets native - max_tokens."""
         config = _config(
             {"t": _gen(32768)},
             model={"path": "/models/m", "context": {"native": 40960}},
@@ -213,7 +214,98 @@ class TestPlanServingGroups:
 
         (group,) = plan_serving_groups(config, {"m": _plan(32768)})
 
-        assert plan_window(group.plans["m"]) == 36864
+        assert plan_window(group.plans["m"]) == 40960
+
+    def test_max_tokens_within_headroom_of_native_is_never_scaled(self) -> None:
+        """38000 + headroom exceeds native 40960, but scaling changes outputs."""
+        config = _config(
+            {"t": _gen(38000)},
+            model={
+                "path": "/models/m",
+                "context": {"native": 40960, "max": 131072, "scaling": {"x": 1}},
+            },
+        )
+
+        (group,) = plan_serving_groups(config, {"m": _plan(32768)})
+
+        assert group.tasks == ("t",)
+        assert plan_window(group.plans["m"]) == 40960
+        assert group.windows["t"] == ServedWindow(DEFAULT_GROUP, 40960, False)
+
+    def test_max_tokens_at_or_above_native_gets_headroom_and_scales(self) -> None:
+        config = _config(
+            {"at": _gen(40960), "above": _gen(60000)},
+            model={
+                "path": "/models/m",
+                "context": {"native": 40960, "max": 131072, "scaling": {"x": 1}},
+            },
+        )
+
+        default, scaled = plan_serving_groups(config, {"m": _plan(32768)})
+
+        assert default.tasks == ()
+        assert scaled.key == "m@64096"
+        assert scaled.tasks == ("at", "above")
+        assert scaled.windows["at"] == ServedWindow("m@64096", 64096, True)
+
+    def test_pinned_window_below_native_refuses_at_the_native_need(self) -> None:
+        config = _config(
+            {"t": _gen(38000)},
+            model={
+                "path": "/models/m",
+                "context": {"native": 40960},
+                "infer": {"overrides": {"context_length": 39000}},
+            },
+        )
+
+        with pytest.raises(ServingShortfallError) as caught:
+            plan_serving_groups(config, {"m": _plan(39000)})
+
+        assert (
+            "task 't' needs 40960 tokens (its max_tokens, served at the native "
+            "window); model 'm' pins infer.overrides.context_length: 39000"
+            in str(caught.value)
+        )
+
+    @pytest.mark.parametrize(
+        ("task", "window", "scaled"),
+        [
+            ({"min_context": 36000, **_gen(30000)}, 36000, False),
+            ({"class": LONG}, 50000, True),
+        ],
+        ids=["min_context-override", "declared-requires"],
+    )
+    def test_explicit_min_context_is_used_unchanged(
+        self, task: dict[str, Any], window: int, scaled: bool
+    ) -> None:
+        """It already counts the prompt: no headroom, no rounding up to native."""
+        config = _config(
+            {"t": task},
+            model={
+                "path": "/models/m",
+                "context": {"native": 40960, "max": 131072, "scaling": {"x": 1}},
+            },
+        )
+
+        *_, group = plan_serving_groups(config, {"m": _plan(32768)})
+
+        assert group.windows["t"].window == window
+        assert group.windows["t"].scaled is scaled
+        assert plan_window(group.plans["m"]) == window
+
+    def test_unknown_native_keeps_max_tokens_plus_headroom(self) -> None:
+        config = _config(
+            {"t": _gen(38000)},
+            model={"path": "/models/m", "context": {"max": 131072, "scaling": {}}},
+        )
+
+        with pytest.raises(ServingShortfallError) as caught:
+            plan_serving_groups(config, {"m": _plan(40960)})
+
+        assert (
+            "task 't' needs 42096 tokens (its max_tokens plus 4096 for the prompt); "
+            "model 'm' serves 40960 and has no known native window" in str(caught.value)
+        )
 
     def test_native_window_defaults_to_the_checkpoint_config(
         self, tmp_path: Path
@@ -227,7 +319,7 @@ class TestPlanServingGroups:
             config, {"m": _plan(32768, checkpoint=str(tmp_path))}
         )
 
-        assert plan_window(group.plans["m"]) == 40096
+        assert plan_window(group.plans["m"]) == 40960
 
     def test_need_beyond_native_gets_a_scaled_group_of_its_own(self) -> None:
         scaling = {"json_model_override_args": '{"rope_scaling": {}}'}
@@ -365,6 +457,21 @@ class TestCheckContextFits:
         with pytest.raises(ServingShortfallError, match="serves 32768"):
             check_context_fits(config, plans)
         check_context_fits(config, plans, frozenset({"other"}))
+
+    def test_served_native_window_fits_a_max_tokens_below_it(self) -> None:
+        plan = {
+            "backend": "sglang",
+            "checkpoint": "/models/m",
+            "assignments": [{"engine_params": {"context_length": 40960}}],
+        }
+        native = {"path": "/models/m", "context": {"native": 40960}}
+
+        check_context_fits(_config({"t": _gen(38000)}, model=native), {"m": plan})
+        with pytest.raises(ServingShortfallError) as caught:
+            check_context_fits(
+                _config({"t": _gen(38000)}, model={"path": "/models/m"}), {"m": plan}
+            )
+        assert "needs 42096 tokens" in str(caught.value)
 
     def test_external_model_is_checked_against_its_context_limit(self) -> None:
         config = _config(

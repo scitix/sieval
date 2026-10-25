@@ -24,7 +24,9 @@ DEFAULT_GROUP = "default"
 _MAX_TOKENS_KEYS = ("max_tokens", "max_completion_tokens")
 
 #: Prompt room added to a ``max_tokens``-derived need: engines refuse
-#: prompt + ``max_tokens`` > window. Longer prompts set ``min_context``.
+#: prompt + ``max_tokens`` > window. A ``max_tokens`` below the native window
+#: is served at that window instead (:func:`_native_serves`). Longer prompts
+#: set ``min_context``.
 PROMPT_HEADROOM = 4096
 
 
@@ -127,8 +129,9 @@ def task_context_needs(config: Mapping[str, Any]) -> dict[str, ContextNeed]:
     """The context window each task needs, by task name.
 
     A need from ``max_tokens`` adds :data:`PROMPT_HEADROOM`; ``min_context``
-    and a declared need already count the prompt. A task with none of the
-    three is left out.
+    and a declared need already count the prompt and are used as they are. A
+    task with none of the three is left out. The serving side caps a
+    ``max_tokens`` need at the native window (:func:`_native_serves`).
     """
     models = validate_named_config_map("models", config.get("models", {}))
     tasks = validate_named_config_map("tasks", config.get("tasks", {}))
@@ -210,20 +213,22 @@ def check_context_fits(
         root_config = models.get(need.root, {})
         declared = parse_model_context(need.root, root_config)
         plan = (infer_plans or {}).get(need.root)
+        native: int | None = None
         if plan is not None:
             if need.root not in native_windows:
                 native_windows[need.root] = declared.native or _checkpoint_window(
                     plan.get("checkpoint")
                 )
-            window = served_window(plan, native_windows[need.root])
+            native = native_windows[need.root]
+            window = served_window(plan, native)
             what = "serves"
         else:
             window = _positive_int(
                 root_config.get("context_limit"), f"Model '{need.root}' context_limit"
             )
             what = "declares context_limit"
-        if window is not None and need.tokens > window:
-            shortfalls.append(_shortfall(task_name, need, f"{what} {window}"))
+        if window is not None and not _fits(need, window, native):
+            shortfalls.append(_shortfall(task_name, need, f"{what} {window}", native))
     if shortfalls:
         raise ServingShortfallError(
             "Tasks need a longer context window than their model provides:\n"
@@ -238,7 +243,8 @@ def plan_serving_groups(
     """Group the tasks by the plan that serves them, the default group first.
 
     *base_plans* are the recipe plans by root model. A need within the native
-    window raises that plan; one within ``context.max`` gets the group
+    window raises that plan, a ``max_tokens`` below native to the native
+    window itself; one within ``context.max`` gets the group
     ``<root>@<window>`` with ``context.scaling``. Raises
     :class:`ServingShortfallError` naming every task no plan can serve.
     """
@@ -267,7 +273,7 @@ def plan_serving_groups(
         scaled: list[str] = []
         for task_name in served[root]:
             need = needs.get(task_name)
-            if need is None or window is None or need.tokens <= window:
+            if need is None or window is None or _fits(need, window, native):
                 continue
             if pinned is not None:
                 limit = f"pins {pinned[0]}: {pinned[1]}"
@@ -276,6 +282,9 @@ def plan_serving_groups(
                     f"serves {window} and has no known native window "
                     "(set context.native)"
                 )
+            elif _native_serves(need, native):
+                raise_to = native
+                continue
             elif need.tokens <= native:
                 raise_to = max(raise_to or 0, need.tokens)
                 continue
@@ -291,7 +300,7 @@ def plan_serving_groups(
             else:
                 scaled.append(task_name)
                 continue
-            shortfalls.append(_shortfall(task_name, need, limit))
+            shortfalls.append(_shortfall(task_name, need, limit, native))
 
         default_plan = plan if raise_to is None else with_window(plan, raise_to, {})
         default_plans[root] = default_plan
@@ -351,10 +360,40 @@ def with_window(
     )
 
 
-def _shortfall(task: str, need: ContextNeed, limit: str) -> str:
+def _native_serves(need: ContextNeed, native: int | None) -> bool:
+    """Whether *native* serves *need* unscaled: a need from a ``max_tokens``
+    below the native window. Such a task is never scaled, since scaling changes
+    outputs; its window is raised to *native*, and the prompt gets the
+    ``native - max_tokens`` tokens left. A longer prompt overflows per sample
+    (``context_overflow``)."""
     return (
-        f"- task '{task}' needs {need.tokens} tokens ({_SOURCES[need.source]}); "
-        f"model '{need.root}' {limit}"
+        need.source == "max_tokens"
+        and native is not None
+        and need.tokens - PROMPT_HEADROOM < native
+    )
+
+
+def _required(need: ContextNeed, native: int | None) -> int:
+    """The smallest window that serves *need*: its tokens, capped at *native*
+    when the native window serves it."""
+    if native is not None and _native_serves(need, native):
+        return min(need.tokens, native)
+    return need.tokens
+
+
+def _fits(need: ContextNeed, window: int, native: int | None) -> bool:
+    return _required(need, native) <= window
+
+
+def _shortfall(
+    task: str, need: ContextNeed, limit: str, native: int | None = None
+) -> str:
+    tokens = _required(need, native)
+    source = _SOURCES[need.source]
+    if tokens != need.tokens:
+        source = "its max_tokens, served at the native window"
+    return (
+        f"- task '{task}' needs {tokens} tokens ({source}); model '{need.root}' {limit}"
     )
 
 
