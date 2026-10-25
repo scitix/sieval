@@ -49,11 +49,11 @@ from sieval.cli.services import SERVICE_LOG_DIR
 from sieval.cli.serving import (
     DEFAULT_GROUP,
     ServingGroup,
+    SessionServing,
     plan_serving_groups,
     served_window,
 )
 from sieval.cli.session import (
-    SessionServing,
     config_resumes,
     holds_secret,
     read_persisted_config,
@@ -139,7 +139,9 @@ class _RecordedPlans:
     Its plans are reused only when ``SIEVAL_TARGET_GPU`` declares the GPUs they
     were resolved for, and only for a model whose serving config is unchanged:
     a recipe the installed SiEval resolves differently would otherwise change
-    the inference identity and refuse the resume.
+    the inference identity and refuse the resume. Each serving group's
+    ``infer_plans[.<key>].yaml`` is read, a scaled group's ``recipes`` standing
+    for the plans its scaled ones started from.
     """
 
     def __init__(self, session_dir: Path | None, gpu: str | None) -> None:
@@ -148,12 +150,20 @@ class _RecordedPlans:
         self._capabilities: dict[str, str] = {}
         if session_dir is None or gpu is None:
             return
-        recorded = read_persisted_config(session_dir / "infer_plans.yaml")
-        if recorded is None or recorded.get("gpu") != gpu:
-            return
-        plans = recorded.get("models")
+        plans: dict[str, Any] = {}
+        for path in [
+            session_dir / "infer_plans.yaml",
+            *sorted(session_dir.glob("infer_plans.*.yaml")),
+        ]:
+            recorded = read_persisted_config(path)
+            if recorded is None or recorded.get("gpu") != gpu:
+                continue
+            for key in ("recipes", "models"):
+                found = recorded.get(key)
+                if isinstance(found, dict):
+                    plans = {**found, **plans}
         config = read_persisted_config(session_dir / "effective_config.yaml")
-        if not isinstance(plans, dict) or config is None:
+        if not plans or config is None:
             return
         models = config.get("models")
         try:
@@ -318,7 +328,8 @@ class _GroupLaunch:
     *prepared* and *plan_dicts* hold every served root, this group's plans over
     the default group's, so a task outside the group still binds; *own* are the
     roots this group launches. A root's engine is named *names*[root]: its
-    model name in the default group, the group key otherwise.
+    model name in the default group, the group key otherwise. *recipes* are
+    the recipe plans of the roots this group scales, recorded for a resume.
     """
 
     group: ServingGroup
@@ -326,6 +337,7 @@ class _GroupLaunch:
     plan_dicts: dict[str, dict[str, Any]]
     own: frozenset[str]
     names: dict[str, str]
+    recipes: dict[str, dict[str, Any]]
 
     @property
     def key(self) -> str:
@@ -343,6 +355,7 @@ class _GroupLaunch:
                 if self.key == DEFAULT_GROUP
                 else f"infer_plans.{self.key}.yaml"
             ),
+            recipes=self.recipes,
         )
 
 
@@ -351,12 +364,8 @@ def _serving_groups(
     plan_dicts: Mapping[str, dict[str, Any]],
     prepared_launches: Mapping[str, tuple[DeploymentPlan, list[BackendCommand]]],
 ) -> list[_GroupLaunch]:
-    """Group the tasks by serving plan (:func:`plan_serving_groups`), the
-    default group first, each with its launches translated.
-
-    A plan the grouping left unchanged keeps its *plan_dicts* entry and its
-    commands, as :func:`_prepare_launch_batch` resolved them.
-    """
+    """:func:`plan_serving_groups`, each group with its launches translated;
+    an unchanged plan keeps what :func:`_prepare_launch_batch` resolved."""
     models = config.get("models") or {}
     groups = plan_serving_groups(
         config, {name: plan for name, (plan, _) in prepared_launches.items()}
@@ -376,17 +385,20 @@ def _serving_groups(
     for group in groups:
         entries = dict(default)
         names = {name: name for name in default}
+        recipes: dict[str, dict[str, Any]] = {}
         if group.key != DEFAULT_GROUP:
             for name, plan in group.plans.items():
                 entries[name] = entry(name, plan)
                 names[name] = group.key
+                recipes[name] = plan_dicts[name]
         out.append(
             _GroupLaunch(
                 group=group,
                 prepared={name: launch for name, (launch, _) in entries.items()},
                 plan_dicts={name: raw for name, (_, raw) in entries.items()},
-                own=frozenset(group.plans),
+                own=group.launches,
                 names=names,
+                recipes=recipes,
             )
         )
     return out
@@ -786,10 +798,9 @@ async def _run_all(
 
     *cli_model* is added to the config before either of those is decided.
 
-    The tasks run one serving group after another (:mod:`sieval.cli.serving`),
-    each group's engines stopped before the next one's start; *serving_group*
-    runs that group only. A group other than the default names its engine by
-    the group key.
+    Serving groups run one after another, each group's engines stopped before
+    the next start; *serving_group* runs one. A scaled group's engine is named
+    by its key.
 
     Handles go under ``run-<pid>/``, removed when the run ends. Engine logs go
     to ``<result_dir>/logs/<engine>/<role>.log`` when a result_dir is set,
@@ -832,14 +843,13 @@ async def _run_all(
             recorded=_recorded_plans(resume, effective_result_dir),
         )
 
-        # Each serving group's plans, with the shortfalls refused, before the
-        # first subprocess starts.
+        # Shortfalls are refused before the first subprocess starts.
         groups = _select_group(
             _serving_groups(config, plan_dicts, prepared_launches), serving_group
         )
         if SERVICE_LOG_DIR in {n for g in groups for n in g.names.values()}:
             raise ValueError(
-                f"Model name {SERVICE_LOG_DIR!r} is reserved for "
+                f"Engine name {SERVICE_LOG_DIR!r} is reserved for "
                 f"<result_dir>/logs/{SERVICE_LOG_DIR}/; rename the model."
             )
 

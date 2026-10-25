@@ -60,7 +60,7 @@ from sieval.cli.resolution import (
     validate_task_model_requirements,
 )
 from sieval.cli.services import RESERVED_LOG_DIR, vendored_services_for
-from sieval.cli.serving import check_context_fits, plan_window
+from sieval.cli.serving import SessionServing, check_context_fits, plan_window
 from sieval.core.datasets import Dataset, TFilterKey
 from sieval.core.datasets.meta import get_dataset_meta
 from sieval.core.models import ChatModel, GenModel, Model, SglangGenModel
@@ -979,23 +979,6 @@ class _PR1CompositeServingReconciler:
             # SETUP uncertainty and explicit unsupported outcomes remain stricter
             # than the baseline and are therefore allowed to stop reconciliation.
         return injected_outcomes
-
-
-@dataclasses.dataclass(frozen=True)
-class SessionServing:
-    """The serving group one session runs (:mod:`sieval.cli.serving`).
-
-    *tasks* are the tasks it runs, ``None`` for all of them. *group* is its
-    key, recorded in each served task's ``runs[].serving.group``. The plans go
-    to *infer_plans_file*, so groups sharing a ``result_dir`` keep one each.
-    """
-
-    tasks: frozenset[str] | None = None
-    group: str | None = None
-    infer_plans_file: str = "infer_plans.yaml"
-
-    def runs(self, task_name: str) -> bool:
-        return self.tasks is None or task_name in self.tasks
 
 
 # Type Definitions for YAML Configuration
@@ -5415,6 +5398,8 @@ class EvalSession:
             return
 
         payload: dict[str, Any] = {"models": dict(self._infer_plans)}
+        if self._serving.recipes:
+            payload["recipes"] = dict(self._serving.recipes)
         if self._infer_gpu is not None:
             # Outside `models`, so it stays out of every inference identity.
             payload = {"gpu": self._infer_gpu, **payload}

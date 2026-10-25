@@ -199,6 +199,63 @@ class TestInfer:
         # A prelaunch plan deliberately has no realized-route runtime plans.
         assert prelaunch_plan["runtime_plans"] == {}
 
+    def test_infer_start_serves_the_window_sieval_run_would(self, tmp_path):
+        """A need within the native window raises the plan, as in `sieval run`,
+        so the context check that follows accepts the same YAML."""
+        from sieval.infer.topology.models import (
+            DeploymentPlan,
+            DeviceGroup,
+            ParallelTopology,
+            RoleAssignment,
+            WellKnownRole,
+        )
+
+        cfg = yaml.safe_load(self._make_config(tmp_path).read_text())
+        cfg["models"]["qwen3-8b"]["context"] = {"native": 40960}
+        cfg["datasets"] = {"d": {"class": "GSM8KDataset"}}
+        cfg["tasks"] = {
+            "t": {
+                "class": "GSM8KZeroShotGenTask",
+                "dataset": "d",
+                "infer_args": {"max_tokens": 38000},
+            }
+        }
+        config_path = tmp_path / "infer_test.yaml"
+        config_path.write_text(yaml.dump(cfg))
+        plan = DeploymentPlan(
+            checkpoint="/models/qwen3-8b",
+            backend="vllm",
+            assignments=(
+                RoleAssignment(
+                    role=WellKnownRole.FULL,
+                    devices=DeviceGroup(count=2),
+                    topology=ParallelTopology(tp=2),
+                    engine_params={"max_model_len": 32768},
+                ),
+            ),
+        )
+        translator = MagicMock()
+        translator.translate.return_value = [BackendCommand(cli_args=["vllm"])]
+        with (
+            patch(
+                "sieval.cli.infer.commands.resolve_infer_config",
+                AsyncMock(return_value=("qwen3-8b", plan, {})),
+            ),
+            patch("sieval.cli.validation.prepare_prelaunch_reconciliation") as prepare,
+            patch("sieval.cli.infer.commands.get_translator", return_value=translator),
+        ):
+            prepare.return_value.deployment_plans = {}
+            prepare.return_value.to_json_value.return_value = {}
+            result = runner.invoke(
+                app, ["infer", "start", str(config_path), "--dry-run"]
+            )
+
+        assert result.exit_code == 0, result.output
+        served = prepare.call_args.kwargs["infer_plans"]["qwen3-8b"]
+        assert served.assignments[0].engine_params["max_model_len"] == 38000
+        assert prepare.call_args.kwargs["serving"].tasks == {"t"}
+        assert translator.translate.call_args.args[0] == served
+
     def test_infer_start_prelaunch_failure_precedes_claim_and_launch(self, tmp_path):
         """A YAML binding error must not claim a handle or launch a service."""
         config_path = self._make_config(tmp_path)

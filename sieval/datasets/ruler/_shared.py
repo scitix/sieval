@@ -66,6 +66,10 @@ def _is_qwen3(model_name: str) -> bool:
     return Path(model_name).name.lower().startswith("qwen3")
 
 
+#: ``RulerDataset.load``'s ``max_seq_length`` default, also read by the task.
+DEFAULT_MAX_SEQ_LENGTH = 4096
+
+
 def resolve_reserve_think_budget(
     context_length: int | None, reserve_think_budget: bool | None
 ) -> bool:

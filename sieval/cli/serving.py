@@ -1,22 +1,12 @@
-"""Reconcile serving with what tasks need: the context window each one needs,
-the window a model can serve, and the serving plans a run launches.
-
-A task needs a context window: its ``min_context`` override, else the larger of
-the window its requirement hook declares (``TaskRequirements.min_context``) and
-the effective ``max_tokens``. A model states what it can serve in its
-``context:`` block: ``native``, defaulting to the checkpoint's
-``max_position_embeddings``, and ``max`` with the ``scaling`` engine parameters
-that reach it. A served model's recipe plan is raised to the largest need
-within the native window. A need beyond it is served by a plan of its own,
-with the scaling parameters, in a serving group with a stable key; scaling
-changes short-context outputs, so no other task shares that engine.
+"""Reconcile serving with what tasks need: each task's context window, what a
+model can serve (its ``context:`` block), and the serving groups a run launches.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
 import dataclasses
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from sieval.cli.resolution import config_task_candidates, validate_named_config_map
@@ -53,7 +43,7 @@ class ModelContext:
 
     native: int | None = None
     max: int | None = None
-    scaling: Mapping[str, ParamValue] = dataclasses.field(default_factory=dict)
+    scaling: Mapping[str, ParamValue] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,14 +59,35 @@ class ServedWindow:
 class ServingGroup:
     """Engines launched together, and the tasks they serve.
 
-    *plans* holds one plan per served root model. The default group also holds
-    every task a model ``sieval run`` does not serve.
+    *plans* holds one plan per served root model; *launches* are the roots
+    some task of this group runs on. The default group also holds every task
+    a model ``sieval run`` does not serve.
     """
 
     key: str
     plans: Mapping[str, DeploymentPlan]
     tasks: tuple[str, ...]
     windows: Mapping[str, ServedWindow]
+    launches: frozenset[str]
+
+
+@dataclass(frozen=True)
+class SessionServing:
+    """The serving group one session runs.
+
+    *tasks* are the tasks it runs, ``None`` for all of them. *group* is its
+    key, recorded in each served task's ``runs[].serving.group``. The plans go
+    to *infer_plans_file*, so groups sharing a ``result_dir`` keep one each,
+    with *recipes*: the recipe plans a scaled group's plans started from.
+    """
+
+    tasks: frozenset[str] | None = None
+    group: str | None = None
+    infer_plans_file: str = "infer_plans.yaml"
+    recipes: Mapping[str, Any] = field(default_factory=dict)
+
+    def runs(self, task_name: str) -> bool:
+        return self.tasks is None or task_name in self.tasks
 
 
 def parse_model_context(name: str, config: Mapping[str, Any]) -> ModelContext:
@@ -219,14 +230,11 @@ def plan_serving_groups(
     config: Mapping[str, Any],
     base_plans: Mapping[str, DeploymentPlan],
 ) -> list[ServingGroup]:
-    """Group the tasks by the plan that serves them; the default group first.
+    """Group the tasks by the plan that serves them, the default group first.
 
-    *base_plans* are the recipe plans of the models ``sieval run`` serves, by
-    root model name. A plan whose window is short of what a task needs within
-    the model's native window is raised to the largest such need, for every
-    task it serves. A task that needs more than the native window gets the
-    group ``<root>@<window>``: the plan with the model's ``context.scaling``
-    engine parameters, at the largest need among its tasks. Raises
+    *base_plans* are the recipe plans by root model. A need within the native
+    window raises that plan; one within ``context.max`` gets the group
+    ``<root>@<window>`` with ``context.scaling``. Raises
     :class:`ServingShortfallError` naming every task no plan can serve.
     """
     models = validate_named_config_map("models", config.get("models", {}))
@@ -244,11 +252,12 @@ def plan_serving_groups(
     windows: dict[str, ServedWindow] = {}
     scaled_groups: list[ServingGroup] = []
     shortfalls: list[str] = []
+    launched: set[str] = set()
     for root, plan in base_plans.items():
         context = parse_model_context(root, models.get(root, {}))
         native = context.native or _checkpoint_window(plan.checkpoint)
         window = served_window(plan, native)
-        pinned = _explicit_window(models.get(root, {}), plan.backend)
+        pinned = _explicit_window(root, models.get(root, {}), plan.backend)
         raise_to: int | None = None
         scaled: list[str] = []
         for task_name in served[root]:
@@ -282,9 +291,11 @@ def plan_serving_groups(
         default_plan = plan if raise_to is None else with_window(plan, raise_to, {})
         default_plans[root] = default_plan
         default_window = served_window(default_plan, native)
-        for task_name in served[root]:
-            if task_name not in scaled:
-                windows[task_name] = ServedWindow(DEFAULT_GROUP, default_window, False)
+        stays = [task for task in served[root] if task not in scaled]
+        if stays or not scaled:
+            launched.add(root)
+        for task_name in stays:
+            windows[task_name] = ServedWindow(DEFAULT_GROUP, default_window, False)
         if scaled:
             scaled_window = max(needs[task].tokens for task in scaled)
             key = f"{root}@{scaled_window}"
@@ -294,6 +305,7 @@ def plan_serving_groups(
                     {root: with_window(plan, scaled_window, context.scaling)},
                     tuple(scaled),
                     {task: ServedWindow(key, scaled_window, True) for task in scaled},
+                    frozenset({root}),
                 )
             )
     if shortfalls:
@@ -308,6 +320,7 @@ def plan_serving_groups(
         default_plans,
         tuple(task for task in tasks if task not in moved),
         windows,
+        frozenset(launched),
     )
     return [default, *scaled_groups]
 
@@ -333,17 +346,6 @@ def with_window(
     )
 
 
-def serving_group_json(group: ServingGroup) -> dict[str, object]:
-    """A group's entry in the dry-run ``serving`` report."""
-    return {
-        "models": {
-            root: {"window": served_window(plan, None)}
-            for root, plan in group.plans.items()
-        },
-        "tasks": list(group.tasks),
-    }
-
-
 def _shortfall(task: str, need: ContextNeed, limit: str) -> str:
     return (
         f"- task '{task}' needs {need.tokens} tokens ({_SOURCES[need.source]}); "
@@ -363,7 +365,7 @@ def _checkpoint_window(checkpoint: object) -> int | None:
 
 
 def _explicit_window(
-    root_config: Mapping[str, Any], backend: str
+    root: str, root_config: Mapping[str, Any], backend: str
 ) -> tuple[str, int] | None:
     """A window the user pinned, which the grouping never raises: an
     ``infer.overrides`` engine parameter, or a ``context_limit`` (which the
@@ -373,8 +375,11 @@ def _explicit_window(
     key = CONTEXT_PARAMS.get(backend)
     if isinstance(overrides, Mapping) and key is not None:
         for spelling in (key, key.replace("_", "-")):
-            if overrides.get(spelling) is not None:
-                return f"infer.overrides.{key}", int(overrides[spelling])
+            value = _positive_int(
+                overrides.get(spelling), f"Model '{root}' infer.overrides.{spelling}"
+            )
+            if value is not None:
+                return f"infer.overrides.{key}", value
     limit = root_config.get("context_limit")
     if isinstance(limit, int) and not isinstance(limit, bool):
         return "context_limit", limit

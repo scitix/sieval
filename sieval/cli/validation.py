@@ -33,8 +33,8 @@ from sieval.cli.resolution import (
     validate_configured_engine_id,
     validate_task_config_args,
 )
-from sieval.cli.serving import parse_model_context
-from sieval.cli.session import EvalSession, RootConfigDict, SessionServing
+from sieval.cli.serving import SessionServing, parse_model_context
+from sieval.cli.session import EvalSession, RootConfigDict
 from sieval.core.models import check_extra
 from sieval.core.models.capabilities import (
     CAPABILITY_KEYS,
@@ -904,7 +904,7 @@ def prepare_prelaunch_reconciliation(
     :class:`~sieval.core.tasks.python_requires.MissingPythonRequirementsError`
     for a task's unmet ``python_requires``. ``infer start`` asks for neither:
     it only serves a model. *serving* limits the session to one serving
-    group's tasks (:class:`~sieval.cli.session.SessionServing`).
+    group's tasks (:class:`~sieval.cli.serving.SessionServing`).
 
     This root-level CLI seam keeps the ``infer`` subpackage off the eval
     engine.  It also converts typed infer-layer plans into the plain mapping

@@ -49,6 +49,7 @@ from sieval.core.tasks.metrics import (
     SCORE_KEY_FIELD,
 )
 from sieval.datasets.ruler import (
+    DEFAULT_MAX_SEQ_LENGTH,
     RulerDatasetSample,
     len_tag,
     resolve_reserve_think_budget,
@@ -149,7 +150,7 @@ class RulerZeroShotGenTask(
         """
         args = context.dataset_config.get("args")
         args = args if isinstance(args, dict) else {}
-        max_seq_length = args.get("max_seq_length", 4096)
+        max_seq_length = args.get("max_seq_length", DEFAULT_MAX_SEQ_LENGTH)
         if isinstance(max_seq_length, bool) or not isinstance(max_seq_length, int):
             return super().model_requirements_for(context)
         think_budget = args.get("think_budget", 0)

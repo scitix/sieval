@@ -8124,7 +8124,7 @@ class TestInferArgs:
         assert runner._infer_plans["base"]["checkpoint"] == "/ckpt"
 
     def test_a_serving_group_sets_up_only_its_tasks_with_its_key(self):
-        from sieval.cli.session import SessionServing
+        from sieval.cli.serving import SessionServing
 
         mock_task_cls = MagicMock(return_value=MagicMock())
         runner = self._make_runner(

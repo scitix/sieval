@@ -19,9 +19,11 @@ from typing import Annotated, Any
 
 import anyio
 import typer
+import yaml
 from loguru import logger
 
 from sieval.cli.output import CommandResult, OutputFormat, cli_command, render
+from sieval.cli.serving import SessionServing, plan_serving_groups
 from sieval.core.utils.logging import configure_logging, log_user
 from sieval.infer.backends import get_translator
 from sieval.infer.backends.translator import inject_user_env
@@ -275,6 +277,12 @@ def infer_start(
             return await resolve_infer_config(target_path, model)
 
         model_name, plan, user_env = anyio.run(_resolve_yaml)
+        # The default serving group's plan, sized as `sieval run` sizes it.
+        default_group = plan_serving_groups(
+            yaml.safe_load(target_path.read_text()) or {}, {model_name: plan}
+        )[0]
+        plan = default_group.plans[model_name]
+        serving = SessionServing(tasks=frozenset(default_group.tasks))
 
         # Engine overrides from CLI: inject into first assignment
         if engine_overrides:
@@ -343,6 +351,7 @@ def infer_start(
             infer_plans={model_name: plan},
             invocation=shlex.join(sys.argv),
             self_managed_endpoints=frozenset({model_name}),
+            serving=serving,
         )
         prelaunch_plan = reconciled.to_json_value()
         root_key = f"model:{model_name}"

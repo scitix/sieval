@@ -506,12 +506,9 @@ in `SIEVAL_TARGET_GPU` ([Resolving for declared GPUs](infer.md#resolving-for-dec
   `infer_plans.yaml` would record it, each process the launch starts (`argv`,
   and `env` and `cwd` when set), and `needs_inference`, whether this run starts
   its engine. `gpu` is what the plans were resolved for.
-- `serving` has one entry per serving group, by its stable key (`default`, or
-  `<model>@<window>` for a plan beyond a model's native window): its `tasks`,
-  each one's served context window, the `engines` it launches and whether any
-  starts. `--serving-group KEY` runs and reports one group only. The `serving`
-  check fails when a task needs a longer window than its model can serve; it
-  shows when there is more than one group. See
+- `serving` has one entry per serving group (`default`, or `<model>@<window>`):
+  its `tasks`, their served windows, the `engines` it launches and whether any
+  starts. The `serving` check fails on a window shortfall. See
   [Serving plans](infer.md#serving-plans-context-window-and-dialect).
 - `tasks.<task>.start` is `fresh`, `resume` (stage by stage) or `reuse` (the
   recorded `report.json` stands, recomputed when only `report` changed).

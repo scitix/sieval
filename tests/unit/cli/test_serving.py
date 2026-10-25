@@ -18,7 +18,6 @@ from sieval.cli.serving import (
     parse_model_context,
     plan_serving_groups,
     plan_window,
-    serving_group_json,
     task_context_needs,
     with_window,
 )
@@ -239,10 +238,41 @@ class TestPlanServingGroups:
         assert params["context_length"] == 120000
         assert params["json_model_override_args"] == scaling["json_model_override_args"]
         assert scaled.windows["long"] == ServedWindow("m@120000", 120000, True)
-        assert serving_group_json(scaled) == {
-            "models": {"m": {"window": 120000}},
-            "tasks": ["long", "longer"],
-        }
+        assert (default.launches, scaled.launches) == ({"m"}, {"m"})
+
+    def test_root_with_every_task_scaled_launches_only_in_its_group(self) -> None:
+        config = _config(
+            {"long": _gen(100000)},
+            model={
+                "path": "/models/m",
+                "context": {"native": 32768, "max": 131072, "scaling": {"x": 1}},
+            },
+        )
+
+        default, scaled = plan_serving_groups(config, {"m": _plan(32768)})
+
+        assert default.tasks == ()
+        assert default.launches == frozenset()
+        assert scaled.launches == {"m"}
+
+    def test_root_with_no_task_still_launches_in_the_default_group(self) -> None:
+        (default,) = plan_serving_groups(_config({}), {"m": _plan()})
+
+        assert default.launches == {"m"}
+
+    def test_malformed_window_override_names_the_model(self) -> None:
+        config = _config(
+            {"long": _gen(100000)},
+            model={
+                "path": "/models/m",
+                "infer": {"overrides": {"context_length": "32k"}},
+            },
+        )
+
+        with pytest.raises(
+            ValueError, match="Model 'm' infer.overrides.context_length"
+        ):
+            plan_serving_groups(config, {"m": _plan(32768)})
 
     @pytest.mark.parametrize(
         ("model", "message"),

@@ -36,6 +36,7 @@ from ._shared import (
     _HOTPOTQA_REPO_ID,
     _HOTPOTQA_REVISION,
     _RULER_DATA_SHA,
+    DEFAULT_MAX_SEQ_LENGTH,
     resolve_reserve_think_budget,
     tokens_to_generate,
 )
@@ -140,7 +141,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
         name_or_path: str,
         *,
         subtask: str | list[str] | None = None,
-        max_seq_length: int = 4096,
+        max_seq_length: int = DEFAULT_MAX_SEQ_LENGTH,
         tokenizer_type: str = "openai",
         tokenizer_path: str = "cl100k_base",
         num_samples: int = 500,

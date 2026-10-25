@@ -17,7 +17,7 @@ from typer.testing import CliRunner
 
 from sieval.cli import app
 from sieval.cli.run import _RecordedPlans
-from sieval.cli.session import SessionServing
+from sieval.cli.serving import SessionServing
 from sieval.core.models import (
     Deployment,
     DeploymentTopology,
@@ -1895,6 +1895,27 @@ class TestDeclaredTargetGpu:
         assert plan_for("m", model, "base", False) is None
         assert plan_for("m", model, "instruct", True) is None
 
+    def test_a_serving_group_run_alone_reuses_its_recorded_recipe(self, tmp_path: Path):
+        """A ``--serving-group`` job writes only ``infer_plans.<key>.yaml``;
+        its ``recipes`` are the plans its scaled ones started from."""
+        from sieval.cli.session import unwrap_proxies
+
+        self._recorded_plans(tmp_path)
+        out = tmp_path / "out"
+        recipe = yaml.safe_load((out / "infer_plans.yaml").read_text())
+        (out / "infer_plans.yaml").unlink()
+        scaled = unwrap_proxies(_fake_plan())
+        scaled["assignments"][0]["engine_params"]["context_length"] = 100000
+        (out / "infer_plans.m@100000.yaml").write_text(
+            yaml.safe_dump(
+                {"gpu": self.H100, "models": {"m": scaled}, "recipes": recipe["models"]}
+            )
+        )
+
+        recorded = _RecordedPlans(out, self.H100)
+        model = self._model_config(tmp_path)
+        assert recorded.plan_for("m", model, "instruct", False) == _fake_plan()
+
     def test_a_record_this_version_cannot_read_is_not_reused(self, tmp_path: Path):
         from sieval.cli.session import unwrap_proxies
 
@@ -2105,6 +2126,44 @@ class TestServingGroups:
         assert long_call["serving"].infer_plans_file == "infer_plans.m@100000.yaml"
         params = long_call["infer_plans"]["m"]["assignments"][0]["engine_params"]
         assert params["json_model_override_args"] == "{}"
+        # The recipe plan it scaled, so a resume of this group alone reuses it.
+        recipe = long_call["serving"].recipes["m"]["assignments"][0]["engine_params"]
+        assert recipe["context_length"] == 32768
+
+    @pytest.mark.anyio
+    async def test_a_root_with_every_task_scaled_starts_no_default_engine(
+        self, tmp_path: Path
+    ) -> None:
+        from sieval.cli.run import _run_all
+
+        config_path = self._config(tmp_path)
+        cfg = yaml.safe_load(config_path.read_text())
+        del cfg["tasks"]["short"]
+        config_path.write_text(yaml.safe_dump(cfg))
+        launch = AsyncMock(return_value=([_fake_handle()], None))
+        prepare = MagicMock()
+        prepare.return_value.deployment_plans = {}
+        with (
+            patch("sieval.cli.infer.lifecycle.HANDLE_DIR", tmp_path / "handles"),
+            patch(
+                "sieval.cli.run.auto_resolve_plan",
+                new=AsyncMock(
+                    return_value=ResolveResult(plan=_sglang_plan(32768), steps=())
+                ),
+            ),
+            patch("sieval.cli.run.get_translator", return_value=self._translator()),
+            patch("sieval.cli.run.launch_model", new=launch),
+            patch("sieval.cli.run.cleanup_model", new=AsyncMock()),
+            patch("sieval.cli.run.check_launch_gpu", new=AsyncMock()),
+            patch("sieval.cli.run._plan_gpu_text", new=AsyncMock(return_value=None)),
+            patch(
+                "sieval.cli.validation.prepare_prelaunch_reconciliation", new=prepare
+            ),
+            patch("sieval.cli.session.arun_session", new=AsyncMock(return_value={})),
+        ):
+            await _run_all(config_path)
+
+        assert [c.args[0] for c in launch.await_args_list] == ["m@100000"]
 
     @pytest.mark.anyio
     async def test_one_group_runs_alone_and_an_unknown_key_is_refused(
