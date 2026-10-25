@@ -11,7 +11,6 @@ import pytest
 
 from sieval.cli.serving import (
     DEFAULT_GROUP,
-    PROMPT_HEADROOM,
     ContextNeed,
     ServedWindow,
     ServingShortfallError,
@@ -85,10 +84,8 @@ def _gen(max_tokens: int) -> dict[str, Any]:
 
 
 class TestTaskContextNeeds:
-    def test_need_is_max_tokens_plus_prompt_headroom(self) -> None:
-        """A window of exactly max_tokens leaves the prompt no room: engines
-        refuse prompt + max_tokens > window (#238)."""
-        assert PROMPT_HEADROOM == 4096
+    def test_need_is_max_tokens_from_infer_args_then_model_args(self) -> None:
+        """Plus PROMPT_HEADROOM: a window of exactly max_tokens fits no prompt."""
         config = _config(
             {"short": {}, "long": _gen(38000)},
             model={"path": "/models/m", "args": {"max_tokens": 4096}},
@@ -97,17 +94,6 @@ class TestTaskContextNeeds:
         assert task_context_needs(config) == {
             "short": ContextNeed("m", 8192, "max_tokens"),
             "long": ContextNeed("m", 42096, "max_tokens"),
-        }
-
-    def test_need_is_max_tokens_from_infer_args_then_model_args(self) -> None:
-        config = _config(
-            {"short": {}, "long": _gen(38000)},
-            model={"path": "/models/m", "args": {"max_tokens": 4096}},
-        )
-
-        assert task_context_needs(config) == {
-            "short": ContextNeed("m", 4096 + PROMPT_HEADROOM, "max_tokens"),
-            "long": ContextNeed("m", 38000 + PROMPT_HEADROOM, "max_tokens"),
         }
 
     def test_derived_model_inherits_max_tokens_from_its_base(self) -> None:
@@ -388,6 +374,21 @@ class TestCheckContextFits:
 
         with pytest.raises(ServingShortfallError, match="declares context_limit 32768"):
             check_context_fits(config, None)
+
+    @pytest.mark.parametrize(("max_tokens", "fits"), [(28672, True), (28673, False)])
+    def test_context_limit_leaves_prompt_headroom(
+        self, max_tokens: int, fits: bool
+    ) -> None:
+        config = _config(
+            {"t": _gen(max_tokens)},
+            model={"name": "x", "api_base": "http://x/v1", "context_limit": 32768},
+        )
+
+        if fits:
+            check_context_fits(config, None)
+        else:
+            with pytest.raises(ServingShortfallError, match="needs 32769 tokens"):
+                check_context_fits(config, None)
 
     def test_unknown_window_is_not_checked(self) -> None:
         config = _config(

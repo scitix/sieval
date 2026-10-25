@@ -23,10 +23,8 @@ DEFAULT_GROUP = "default"
 
 _MAX_TOKENS_KEYS = ("max_tokens", "max_completion_tokens")
 
-#: Tokens a need derived from ``max_tokens`` reserves for the prompt. Engines
-#: refuse a request whose prompt plus ``max_tokens`` exceeds the window, so a
-#: window of exactly ``max_tokens`` serves no request. A task whose prompts run
-#: longer states its window with ``min_context``.
+#: Prompt room added to a ``max_tokens``-derived need: engines refuse
+#: prompt + ``max_tokens`` > window. Longer prompts set ``min_context``.
 PROMPT_HEADROOM = 4096
 
 
@@ -129,9 +127,8 @@ def task_context_needs(config: Mapping[str, Any]) -> dict[str, ContextNeed]:
     """The context window each task needs, by task name.
 
     A need from ``max_tokens`` adds :data:`PROMPT_HEADROOM`; ``min_context``
-    and a declared need already count the prompt. A task with no
-    ``min_context``, no declared need and no ``max_tokens`` needs nothing known
-    and is left out.
+    and a declared need already count the prompt. A task with none of the
+    three is left out.
     """
     models = validate_named_config_map("models", config.get("models", {}))
     tasks = validate_named_config_map("tasks", config.get("tasks", {}))
