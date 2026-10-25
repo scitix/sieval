@@ -551,8 +551,9 @@ class TestPrelaunchSequencing:
         launch.assert_not_awaited()
         cleanup.assert_not_awaited()
         prepare_prelaunch.assert_called_once()
-        # Vendored services are checked here too, before any engine starts.
+        # Vendored services and grader packages are checked before any engine starts.
         assert prepare_prelaunch.call_args.kwargs["check_services"] is True
+        assert prepare_prelaunch.call_args.kwargs["check_python_requires"] is True
         assert set(prepare_prelaunch.call_args.kwargs["infer_plans"]) == {
             "model_a",
             "model_b",

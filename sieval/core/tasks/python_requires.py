@@ -1,17 +1,9 @@
 """Third-party Python packages a task needs, checked before a run starts.
 
-A task names them in :attr:`Task.python_requires
-<sieval.core.tasks.task.Task.python_requires>` as ``{import name: requirement}``,
+A task declares them as ``Task.python_requires = {import name: requirement}``,
 where the requirement is a PEP 508 string naming the distribution
-(``{"sklearn": "scikit-learn>=1.3"}``). The import name says what must be
-importable; the requirement says which distribution and version, and is what
-the user installs.
-
-A missing package is an environment failure, not a defect in any sample: the
-CLI refuses the run before any engine starts or dataset loads. A task must
-never raise :class:`~sieval.core.tasks.consts.NonRetriableSampleError` for
-one, since a resume would then never regrade those samples once it is
-installed.
+(``{"sklearn": "scikit-learn>=1.3"}``). A missing package is an environment
+failure: the CLI refuses the run before any engine starts or dataset loads.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
@@ -75,7 +67,7 @@ def validate_python_requires(declared: object, owner: str) -> dict[str, Requirem
     Raises:
         TypeError: *declared* is not a mapping of strings to strings.
         ValueError: an import name is not a dotted identifier, or a
-            requirement is not a PEP 508 string.
+            requirement is not PEP 508 or names extras (which go unchecked).
     """
     if not isinstance(declared, Mapping):
         raise TypeError(
@@ -94,21 +86,34 @@ def validate_python_requires(declared: object, owner: str) -> dict[str, Requirem
                 f"{owner} python_requires key {import_name!r} is not an import name"
             )
         try:
-            parsed[import_name] = Requirement(requirement)
+            req = Requirement(requirement)
         except InvalidRequirement as exc:
             raise ValueError(
                 f"{owner} python_requires[{import_name!r}] = {requirement!r} is "
                 f"not a PEP 508 requirement: {exc}"
             ) from exc
+        if req.extras:
+            raise ValueError(
+                f"{owner} python_requires[{import_name!r}] = {requirement!r} names "
+                "extras, which are not checked; declare each extra's import instead"
+            )
+        parsed[import_name] = req
     return parsed
 
 
-def _importable(import_name: str) -> bool:
-    # find_spec imports a dotted name's parents, never the module itself.
+def _not_importable(import_name: str) -> str | None:
+    """Why *import_name* cannot be found, or ``None`` when it can."""
+    # find_spec does not import the module, but does import a dotted name's
+    # parents, and a broken parent may raise anything.
     try:
-        return importlib.util.find_spec(import_name) is not None
-    except (ImportError, ValueError):
-        return False
+        found = importlib.util.find_spec(import_name) is not None
+    except ModuleNotFoundError as exc:
+        if exc.name is not None and f"{import_name}.".startswith(f"{exc.name}."):
+            return "not installed"  # a parent is itself missing
+        return f"parent import failed: {type(exc).__name__}: {exc}"
+    except Exception as exc:
+        return f"parent import failed: {type(exc).__name__}: {exc}"
+    return None if found else "not installed"
 
 
 def unmet_python_requires(
@@ -116,18 +121,19 @@ def unmet_python_requires(
 ) -> tuple[UnmetPythonRequirement, ...]:
     """What in *declared* the running interpreter does not satisfy.
 
-    A requirement is met when its import name is importable and, if it pins a
-    version, the installed distribution satisfies the pin. One whose marker
-    excludes this interpreter is met. The module is located, never imported,
-    so a package that is installed but fails on import is not caught here.
+    Met when the import name is found and, for a pinned requirement, the
+    installed distribution satisfies the pin; an unpinned requirement's
+    distribution is not looked up. A marker excluding this interpreter is met.
+    The module itself is not imported, so one that fails on import passes.
     """
     unmet: list[UnmetPythonRequirement] = []
     for import_name, req in validate_python_requires(declared, owner).items():
         if req.marker is not None and not req.marker.evaluate({"extra": ""}):
             continue
         text = str(req)
-        if not _importable(import_name):
-            unmet.append(UnmetPythonRequirement(import_name, text, "not installed"))
+        reason = _not_importable(import_name)
+        if reason is not None:
+            unmet.append(UnmetPythonRequirement(import_name, text, reason))
             continue
         if not req.specifier:
             continue

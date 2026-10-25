@@ -1657,7 +1657,7 @@ class TestPreparePrelaunchReconciliation:
             )
 
         assert result is expected
-        session.prepare_prelaunch.assert_called_once_with()
+        session.prepare_prelaunch.assert_called_once_with(enforce_python_requires=False)
         normalized = session_type.call_args.kwargs["infer_plans"]["model"]
         assert normalized["assignments"][0]["engine_params"] == {"max_model_len": 4096}
         assert isinstance(normalized["assignments"], list)
@@ -1802,8 +1802,35 @@ class TestRunDryRun:
             ),
             pytest.raises(MissingPythonRequirementsError) as excinfo,
         ):
-            prepare_prelaunch_reconciliation(self._capability_config(tmp_path))
+            prepare_prelaunch_reconciliation(
+                self._capability_config(tmp_path), check_python_requires=True
+            )
         assert excinfo.value.task == "t"
+
+    def test_prepare_prelaunch_ignores_python_requires_unless_asked(self, tmp_path):
+        """`infer start` only serves a model, so a grader package is not its concern."""
+        from sieval.cli.validation import prepare_prelaunch_reconciliation
+        from sieval.tasks.aime_2024_0shot_gen import AIME2024ZeroShotGenTask
+
+        with patch.object(
+            AIME2024ZeroShotGenTask, "python_requires", {"sieval_no_such_mod": "nope"}
+        ):
+            result = prepare_prelaunch_reconciliation(self._capability_config(tmp_path))
+        assert result.binding_plans
+
+    def test_dependencies_check_is_absent_when_reconcile_fails(self, tmp_path):
+        """Not evaluated, so absent: one root cause counts as one error."""
+        from sieval.cli.validation import run_dry_run
+
+        with patch(
+            "sieval.cli.session.EvalSession.prepare_prelaunch",
+            side_effect=ValueError("binding is invalid"),
+        ):
+            result = run_dry_run(self._capability_config(tmp_path))
+        checks = {c["name"]: c for c in result["checks"]}
+        assert checks["capability_reconcile"]["detail"] == "binding is invalid"
+        assert "dependencies" not in checks
+        assert result["n_errors"] == 1
 
     def test_returns_dict_on_valid_config(self, tmp_path):
         from sieval.cli.validation import run_dry_run

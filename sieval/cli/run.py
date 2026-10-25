@@ -663,6 +663,7 @@ async def _run_all(
             invocation=invocation,
             self_managed_endpoints=frozenset(prepared_launches),
             check_services=True,
+            check_python_requires=True,
             cli_model=cli_model,
         )
         launch_patches = {

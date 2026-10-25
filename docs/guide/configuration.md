@@ -263,23 +263,19 @@ class MyTask(Task[...]):
     python_requires = {"rdkit": "rdkit>=2023.9", "sklearn": "scikit-learn"}
 ```
 
-`sieval run` and `sieval eval` check every task's declaration before any engine
-starts or dataset loads, and refuse a run that lacks one with exit code 5 and a
-`SIEVAL_REFUSAL` line of `kind` `environment` per task ([Exit codes](#exit-codes)).
-`--dry-run` reports it as the `dependencies` check, whose `plan` lists each
-task's `declared` and `unmet` packages. `task list` and `task show` read the
-same declaration: a lacking task is `ready: no`, with a `python-requires`
-entry under `missing`.
+`sieval run` and `sieval eval` refuse a run missing one before any engine
+starts, with exit code 5 ([Exit codes](#exit-codes)); `--dry-run` reports it as
+the `dependencies` check, and `task list`/`show` as a `python-requires` entry
+under `missing`. `sieval infer start` only serves a model and does not check it.
 
-A package is met when its import name is importable and, for a pinned
-requirement, the installed distribution satisfies the pin. The module is
-located, not imported. Override the `python_requires_for(context)` classmethod
-when the need depends on the task's `args` or dataset configuration;
-discovery reads only the class attribute.
+A package is met when its import name is found (not imported) and, for a
+pinned requirement, the installed distribution satisfies the pin. Extras are
+rejected, since they cannot be checked. Override the
+`python_requires_for(context)` classmethod when the need depends on the task's
+`args`; discovery reads only the class attribute.
 
-A missing package is the environment's failure, not the sample's. Never raise
-`NonRetriableSampleError` for it: a resume never regrades such a sample, even
-once the package is installed.
+Never raise `NonRetriableSampleError` for a missing package: a resume would
+never regrade the sample once it is installed.
 
 ## Model Resource Pool
 
@@ -550,7 +546,7 @@ refuses again.
 | 2 | Usage error |
 | 3 | Resume refused: start fresh, or match the stage the refusal names |
 | 4 | Hardware refused: an engine is needed and `nvidia-smi` finds no GPU (and none is declared), or the GPUs differ from `SIEVAL_TARGET_GPU` |
-| 5 | Environment refused: a task's `python_requires` is not installed ([Python packages a task needs](#python-packages-a-task-needs)) |
+| 5 | Environment refused (`run`/`eval`): a task's `python_requires` is not installed ([Python packages a task needs](#python-packages-a-task-needs)) |
 | 130 / 143 | Interrupted by Ctrl+C / SIGTERM |
 
 Each refusal, except under `--dry-run`, also writes one stderr line:

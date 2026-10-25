@@ -41,9 +41,8 @@ class MissingEntry:
     and `stale` (source → reason, for the subset staged with other bytes);
     `kind="dataset-deps"` / `"task-deps"` populate `group` (extras group name)
     and `unmet` (verbatim output of `extras_unsatisfied`);
-    `kind="python-requires"` populates `unmet` alone, one line per package of
-    `TaskMeta.python_requires` the interpreter lacks — the check `sieval run`
-    refuses on, so discovery and run agree.
+    `kind="python-requires"` populates `unmet` alone, one line per unmet
+    package of `TaskMeta.python_requires` (the check `sieval run` refuses on).
     """
 
     kind: MissingKind

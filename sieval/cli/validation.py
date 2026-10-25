@@ -868,14 +868,16 @@ def prepare_prelaunch_reconciliation(
     invocation: str | None = None,
     self_managed_endpoints: frozenset[str] = frozenset(),
     check_services: bool = False,
+    check_python_requires: bool = False,
     cli_model: CliModel | None = None,
 ) -> ReconcileResult:
     """Run the shared pure prelaunch reconciliation and fail loud on errors.
 
-    A task's unmet ``python_requires`` raises
-    :class:`~sieval.core.tasks.python_requires.MissingPythonRequirementsError`.
-    *check_services* also checks each vendored service the run would start, for
-    a caller about to launch engines.
+    For a caller about to grade, *check_services* also checks each vendored
+    service the run would start, and *check_python_requires* raises
+    :class:`~sieval.core.tasks.python_requires.MissingPythonRequirementsError`
+    for a task's unmet ``python_requires``. ``infer start`` asks for neither:
+    it only serves a model.
 
     This root-level CLI seam keeps the ``infer`` subpackage off the eval
     engine.  It also converts typed infer-layer plans into the plain mapping
@@ -895,7 +897,7 @@ def prepare_prelaunch_reconciliation(
         self_managed_endpoints=self_managed_endpoints,
         cli_model=cli_model,
     )
-    result = session.prepare_prelaunch()
+    result = session.prepare_prelaunch(enforce_python_requires=check_python_requires)
     if check_services:
         # A vendored service that cannot start fails here, before any engine.
         from sieval.cli.services import check_vendored_services
@@ -953,8 +955,8 @@ def _capability_reconcile_check(
 ) -> list[DryRunCheck]:
     """Run the same pure prelaunch reconcile used by normal execution.
 
-    Returns the ``capability_reconcile`` check, then the ``dependencies``
-    check when reconciliation got far enough to see every task.
+    Returns the ``capability_reconcile`` check, then the ``dependencies`` check,
+    which is absent when reconciliation fails (like any check not evaluated).
     """
 
     try:
@@ -969,15 +971,13 @@ def _capability_reconcile_check(
             self_managed_endpoints=self_managed_endpoints,
             cli_model=cli_model,
         )
-        # The dependencies check reports what the run would refuse on.
         result = session.prepare_prelaunch(enforce_python_requires=False)
     except Exception as exc:
         return [
             {
                 "name": "capability_reconcile",
                 "ok": False,
-                # Preserve the normal prepare error verbatim so dry-run and run
-                # give users one diagnostic contract.
+                # Verbatim, so dry-run and run give one diagnostic contract.
                 "detail": str(exc),
             }
         ]

@@ -3563,9 +3563,8 @@ class EvalSession:
     ) -> ReconcileResult:
         """Public pure setup seam for launch-before-I/O capability validation.
 
-        Raises :class:`MissingPythonRequirementsError` when a task's
-        ``python_requires`` is unmet, unless *enforce_python_requires* is
-        false (``--dry-run`` reports it as its own check instead).
+        *enforce_python_requires* raises :class:`MissingPythonRequirementsError`
+        for a task's unmet ``python_requires``.
         """
 
         self._setup_prelaunch_reconciliation()

@@ -46,6 +46,10 @@ class TestValidate:
         with pytest.raises(ValueError, match=r"Task 'x' python_requires\['a'\]"):
             validate_python_requires({"a": "a >>= 1"}, "Task 'x'")
 
+    def test_extras_are_rejected(self):
+        with pytest.raises(ValueError, match="names extras, which are not checked"):
+            validate_python_requires({_PRESENT: f"{_PRESENT}[x]>=1"}, "T")
+
 
 class TestUnmet:
     def test_an_empty_declaration_is_met(self):
@@ -61,6 +65,33 @@ class TestUnmet:
     def test_a_missing_dotted_module_is_unmet_not_raised(self):
         (entry,) = unmet_python_requires({f"{_ABSENT}.sub": "nope"}, "T")
         assert entry.reason == "not installed"
+
+    def test_a_dotted_name_whose_parent_fails_to_import_is_unmet(
+        self, tmp_path, monkeypatch
+    ):
+        # find_spec imports a dotted name's parents; one raising is not a crash.
+        pkg = tmp_path / "sieval_test_broken_parent"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("raise RuntimeError('boom')\n")
+        (pkg / "sub.py").write_text("")
+        monkeypatch.syspath_prepend(str(tmp_path))
+        (entry,) = unmet_python_requires(
+            {"sieval_test_broken_parent.sub": "broken"}, "T"
+        )
+        assert entry.reason == "parent import failed: RuntimeError: boom"
+
+    def test_a_parent_missing_its_own_dependency_is_not_reported_absent(
+        self, tmp_path, monkeypatch
+    ):
+        # The parent exists; what it imports does not. Not "not installed".
+        pkg = tmp_path / "sieval_test_parent_missing_dep"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("import sieval_test_no_such_dep_xyz\n")
+        monkeypatch.syspath_prepend(str(tmp_path))
+        (entry,) = unmet_python_requires(
+            {"sieval_test_parent_missing_dep.sub": "p"}, "T"
+        )
+        assert entry.reason.startswith("parent import failed: ModuleNotFoundError")
 
     def test_a_satisfied_pin_is_met(self):
         assert unmet_python_requires({_PRESENT: f"{_PRESENT}>=1"}, "T") == ()

@@ -168,14 +168,12 @@ class Task[
             file it writes) runs twice, so keep it free of such side effects.
         python_requires: Third-party Python packages the task needs, as
             ``{import name: PEP 508 requirement}``, such as
-            ``{"rdkit": "rdkit>=2023.9"}``. ``sieval run``, ``sieval eval``
-            and their ``--dry-run`` refuse a run missing one before any
-            engine starts or dataset loads; override
+            ``{"rdkit": "rdkit>=2023.9"}``. ``sieval run`` and ``sieval eval``
+            refuse a run missing one before any engine starts; override
             :meth:`python_requires_for` when the need depends on the task's
-            arguments. A missing package is an environment failure: never
-            raise :class:`~sieval.core.tasks.consts.NonRetriableSampleError`
-            for one, or a resume would not regrade those samples once it is
-            installed.
+            arguments. Never raise
+            :class:`~sieval.core.tasks.consts.NonRetriableSampleError` for a
+            missing package: a resume would not regrade the sample.
     """
 
     model_type: ClassVar[Literal["chat", "gen"] | None] = None
