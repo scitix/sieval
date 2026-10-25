@@ -11,6 +11,7 @@ import pytest
 
 from sieval.cli.serving import (
     DEFAULT_GROUP,
+    PROMPT_HEADROOM,
     ContextNeed,
     ServedWindow,
     ServingShortfallError,
@@ -84,6 +85,20 @@ def _gen(max_tokens: int) -> dict[str, Any]:
 
 
 class TestTaskContextNeeds:
+    def test_need_is_max_tokens_plus_prompt_headroom(self) -> None:
+        """A window of exactly max_tokens leaves the prompt no room: engines
+        refuse prompt + max_tokens > window (#238)."""
+        assert PROMPT_HEADROOM == 4096
+        config = _config(
+            {"short": {}, "long": _gen(38000)},
+            model={"path": "/models/m", "args": {"max_tokens": 4096}},
+        )
+
+        assert task_context_needs(config) == {
+            "short": ContextNeed("m", 8192, "max_tokens"),
+            "long": ContextNeed("m", 42096, "max_tokens"),
+        }
+
     def test_need_is_max_tokens_from_infer_args_then_model_args(self) -> None:
         config = _config(
             {"short": {}, "long": _gen(38000)},
@@ -91,8 +106,8 @@ class TestTaskContextNeeds:
         )
 
         assert task_context_needs(config) == {
-            "short": ContextNeed("m", 4096, "max_tokens"),
-            "long": ContextNeed("m", 38000, "max_tokens"),
+            "short": ContextNeed("m", 4096 + PROMPT_HEADROOM, "max_tokens"),
+            "long": ContextNeed("m", 38000 + PROMPT_HEADROOM, "max_tokens"),
         }
 
     def test_derived_model_inherits_max_tokens_from_its_base(self) -> None:
@@ -100,7 +115,7 @@ class TestTaskContextNeeds:
         config["models"]["m"]["args"] = {"max_completion_tokens": 2048}
         config["models"]["child"] = {"base": "m"}
 
-        assert task_context_needs(config) == {"t": ContextNeed("m", 2048, "max_tokens")}
+        assert task_context_needs(config) == {"t": ContextNeed("m", 6144, "max_tokens")}
 
     def test_declared_need_wins_when_larger_and_override_wins_always(self) -> None:
         config = _config(
@@ -113,7 +128,7 @@ class TestTaskContextNeeds:
 
         assert task_context_needs(config) == {
             "declared": ContextNeed("m", 50000, "requires"),
-            "max_tokens": ContextNeed("m", 60000, "max_tokens"),
+            "max_tokens": ContextNeed("m", 64096, "max_tokens"),
             "override": ContextNeed("m", 8192, "min_context"),
         }
 
@@ -194,15 +209,25 @@ class TestPlanServingGroups:
 
     def test_need_within_native_raises_the_shared_plan(self) -> None:
         config = _config(
-            {"short": _gen(1024), "long": _gen(38000)},
+            {"short": _gen(1024), "long": _gen(36000)},
             model={"path": "/models/m", "context": {"native": 40960}},
         )
 
         (group,) = plan_serving_groups(config, {"m": _plan(32768)})
 
-        assert plan_window(group.plans["m"]) == 38000
+        assert plan_window(group.plans["m"]) == 40096
         assert group.tasks == ("short", "long")
-        assert group.windows["short"].window == 38000
+        assert group.windows["short"].window == 40096
+
+    def test_max_tokens_equal_to_the_recipe_window_raises_it(self) -> None:
+        config = _config(
+            {"t": _gen(32768)},
+            model={"path": "/models/m", "context": {"native": 40960}},
+        )
+
+        (group,) = plan_serving_groups(config, {"m": _plan(32768)})
+
+        assert plan_window(group.plans["m"]) == 36864
 
     def test_native_window_defaults_to_the_checkpoint_config(
         self, tmp_path: Path
@@ -210,13 +235,13 @@ class TestPlanServingGroups:
         (tmp_path / "config.json").write_text(
             json.dumps({"max_position_embeddings": 40960})
         )
-        config = _config({"long": _gen(38000)})
+        config = _config({"long": _gen(36000)})
 
         (group,) = plan_serving_groups(
             config, {"m": _plan(32768, checkpoint=str(tmp_path))}
         )
 
-        assert plan_window(group.plans["m"]) == 38000
+        assert plan_window(group.plans["m"]) == 40096
 
     def test_need_beyond_native_gets_a_scaled_group_of_its_own(self) -> None:
         scaling = {"json_model_override_args": '{"rope_scaling": {}}'}
@@ -232,12 +257,12 @@ class TestPlanServingGroups:
 
         assert default.tasks == ("short",)
         assert plan_window(default.plans["m"]) == 32768
-        assert scaled.key == "m@120000"
+        assert scaled.key == "m@124096"
         assert scaled.tasks == ("long", "longer")
         params = scaled.plans["m"].assignments[0].engine_params
-        assert params["context_length"] == 120000
+        assert params["context_length"] == 124096
         assert params["json_model_override_args"] == scaling["json_model_override_args"]
-        assert scaled.windows["long"] == ServedWindow("m@120000", 120000, True)
+        assert scaled.windows["long"] == ServedWindow("m@124096", 124096, True)
         assert (default.launches, scaled.launches) == ({"m"}, {"m"})
 
     def test_root_with_every_task_scaled_launches_only_in_its_group(self) -> None:
@@ -309,7 +334,10 @@ class TestPlanServingGroups:
             plan_serving_groups(config, {"m": _plan(32768)})
 
         text = str(caught.value)
-        assert "task 'long' needs 100000 tokens (its max_tokens)" in text
+        assert (
+            "task 'long' needs 104096 tokens "
+            "(its max_tokens plus 4096 for the prompt)" in text
+        )
         assert message in text
         assert "'ok'" not in text
 
@@ -334,7 +362,7 @@ class TestPlanServingGroups:
             [g.key for g in plan_serving_groups(cfg, {"m": _plan()})]
             for cfg in (forward, backward)
         ]
-        assert keys[0] == keys[1] == [DEFAULT_GROUP, "m@90000"]
+        assert keys[0] == keys[1] == [DEFAULT_GROUP, "m@94096"]
 
 
 class TestCheckContextFits:

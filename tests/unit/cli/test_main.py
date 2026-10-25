@@ -217,7 +217,7 @@ class TestInfer:
             "t": {
                 "class": "GSM8KZeroShotGenTask",
                 "dataset": "d",
-                "infer_args": {"max_tokens": 38000},
+                "infer_args": {"max_tokens": 36000},
             }
         }
         config_path = tmp_path / "infer_test.yaml"
@@ -252,7 +252,7 @@ class TestInfer:
 
         assert result.exit_code == 0, result.output
         served = prepare.call_args.kwargs["infer_plans"]["qwen3-8b"]
-        assert served.assignments[0].engine_params["max_model_len"] == 38000
+        assert served.assignments[0].engine_params["max_model_len"] == 40096
         assert prepare.call_args.kwargs["serving"].tasks == {"t"}
         assert translator.translate.call_args.args[0] == served
 

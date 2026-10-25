@@ -17,7 +17,7 @@ from typer.testing import CliRunner
 
 from sieval.cli import app
 from sieval.cli.run import _RecordedPlans
-from sieval.cli.serving import SessionServing
+from sieval.cli.serving import PROMPT_HEADROOM, SessionServing
 from sieval.core.models import (
     Deployment,
     DeploymentTopology,
@@ -2040,7 +2040,7 @@ class TestServingGroups:
                 "long": {
                     "class": "GSM8KZeroShotGenTask",
                     "dataset": "d",
-                    "infer_args": {"max_tokens": 100000},
+                    "infer_args": {"max_tokens": 100000 - PROMPT_HEADROOM},
                 },
             },
         }

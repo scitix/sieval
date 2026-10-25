@@ -182,8 +182,11 @@ included).
 
 A task needs its `min_context` if set, else the larger of what its class
 declares (`TaskRequirements.min_context`; RULER: `max_seq_length` plus any
-unreserved thinking budget) and its effective `max_tokens`. A root model states
-what it can serve:
+unreserved thinking budget) and its effective `max_tokens` plus 4096 tokens for
+the prompt. Engines refuse a request whose prompt and `max_tokens` together
+exceed the window, so a task with longer prompts sets `min_context`, and one
+that knows its prompts are short sets it lower. A root model states what it can
+serve:
 
 ```yaml
 models:
