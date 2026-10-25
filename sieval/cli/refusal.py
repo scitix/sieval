@@ -1,4 +1,4 @@
-"""Deliberate refusals: exit code 3 (resume) or 4 (hardware), plus one
+"""Deliberate refusals: exit code 3 (resume), 4 (hardware) or 5 (environment), plus one
 ``SIEVAL_REFUSAL {json}`` stderr line each. The contract, documented under
 "Exit codes" in ``docs/guide/configuration.md``, is versioned by
 :data:`REFUSAL_LINE_VERSION`.
@@ -14,21 +14,22 @@ from typing import Literal
 from sieval.core.runners import StageResumeError
 from sieval.core.runners.resume_gate import ResumeVersionError
 from sieval.core.runners.stage_resume import ResumeStage
+from sieval.core.tasks.python_requires import MissingPythonRequirementsError
 from sieval.infer.introspect import LaunchGpuError, LaunchGpuReason
 
 #: Bumped when a field, kind, reason or exit code changes.
-REFUSAL_LINE_VERSION = 1
+REFUSAL_LINE_VERSION = 2
 REFUSAL_PREFIX = "SIEVAL_REFUSAL"
 MESSAGE_LIMIT = 200
 
-RefusalKind = Literal["resume", "hardware"]
-EXIT_CODES: dict[RefusalKind, int] = {"resume": 3, "hardware": 4}
+RefusalKind = Literal["resume", "hardware", "environment"]
+EXIT_CODES: dict[RefusalKind, int] = {"resume": 3, "hardware": 4, "environment": 5}
 
 
 @dataclass(frozen=True, slots=True)
 class Refusal:
     kind: RefusalKind
-    reason: ResumeStage | Literal["schema"] | LaunchGpuReason
+    reason: ResumeStage | Literal["schema", "python_requires"] | LaunchGpuReason
     task: str | None
     message: str
 
@@ -48,14 +49,25 @@ class Refusal:
         return f"{REFUSAL_PREFIX} {json.dumps(payload, ensure_ascii=False)}"
 
 
-def _classify(exc: BaseException) -> Refusal | None:
+def _classify(exc: BaseException) -> list[Refusal]:
     if isinstance(exc, StageResumeError):
-        return Refusal("resume", exc.stage, exc.task, str(exc))
+        return [Refusal("resume", exc.stage, exc.task, str(exc))]
     if isinstance(exc, ResumeVersionError):
-        return Refusal("resume", "schema", exc.task, str(exc))
+        return [Refusal("resume", "schema", exc.task, str(exc))]
     if isinstance(exc, LaunchGpuError):
-        return Refusal("hardware", exc.reason, None, str(exc))
-    return None
+        return [Refusal("hardware", exc.reason, None, str(exc))]
+    if isinstance(exc, MissingPythonRequirementsError):
+        # One line per task, so a caller can tell which tasks to fix.
+        return [
+            Refusal(
+                "environment",
+                "python_requires",
+                task,
+                "Missing Python packages: " + "; ".join(map(str, unmet)),
+            )
+            for task, unmet in exc.unmet.items()
+        ]
+    return []
 
 
 def _leaves(exc: BaseException) -> list[BaseException]:
@@ -71,10 +83,10 @@ def classify_refusals(exc: BaseException) -> tuple[list[Refusal], int | None]:
     The code is ``None`` unless every leaf of *exc* (a task batch fails as an
     ``ExceptionGroup``) is a refusal of one kind.
     """
-    leaves = _leaves(exc)
-    found = [r for r in map(_classify, leaves) if r is not None]
+    per_leaf = [_classify(leaf) for leaf in _leaves(exc)]
+    found = [r for refusals in per_leaf for r in refusals]
     kinds = {r.kind for r in found}
-    if len(found) == len(leaves) and len(kinds) == 1:
+    if all(per_leaf) and len(kinds) == 1:
         return found, EXIT_CODES[kinds.pop()]
     return found, None
 

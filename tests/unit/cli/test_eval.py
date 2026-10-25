@@ -92,3 +92,58 @@ class TestEvalCommand:
         assert "--result-dir" in error
         assert str(existing) in error
         assert "resume=True" not in error
+
+
+class TestEvalRefusesAMissingPythonPackage:
+    def test_exits_5_with_an_environment_refusal_line(self, tmp_path):
+        """Refused before a dataset loads or a model client is built."""
+        from sieval.cli.session import EvalSession
+        from sieval.tasks.aime_2024_0shot_gen import AIME2024ZeroShotGenTask
+
+        config = tmp_path / "c.yaml"
+        config.write_text(
+            "models:\n"
+            "  m:\n"
+            "    name: served\n"
+            "    api_base: http://127.0.0.1:1/v1\n"
+            "datasets:\n"
+            "  d:\n"
+            "    class: sieval.datasets.aime_2024.AIME2024Dataset\n"
+            "tasks:\n"
+            "  t:\n"
+            "    class: sieval.tasks.aime_2024_0shot_gen.AIME2024ZeroShotGenTask\n"
+            "    dataset: d\n"
+            "    model: m\n"
+            f"result_dir: {tmp_path / 'out'}\n",
+            encoding="utf-8",
+        )
+        with (
+            patch.object(
+                AIME2024ZeroShotGenTask,
+                "python_requires",
+                {"sieval_no_such_mod": "nope>=1"},
+            ),
+            patch.object(
+                EvalSession,
+                "_setup_datasets",
+                side_effect=AssertionError("datasets must not load"),
+            ),
+            patch.object(
+                EvalSession,
+                "_setup_models",
+                side_effect=AssertionError("models must not be built"),
+            ),
+        ):
+            result = runner.invoke(app, ["eval", str(config), "-o", "json"])
+
+        assert result.exit_code == 5, result.output
+        (line,) = [
+            line
+            for line in result.stderr.splitlines()
+            if line.startswith("SIEVAL_REFUSAL ")
+        ]
+        payload = json.loads(line.removeprefix("SIEVAL_REFUSAL "))
+        assert payload["kind"] == "environment"
+        assert payload["reason"] == "python_requires"
+        assert payload["task"] == "t"
+        assert "nope>=1" in payload["message"]

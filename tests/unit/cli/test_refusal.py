@@ -16,6 +16,10 @@ from sieval.cli.refusal import (
 )
 from sieval.core.runners import StageResumeError
 from sieval.core.runners.resume_gate import ResumeVersionError
+from sieval.core.tasks.python_requires import (
+    MissingPythonRequirementsError,
+    UnmetPythonRequirement,
+)
 from sieval.infer.introspect import LaunchGpuError
 
 
@@ -29,10 +33,10 @@ class TestTheContractIsPinned:
     """Changing any of these breaks every scheduler that matches on them."""
 
     def test_exit_codes(self):
-        assert EXIT_CODES == {"resume": 3, "hardware": 4}
+        assert EXIT_CODES == {"resume": 3, "hardware": 4, "environment": 5}
 
     def test_line_version(self):
-        assert REFUSAL_LINE_VERSION == 1
+        assert REFUSAL_LINE_VERSION == 2
 
     @pytest.mark.parametrize(
         ("exc", "kind", "reason", "task"),
@@ -48,6 +52,44 @@ class TestTheContractIsPinned:
         (refusal,), code = classify_refusals(exc)
         assert (refusal.kind, refusal.reason, refusal.task) == (kind, reason, task)
         assert code == EXIT_CODES[kind]
+
+
+def _missing(*tasks: str) -> MissingPythonRequirementsError:
+    return MissingPythonRequirementsError(
+        {
+            task: [UnmetPythonRequirement("rdkit", "rdkit>=2023.9", "not installed")]
+            for task in tasks
+        }
+    )
+
+
+class TestEnvironmentRefusal:
+    def test_one_refusal_per_task_lacking_a_package(self):
+        refusals, code = classify_refusals(_missing("a", "b"))
+        assert code == 5
+        assert [(r.kind, r.reason, r.task) for r in refusals] == [
+            ("environment", "python_requires", "a"),
+            ("environment", "python_requires", "b"),
+        ]
+
+    def test_the_line_names_the_package(self, capsys):
+        assert report_refusals(_missing("a")) == 5
+        assert _payload(capsys.readouterr().err.strip()) == {
+            "v": 2,
+            "kind": "environment",
+            "reason": "python_requires",
+            "task": "a",
+            "message": "Missing Python packages: rdkit>=2023.9 "
+            "[import rdkit]: not installed",
+        }
+
+    def test_beside_a_resume_refusal_there_is_no_single_code(self):
+        group = ExceptionGroup(
+            "x", [_missing("a"), StageResumeError("data", "m", task="b")]
+        )
+        refusals, code = classify_refusals(group)
+        assert len(refusals) == 2
+        assert code is None
 
 
 class TestClassify:
@@ -100,7 +142,7 @@ class TestLine:
         assert out.out == ""
         (line,) = out.err.splitlines()
         assert _payload(line) == {
-            "v": 1,
+            "v": 2,
             "kind": "resume",
             "reason": "inference",
             "task": "t",

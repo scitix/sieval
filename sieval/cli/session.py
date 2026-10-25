@@ -133,6 +133,11 @@ from sieval.core.runners import (
     same_dir,
 )
 from sieval.core.tasks.context import TaskAction
+from sieval.core.tasks.python_requires import (
+    MissingPythonRequirementsError,
+    UnmetPythonRequirement,
+    unmet_python_requires,
+)
 from sieval.core.tasks.services import check_service_names
 from sieval.core.types import JSONValue
 from sieval.core.utils.hf import maybe_resolve_hf_path
@@ -1841,6 +1846,8 @@ class EvalSession:
         self._task_requirement_contexts: dict[str, RequirementContext] = {}
         # Vendored services the configured tasks declare (`Task.services`).
         self._required_services: set[str] = set()
+        self._python_requires: dict[str, dict[str, str]] = {}
+        self._unmet_python_requires: dict[str, tuple[UnmetPythonRequirement, ...]] = {}
         self._task_model_requirements: tuple[TaskModelRequirement, ...] = ()
         self._aggregated_requirements: dict[str, AggregatedTaskRequirements] = {}
         self._model_types_by_root: dict[str, Literal["chat", "gen"]] = {}
@@ -3236,6 +3243,8 @@ class EvalSession:
 
         records: list[TaskModelRequirement] = []
         self._required_services = set()
+        self._python_requires = {}
+        self._unmet_python_requires = {}
         for task_name, task_cfg in tasks_cfg.items():
             if task_name == RESERVED_LOG_DIR:
                 raise ValueError(
@@ -3257,6 +3266,7 @@ class EvalSession:
                 named_by_config[model_name],
             )
             self._task_requirement_contexts[task_name] = context
+            self._check_python_requires(task_name, task_class, context)
             requirement_hook = getattr(task_class, "model_requirements_for", None)
             if not callable(requirement_hook):
                 raise TypeError(
@@ -3520,18 +3530,50 @@ class EvalSession:
         )
         _emit_best_effort_deterministic_warning(labels)
 
+    def _check_python_requires(
+        self, task_name: str, task_class: type[Any], context: RequirementContext
+    ) -> None:
+        hook = getattr(task_class, "python_requires_for", None)
+        declared = hook(context) if callable(hook) else {}
+        owner = f"Task '{task_name}' ({task_class.__name__})"
+        unmet = unmet_python_requires(declared, owner)
+        self._python_requires[task_name] = dict(declared)
+        if unmet:
+            self._unmet_python_requires[task_name] = unmet
+
+    @property
+    def python_requires(self) -> Mapping[str, Mapping[str, str]]:
+        """Each task's declared Python packages, once prelaunch ran."""
+        return MappingProxyType(self._python_requires)
+
+    @property
+    def unmet_python_requires(
+        self,
+    ) -> Mapping[str, tuple[UnmetPythonRequirement, ...]]:
+        """The declared packages this interpreter lacks, by task, once prelaunch ran."""
+        return MappingProxyType(self._unmet_python_requires)
+
     @property
     def required_services(self) -> frozenset[str]:
         """The vendored services the configured tasks declare, once prelaunch ran."""
         return frozenset(self._required_services)
 
-    def prepare_prelaunch(self) -> ReconcileResult:
-        """Public pure setup seam for launch-before-I/O capability validation."""
+    def prepare_prelaunch(
+        self, *, enforce_python_requires: bool = True
+    ) -> ReconcileResult:
+        """Public pure setup seam for launch-before-I/O capability validation.
+
+        Raises :class:`MissingPythonRequirementsError` when a task's
+        ``python_requires`` is unmet, unless *enforce_python_requires* is
+        false (``--dry-run`` reports it as its own check instead).
+        """
 
         self._setup_prelaunch_reconciliation()
         result = self.prelaunch_reconcile_result
         if result is None:  # defensive: the setup method assigns on success
             raise RuntimeError("pre-launch reconciliation produced no result")
+        if enforce_python_requires and self._unmet_python_requires:
+            raise MissingPythonRequirementsError(self._unmet_python_requires)
         return result
 
     @staticmethod

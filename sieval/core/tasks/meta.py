@@ -13,7 +13,8 @@ disk — their only compatibility marker is the sieval `version` alongside.
 
 Frozen fields on TaskMeta:
     name, display_name, description, dataset (FK str), eval_mode, n_shot,
-    deps_group, status, reference_kind.
+    deps_group, status, reference_kind, python_requires (import name →
+    PEP 508 requirement; absent reads as empty).
 
 Not frozen (may change within schema_version=1):
     tags values, model_type enum membership, reference_impl.notes,
@@ -40,6 +41,7 @@ from sieval.core.datasets.meta import extract_sample_type
 from sieval.core.models.requirements import InputKind, TaskRequirements
 
 from .context import TaskRunIdentity
+from .python_requires import validate_python_requires
 from .task import Task
 
 
@@ -103,6 +105,9 @@ class TaskMeta:
     reference_impl: ReferenceImpl | None = None
     status: Status = "stable"
     reference_kind: ReferenceKind = "value"
+    #: The class's ``Task.python_requires``, as ``(import name, requirement)``
+    #: pairs, so discovery reads it without importing the task's module.
+    python_requires: tuple[tuple[str, str], ...] = ()
 
 
 TASK_REGISTRY: dict[str, TaskMeta] = {}
@@ -250,6 +255,8 @@ def sieval_task[T: type[Task]](
                 f"{sample_type.__qualname__!r}; register the Dataset first."
             )
         dataset_name = get_dataset_meta(dataset_cls).name
+        declared_requires = cls.python_requires
+        validate_python_requires(declared_requires, cls.__qualname__)
 
         meta = TaskMeta(
             name=name,
@@ -264,6 +271,7 @@ def sieval_task[T: type[Task]](
             reference_impl=reference_impl,
             status=status,
             reference_kind=reference_kind,
+            python_requires=tuple(declared_requires.items()),
         )
         setattr(cls, _TASK_META_ATTR, meta)
         dynamic_cls = cast(Any, cls)
@@ -313,8 +321,9 @@ def get_task_run_identity(task: Task) -> TaskRunIdentity | None:
     A chosen subset, not `task_meta_to_dict`. Left out on purpose, so the gap
     does not read as an oversight: `model_type` (scheduled for replacement by
     a task-side capability requirement), `reference_impl` (`notes` is not
-    frozen within `schema_version=1` and changes often), `description` and
-    `deps_group` (properties of the task, not the run).
+    frozen within `schema_version=1` and changes often), `description`,
+    `deps_group` and `python_requires` (properties of the task and its
+    environment, not the run).
 
     `reference_kind` is in for the same reason `eval_mode` is, and it is worth
     stating because it is otherwise a task-level constant like the two excluded
@@ -466,6 +475,7 @@ def task_meta_to_dict(meta: TaskMeta) -> dict[str, Any]:
         ),
         "status": meta.status,
         "reference_kind": meta.reference_kind,
+        "python_requires": dict(meta.python_requires),
     }
 
 
@@ -498,4 +508,5 @@ def task_meta_from_dict(payload: dict[str, Any]) -> TaskMeta:
         reference_impl=reference_impl,
         status=payload.get("status", "stable"),
         reference_kind=payload.get("reference_kind", "value"),
+        python_requires=tuple(payload.get("python_requires", {}).items()),
     )

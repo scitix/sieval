@@ -16,15 +16,21 @@ from typing import Literal
 
 from sieval.core.datasets.meta import DatasetMeta
 from sieval.core.tasks.meta import TaskMeta
+from sieval.core.tasks.python_requires import unmet_python_requires
 from sieval.datasets.downloaders.resolver import extras_unsatisfied
 from sieval.datasets.downloaders.staged import probe_source
 
-MissingKind = Literal["data", "dataset-deps", "task-deps"]
+MissingKind = Literal["data", "dataset-deps", "task-deps", "python-requires"]
 
 # Ordered tuple of every MissingKind literal. Exported so rendering code can
 # iterate / compute column widths without reflecting on __annotations__.
 # Keep in sync with the Literal above (a static-check test pins the match).
-MISSING_KINDS: tuple[MissingKind, ...] = ("data", "dataset-deps", "task-deps")
+MISSING_KINDS: tuple[MissingKind, ...] = (
+    "data",
+    "dataset-deps",
+    "task-deps",
+    "python-requires",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +40,10 @@ class MissingEntry:
     `kind="data"` populates `sources` (raw `source` strings from DatasetMeta)
     and `stale` (source → reason, for the subset staged with other bytes);
     `kind="dataset-deps"` / `"task-deps"` populate `group` (extras group name)
-    and `unmet` (verbatim output of `extras_unsatisfied`).
+    and `unmet` (verbatim output of `extras_unsatisfied`);
+    `kind="python-requires"` populates `unmet` alone, one line per package of
+    `TaskMeta.python_requires` the interpreter lacks — the check `sieval run`
+    refuses on, so discovery and run agree.
     """
 
     kind: MissingKind
@@ -50,7 +59,7 @@ class ReadinessReport:
 
     `ready="yes"` → missing always empty.
     `ready="no"` → missing non-empty, entries in contract order (data →
-        dataset-deps → task-deps).
+        dataset-deps → task-deps → python-requires).
     `ready="unknown"` → at least one axis was unresolvable (e.g. unknown
         scheme); missing may still contain entries from axes that *were*
         determinable.
@@ -65,6 +74,8 @@ def missing_entry_to_dict(e: MissingEntry) -> dict:
     if e.kind == "data":
         # `stale` is always present (possibly empty), like `sources`.
         return {"kind": "data", "sources": list(e.sources), "stale": dict(e.stale)}
+    if e.kind == "python-requires":
+        return {"kind": e.kind, "unmet": list(e.unmet)}
     return {"kind": e.kind, "group": e.group, "unmet": list(e.unmet)}
 
 
@@ -138,7 +149,7 @@ def evaluate_task_readiness(
 
     Dataset entries from `_probe_dataset` are concatenated verbatim into
     the task's `missing` list, preserving contract order (data →
-    dataset-deps → task-deps).
+    dataset-deps → task-deps → python-requires).
     """
     entries, had_unknown = _probe_dataset(ds_meta, data_dir)
 
@@ -150,6 +161,19 @@ def evaluate_task_readiness(
                     kind="task-deps",
                     group=task_meta.deps_group,
                     unmet=tuple(unmet),
+                )
+            )
+
+    # Only the class-level declaration: `python_requires_for` needs a run's
+    # arguments, which discovery does not have.
+    if task_meta.python_requires:
+        missing = unmet_python_requires(
+            dict(task_meta.python_requires), f"Task '{task_meta.name}'"
+        )
+        if missing:
+            entries.append(
+                MissingEntry(
+                    kind="python-requires", unmet=tuple(str(m) for m in missing)
                 )
             )
 

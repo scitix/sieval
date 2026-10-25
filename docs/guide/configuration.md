@@ -253,6 +253,34 @@ preprocess -> infer -> postprocess -> feedback -> report
 | **Feedback** | check correctness; return `(finalize, feedback)` — `False` to iterate |
 | **Report** | aggregate results into final metrics |
 
+### Python packages a task needs
+
+A task whose grader imports a third-party package declares it on the class,
+as import name → PEP 508 requirement:
+
+```python
+class MyTask(Task[...]):
+    python_requires = {"rdkit": "rdkit>=2023.9", "sklearn": "scikit-learn"}
+```
+
+`sieval run` and `sieval eval` check every task's declaration before any engine
+starts or dataset loads, and refuse a run that lacks one with exit code 5 and a
+`SIEVAL_REFUSAL` line of `kind` `environment` per task ([Exit codes](#exit-codes)).
+`--dry-run` reports it as the `dependencies` check, whose `plan` lists each
+task's `declared` and `unmet` packages. `task list` and `task show` read the
+same declaration: a lacking task is `ready: no`, with a `python-requires`
+entry under `missing`.
+
+A package is met when its import name is importable and, for a pinned
+requirement, the installed distribution satisfies the pin. The module is
+located, not imported. Override the `python_requires_for(context)` classmethod
+when the need depends on the task's `args` or dataset configuration;
+discovery reads only the class attribute.
+
+A missing package is the environment's failure, not the sample's. Never raise
+`NonRetriableSampleError` for it: a resume never regrades such a sample, even
+once the package is installed.
+
 ## Model Resource Pool
 
 Hierarchical concurrency control — derive child models from a base and allocate API quotas:
@@ -472,7 +500,8 @@ in `SIEVAL_TARGET_GPU` ([Resolving for declared GPUs](infer.md#resolving-for-dec
 }
 ```
 
-- `checks` are the config checks, then `resume_plan`, which fails when a task's
+- `checks` are the config checks (`dependencies` lists each task's declared and
+  unmet `python_requires`), then `resume_plan`, which fails when a task's
   resume would be refused; that task's entry then holds `error` instead.
 - `models` has one entry per model `sieval run` serves: the plan as
   `infer_plans.yaml` would record it, each process the launch starts (`argv`,
@@ -521,16 +550,18 @@ refuses again.
 | 2 | Usage error |
 | 3 | Resume refused: start fresh, or match the stage the refusal names |
 | 4 | Hardware refused: an engine is needed and `nvidia-smi` finds no GPU (and none is declared), or the GPUs differ from `SIEVAL_TARGET_GPU` |
+| 5 | Environment refused: a task's `python_requires` is not installed ([Python packages a task needs](#python-packages-a-task-needs)) |
 | 130 / 143 | Interrupted by Ctrl+C / SIGTERM |
 
 Each refusal, except under `--dry-run`, also writes one stderr line:
 
 ```text
-SIEVAL_REFUSAL {"v": 1, "kind": "resume", "reason": "inference", "task": "echo", "message": "Resume refused: stage `inference` differs (recorded 3f…, now 9a…)."}
+SIEVAL_REFUSAL {"v": 2, "kind": "resume", "reason": "inference", "task": "echo", "message": "Resume refused: stage `inference` differs (recorded 3f…, now 9a…)."}
 ```
 
-`kind` is `resume` (`reason`: `schema`, `data`, `inference`) or `hardware`
-(`no_gpu`, `mismatch`). `task` is present for a per-task refusal; `message`
+`kind` is `resume` (`reason`: `schema`, `data`, `inference`), `hardware`
+(`no_gpu`, `mismatch`) or `environment` (`python_requires`, one line per task
+lacking a package). `task` is present for a per-task refusal; `message`
 is the error's first line, at most 200 characters. `v` is bumped when any of
 these change.
 

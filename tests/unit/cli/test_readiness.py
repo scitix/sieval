@@ -251,7 +251,7 @@ def test_dataset_readiness_unknown_with_deps_missing_keeps_deps_entry():
 # ── evaluate_task_readiness ───────────────────────────────────────────
 
 
-def _make_task_meta(name="t", dataset="ds", deps_group=None):
+def _make_task_meta(name="t", dataset="ds", deps_group=None, python_requires=()):
     from sieval.core.tasks.meta import EvalMode, TaskMeta
 
     return TaskMeta(
@@ -262,6 +262,7 @@ def _make_task_meta(name="t", dataset="ds", deps_group=None):
         eval_mode=EvalMode.GEN,
         n_shot=0,
         deps_group=deps_group,
+        python_requires=python_requires,
     )
 
 
@@ -328,3 +329,65 @@ def test_task_readiness_unknown_with_task_deps_missing_still_reports_deps():
         r = evaluate_task_readiness(t, Path("/tmp/data"), ds)
     assert r.ready == "unknown"
     assert [e.kind for e in r.missing] == ["task-deps"]
+
+
+# ── python-requires axis: the check `sieval run` refuses on ───────────
+
+
+def test_task_readiness_reports_an_unmet_python_requires():
+    ds = _make_dataset_meta(name="ds5")
+    t = _make_task_meta(
+        name="t5",
+        dataset="ds5",
+        python_requires=(
+            ("packaging", "packaging"),
+            ("sieval_test_no_such_module_xyz", "nope>=1"),
+        ),
+    )
+    with patch("sieval.cli._readiness.probe_source") as mock_probe:
+        mock_probe.return_value = SourceProbe("pinned")
+        r = evaluate_task_readiness(t, Path("/tmp/data"), ds)
+    assert r.ready == "no"
+    (entry,) = r.missing
+    assert entry.kind == "python-requires"
+    assert entry.unmet == (
+        "nope>=1 [import sieval_test_no_such_module_xyz]: not installed",
+    )
+
+
+def test_task_readiness_python_requires_follows_task_deps():
+    ds = _make_dataset_meta(name="ds6")
+    t = _make_task_meta(
+        name="t6",
+        dataset="ds6",
+        deps_group="math",
+        python_requires=(("sieval_test_no_such_module_xyz", "nope"),),
+    )
+    with (
+        patch("sieval.cli._readiness.probe_source") as mock_probe,
+        patch("sieval.cli._readiness.extras_unsatisfied", return_value=["m>=1"]),
+    ):
+        mock_probe.return_value = SourceProbe("pinned")
+        r = evaluate_task_readiness(t, Path("/tmp/data"), ds)
+    assert [e.kind for e in r.missing] == ["task-deps", "python-requires"]
+
+
+def test_task_readiness_met_python_requires_is_ready():
+    ds = _make_dataset_meta(name="ds7")
+    t = _make_task_meta(
+        name="t7", dataset="ds7", python_requires=(("packaging", "packaging"),)
+    )
+    with patch("sieval.cli._readiness.probe_source") as mock_probe:
+        mock_probe.return_value = SourceProbe("pinned")
+        r = evaluate_task_readiness(t, Path("/tmp/data"), ds)
+    assert r.ready == "yes"
+
+
+def test_missing_entry_to_dict_python_requires_has_no_group():
+    from sieval.cli._readiness import missing_entry_to_dict
+
+    e = MissingEntry(kind="python-requires", unmet=("x [import x]: not installed",))
+    assert missing_entry_to_dict(e) == {
+        "kind": "python-requires",
+        "unmet": ["x [import x]: not installed"],
+    }

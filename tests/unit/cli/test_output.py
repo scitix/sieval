@@ -961,7 +961,7 @@ class TestCliCommand:
 
         out = capsys.readouterr()
         assert json.loads(out.out)["ok"] is False
-        assert out.err.startswith('SIEVAL_REFUSAL {"v": 1, "kind": "resume"')
+        assert out.err.startswith('SIEVAL_REFUSAL {"v": 2, "kind": "resume"')
         assert code == 3
 
     def test_a_dry_run_refusal_exits_1_without_a_line(self, capsys):

@@ -1200,6 +1200,48 @@ def test_get_task_class_surfaces_nested_import_error(tmp_path):
         sys.modules.pop("sieval.tasks.broken_task_for_test", None)
 
 
+class TestPythonRequires:
+    """The decorator copies `Task.python_requires` into the index row."""
+
+    def test_defaults_to_empty(self):
+        @sieval_task(**_valid_kwargs(name="pr_default"))
+        class T(_StubTask):
+            pass
+
+        assert get_task_meta(T).python_requires == ()
+        assert task_meta_to_dict(get_task_meta(T))["python_requires"] == {}
+
+    def test_the_class_declaration_is_recorded(self):
+        @sieval_task(**_valid_kwargs(name="pr_declared"))
+        class T(_StubTask):
+            python_requires = {"rdkit": "rdkit>=2023.9", "scipy": "scipy"}
+
+        assert get_task_meta(T).python_requires == (
+            ("rdkit", "rdkit>=2023.9"),
+            ("scipy", "scipy"),
+        )
+
+    def test_a_malformed_declaration_is_rejected_at_decoration_time(self):
+        with pytest.raises(ValueError, match="not a PEP 508 requirement"):
+
+            @sieval_task(**_valid_kwargs(name="pr_bad"))
+            class T(_StubTask):
+                python_requires = {"rdkit": "rdkit >>= 1"}
+
+    def test_an_index_row_without_the_key_reads_as_empty(self):
+        payload = task_meta_to_dict(
+            TaskMeta(
+                name="pr_old",
+                display_name="Old",
+                description="d",
+                dataset="stub_dataset",
+                eval_mode=EvalMode.GEN,
+            )
+        )
+        del payload["python_requires"]
+        assert task_meta_from_dict(payload).python_requires == ()
+
+
 class TestTaskMetaRoundTrip:
     """`task_meta_from_dict` is the reverse of `task_meta_to_dict`.
 
@@ -1225,6 +1267,7 @@ class TestTaskMetaRoundTrip:
                 source="a_source", url="https://example.com/x", notes="a note"
             ),
             status="experimental",
+            python_requires=(("rdkit", "rdkit>=2023.9"),),
         )
 
     def test_round_trip_preserves_every_field(self):
@@ -1245,6 +1288,7 @@ class TestTaskMetaRoundTrip:
         assert got.deps_group == "a_group"
         assert got.model_type == "chat"
         assert got.status == "experimental"
+        assert got.python_requires == (("rdkit", "rdkit>=2023.9"),)
 
     def test_reference_impl_survives_the_round_trip(self):
         got = task_meta_from_dict(task_meta_to_dict(self._full()))

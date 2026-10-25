@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Hashable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import replace
+from types import MappingProxyType
 from typing import ClassVar, Literal, Protocol, cast
 
 from sieval.core.datasets import (
@@ -165,6 +166,16 @@ class Task[
             with the model calls the first run made answered from it rather
             than sent again; anything else ``infer`` does (a service call, a
             file it writes) runs twice, so keep it free of such side effects.
+        python_requires: Third-party Python packages the task needs, as
+            ``{import name: PEP 508 requirement}``, such as
+            ``{"rdkit": "rdkit>=2023.9"}``. ``sieval run``, ``sieval eval``
+            and their ``--dry-run`` refuse a run missing one before any
+            engine starts or dataset loads; override
+            :meth:`python_requires_for` when the need depends on the task's
+            arguments. A missing package is an environment failure: never
+            raise :class:`~sieval.core.tasks.consts.NonRetriableSampleError`
+            for one, or a resume would not regrade those samples once it is
+            installed.
     """
 
     model_type: ClassVar[Literal["chat", "gen"] | None] = None
@@ -172,6 +183,7 @@ class Task[
     requires: ClassVar[TaskRequirements] = TaskRequirements()
     services: ClassVar[AbstractSet[str]] = frozenset()
     context_overflow: ClassVar[Literal["score", "fail"]] = "score"
+    python_requires: ClassVar[Mapping[str, str]] = MappingProxyType({})
 
     def __init__(
         self, dataset: Dataset[TRawSample], model: Model, name: str | None = None
@@ -189,6 +201,16 @@ class Task[
         """Attach this task's candidate requirements to its normalized binding."""
 
         return cls._bind_model_requirements(context, cls.requires)
+
+    @classmethod
+    def python_requires_for(cls, context: RequirementContext) -> Mapping[str, str]:
+        """The Python packages this configured task needs, before it runs.
+
+        Defaults to :attr:`python_requires`. Override to add what the task's
+        arguments or dataset configuration in *context* call for.
+        """
+
+        return cls.python_requires
 
     @classmethod
     def _bind_model_requirements(
