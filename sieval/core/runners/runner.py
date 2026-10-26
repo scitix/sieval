@@ -322,10 +322,8 @@ class TaskRunnerConfig:
     # None = unbounded iterations. Use only when task.feedback() is guaranteed
     # to eventually return finalize=True; otherwise execution will loop forever.
     max_iterations: int | None = None
-    # End the run once every sample of every task in the session has finished
-    # this stage (see `sieval.core.runners.barriers`). Session-wide: set it on
-    # the session's `runner_config`, not per task. Scheduling only: in no
-    # identity, never refuses a resume.
+    # End the run once every sample of the session has finished this stage.
+    # Session-wide; scheduling only (`sieval.core.runners.barriers`).
     stop_after: str | None = None
     max_retries: int | None = None
 
@@ -346,16 +344,14 @@ class TaskRunnerConfig:
         if self.stop_after is not None:
             check_barrier_stage(self.stop_after, "runner_config.stop_after")
             if not self.record_each_stage:
-                # Only terminal samples and iteration boundaries are recorded,
-                # so a resume would rerun every stage the stop kept.
                 raise ValueError(
                     "runner_config.stop_after needs record_each_stage: true, "
                     "so the stages before the stop are on disk to resume from"
                 )
 
 
-#: Why a sample failed that asked to iterate under a barrier on ``inference``
-#: or ``postprocess``. Retriable, so a resume without that barrier iterates it.
+#: A sample asked to iterate past a barrier on ``inference`` or
+#: ``postprocess``. Retriable by a resume without the barrier.
 BARRIER_ITERATION_REASON = "barrier_iteration"
 
 
@@ -682,8 +678,7 @@ class TaskRunner:
         self._shared_stage_limiters: dict[str, anyio.CapacityLimiter] = {}
         self._progress_position: int = 0
 
-        # Session barriers (`set_barriers`); samples held at the stop, and the
-        # samples that have finished each barrier stage, by stage.
+        # Session barriers; samples held at the stop; finished samples by stage.
         self._barriers: StageBarriers | None = None
         self._parked: set[str | int] = set()
         self._finished_stage: dict[str, set[str | int]] = {}
@@ -733,12 +728,8 @@ class TaskRunner:
         )
 
     def set_barriers(self, barriers: StageBarriers | None) -> None:
-        """Take part in the session's stage barriers; ``None`` streams freely.
-
-        Refuses, before anything runs, a barrier on ``inference`` or
-        ``postprocess`` for a task that can iterate: its samples go back from
-        ``feedback`` to ``inference``, past a barrier already crossed.
-        """
+        """Take part in the session's barriers; ``None`` streams freely. Refuses
+        a barrier inside an iteration for a task that iterates."""
         if barriers:
             blocked = sorted(
                 ITERATION_BARRIERS & set(barriers.stages),
@@ -756,12 +747,8 @@ class TaskRunner:
 
     @property
     def iterates(self) -> bool:
-        """Whether ``max_iterations`` lets a sample go round more than once.
-
-        An unset ``max_iterations`` leaves it to the task, and nearly every task
-        finalizes on the first pass; under such a barrier a sample that asks to
-        iterate fails instead (:data:`BARRIER_ITERATION_REASON`).
-        """
+        """Whether ``max_iterations`` allows more than one pass. Unset leaves it
+        to the task (see :data:`BARRIER_ITERATION_REASON`)."""
         return self._max_iterations is not None and self._max_iterations > 1
 
     def _iteration_blocked(self) -> bool:
@@ -855,7 +842,6 @@ class TaskRunner:
                 i for i in range(dataset_size) if i not in self._contexts
             ]
             self._total_samples = max(len(self._contexts), dataset_size)
-            await self._join_barriers()
 
             # 4. Prepare Runtime State
             # For exit check
@@ -912,6 +898,9 @@ class TaskRunner:
                     elif ctx.stage == TaskStage.FAILED:
                         fails_count += 1
                         failed_ids.append(sid)
+
+            # After the retry limit, which fails samples outside the dispatcher.
+            await self._join_barriers()
 
             if changed:
                 # Rewritten whole as this run's records, which supersede the
@@ -1034,14 +1023,11 @@ class TaskRunner:
         return await self._barriers.before("report")
 
     async def _stop(self) -> dict[str, str]:
-        """End a run at its ``stop_after`` barrier: every sample has finished
-        that stage or failed, nothing after it ran, and no ``report.json``.
-
-        A resume plans each sample from its recorded stage, so it continues
-        from the next stage; ``runs[].stopped_after`` records the stop.
-        """
-        assert self._barriers is not None and self._barriers.stop_after is not None
-        stage = self._barriers.stop_after
+        """End the run at its ``stop_after`` barrier, without ``report.json``;
+        a resume continues from the next stage."""
+        stage = self._barriers.stop_after if self._barriers is not None else None
+        if stage is None:
+            raise RuntimeError(f"{self._task.name}: stopped without a stop_after")
         self._stopped_after = stage
         logger.info(
             "{}: stopped after {} ({} sample(s) held, {} terminal)",
@@ -1671,7 +1657,6 @@ class TaskRunner:
                         f"Max iterations {self._max_iterations} reached",
                     )
                 if self._iteration_blocked():
-                    # Retriable: a later run without the barrier iterates it.
                     return next_ctx.to_failed(
                         TaskAction.FEEDBACK,
                         BARRIER_ITERATION_REASON,

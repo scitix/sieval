@@ -61,12 +61,9 @@ class MultiTaskRunner:
         :class:`TaskRunner` inherits (recorded in ``meta.json``). Engine-level
         determinism itself is enforced by the backend translators.
 
-        *stop_after* ends the run once every sample of every task has finished
-        that stage; *barriers* hold every sample at the start of the stage
-        after each named one until all have finished it, and *on_barrier* is
-        awaited once at each barrier before any sample crosses it (see
-        :mod:`sieval.core.runners.barriers`). A task config's
-        ``stop_after`` must agree with the session's.
+        *stop_after*, *barriers* and *on_barrier*: see
+        :mod:`sieval.core.runners.barriers`. A task config's ``stop_after``
+        must agree with the session's.
         """
         self._base_result_dir = result_dir
         self._global_limit = concurrency_limit
@@ -88,14 +85,12 @@ class MultiTaskRunner:
         self._output_dirs: set[Path] = set()
 
     def add_barrier(self, stage: str) -> Self:
-        """Hold every sample at the start of the stage after *stage* until every
-        sample of every task has finished *stage* or failed."""
+        """Hold every sample after *stage* until all have finished it."""
         self._barrier_stages.add(check_barrier_stage(stage, "barrier"))
         return self
 
     def on_barrier(self, hook: BarrierHook | None) -> Self:
-        """Await *hook* with the stage's name once at each barrier, before any
-        sample crosses it. A hook that raises stops every task."""
+        """Await *hook(stage)* once per barrier; if it raises, every task stops."""
         self._on_barrier = hook
         return self
 
@@ -104,8 +99,7 @@ class MultiTaskRunner:
         return self._stop_after
 
     def effective_barriers(self) -> tuple[str, ...]:
-        """Every barrier this session waits at, ``stop_after`` included, in
-        pipeline order."""
+        """Every barrier, ``stop_after`` included, in pipeline order."""
         stages = set(self._barrier_stages)
         if self._stop_after is not None:
             stages.add(self._stop_after)
@@ -123,8 +117,7 @@ class MultiTaskRunner:
         )
 
     def _apply_barriers(self, barriers: StageBarriers | None) -> None:
-        """Give every runner the session's barriers; refuses, before any task
-        runs, one a task cannot pass."""
+        """Give every runner the barriers; refuses one a task cannot pass."""
         errors = []
         for runner in self._runners:
             try:

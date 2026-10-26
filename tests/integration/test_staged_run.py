@@ -183,6 +183,7 @@ def engines(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Engines
 
     monkeypatch.setattr(connection_factory, "AsyncOpenAI", openai_client)
     monkeypatch.setattr("sieval.cli.infer.lifecycle.HANDLE_DIR", tmp_path / "handles")
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     with (
         patch("sieval.cli.run.launch_model", new=stub.launch),
         patch("sieval.cli.run.cleanup_model", new=stub.cleanup),
@@ -450,6 +451,26 @@ class TestPlacement:
             ports[name] = command.cli_args[command.cli_args.index("--port") + 1]
             assert f":{ports[name]}/" in (command.health_url or "")
         assert ports["judge"] != ports["subject"]
+
+    @pytest.mark.anyio
+    async def test_devices_select_from_an_inherited_visible_device_list(
+        self, tmp_path: Path, engines: Engines, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "8,9,10,11,12,13,14,15")
+        await _run(_halves(_write(tmp_path)))
+        devices = {
+            name: command.env["CUDA_VISIBLE_DEVICES"]
+            for name, (command,) in engines.commands.items()
+        }
+        assert devices == {"judge": "8,9,10,11", "subject": "12,13,14,15"}
+
+    @pytest.mark.anyio
+    async def test_fewer_visible_devices_than_the_node_has_are_the_limit(
+        self, tmp_path: Path, engines: Engines, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3")
+        with pytest.raises(LifecycleFitError, match="the run has 4"):
+            await _run(_halves(_write(tmp_path)))
 
     @pytest.mark.anyio
     async def test_models_alive_together_that_do_not_fit_are_refused_first(

@@ -20,6 +20,7 @@ from sieval.cli.lifecycle import (
     plan_phases,
     role_models,
     runs_before_stop,
+    visible_devices,
 )
 from sieval.infer.backends.translator import BackendCommand
 
@@ -163,6 +164,12 @@ class TestPlace:
         with pytest.raises(LifecycleFitError, match="start → end: j 6, s 4 need 10"):
             place(phases, {"s": 4, "j": 6}, 8)
 
+    def test_a_model_with_many_commands_widens_the_next_port_offset(self) -> None:
+        phases = plan_phases((), {}, ["a", "b", "c"])
+        placements = place(phases, {"a": 1, "b": 1, "c": 1}, 8, ports={"a": 12, "b": 1})
+        offsets = {name: p.port_offset for name, p in placements.items()}
+        assert offsets == {"a": 0, "b": 12, "c": 22}
+
     def test_unknown_gpus_check_nothing(self) -> None:
         phases = plan_phases((), {}, ["s", "j"])
         placements = place(phases, {"s": 8, "j": 8}, None)
@@ -181,6 +188,20 @@ class TestPlacedCommands:
         assert placed.health_url == "http://localhost:30010/health"
         assert placed.env["CUDA_VISIBLE_DEVICES"] == "2,3"
         assert command.cli_args[-1] == "30000"
+
+    def test_device_indices_select_from_the_inherited_visible_devices(self) -> None:
+        command = BackendCommand(cli_args=["vllm"], backend="vllm")
+        (placed,) = placed_commands(
+            [command], Placement(2, (0, 1), 0), visible=["4", "5", "6", "7"]
+        )
+        assert placed.env["CUDA_VISIBLE_DEVICES"] == "4,5"
+
+    @pytest.mark.parametrize(
+        ("environ", "expected"),
+        [({}, None), ({"CUDA_VISIBLE_DEVICES": "4, 5,,6"}, ["4", "5", "6"])],
+    )
+    def test_visible_devices(self, environ: dict, expected: list | None) -> None:
+        assert visible_devices(environ) == expected
 
     def test_a_user_set_device_list_wins(self) -> None:
         command = BackendCommand(

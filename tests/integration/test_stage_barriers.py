@@ -101,6 +101,19 @@ def _task(name: str, clock=None, slow=None, iterate=False) -> ClockedTask:
     return task
 
 
+class FailingModel(SlowModel):
+    """Raises on Q1, so that sample fails every attempt."""
+
+    async def _stub_arun(self, req):
+        if prompt_of(req) == "Q1":
+            raise RuntimeError("Q1 always fails")
+        return await super()._stub_arun(req)
+
+
+def _failing_task() -> ClockedTask:
+    return ClockedTask(MockDataset(SAMPLES), FailingModel(), name="a")
+
+
 def _meta(root: Path, task: str) -> dict:
     return orjson.loads((root / task / "meta.json").read_bytes())
 
@@ -242,6 +255,28 @@ class TestStopAfter:
             runner.add_task(
                 _task("a"), config=_config(tmp_path, stop_after="postprocess")
             )
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "barrier", [{"stop_after": "inference"}, {"barriers": ["postprocess"]}]
+    )
+    async def test_a_sample_out_of_retries_does_not_hold_a_resume_barrier(
+        self, tmp_path: Path, barrier: dict
+    ) -> None:
+        # The retry limit fails Q1 before any stage runs; a barrier still
+        # counting it as unfinished would never open.
+        root = tmp_path / "r"
+        first = _runner(root)
+        first.add_task(_failing_task(), config=_config(tmp_path, max_retries=0))
+        await first.arun()
+
+        resumed = _runner(root, **barrier)
+        resumed.add_task(
+            _failing_task(), config=_config(tmp_path, resume=True, max_retries=0)
+        )
+        with anyio.fail_after(10):
+            await resumed.arun()
+        assert _meta(root, "a")["runs"][-1]["ended"]
 
     def test_stop_after_needs_each_stage_recorded(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="record_each_stage"):

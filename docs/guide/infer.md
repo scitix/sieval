@@ -257,20 +257,19 @@ task scores input: SGLang's `/v1/completions` cannot.
 
 ### Model lifecycles
 
-A model `sieval run` launches may say when its engine runs, bounded by stage
-barriers ([Stage barriers](configuration.md#stage-barriers-and-stop_after)):
+A model `sieval run` launches may bound its engine by stage barriers
+([Stage barriers](configuration.md#stage-barriers-and-stop_after)):
 
 | `lifecycle` | Engine runs |
 | --- | --- |
 | absent | The whole run |
-| `until: S` | From the start until every sample has finished `S`, then stops and frees its GPUs |
+| `until: S` | Until every sample has finished `S`, then frees its GPUs |
 | `from: S` | From the barrier on `S` to the end |
 | `from: S`, `until: T` | Between the two barriers |
 
-A task's `grader` or `extractor` may name a `models:` entry, which makes it a
-model `sieval run` launches. With the subject `until: inference` and the judge
-`from: inference`, the judge takes the subject's GPUs once every sample has
-answered:
+A task's `grader` or `extractor` may name a `models:` entry, which `sieval
+run` then launches. Here the judge takes the subject's GPUs once every sample
+has answered:
 
 ```yaml
 models:
@@ -292,34 +291,21 @@ tasks:
       grader: judge
 ```
 
-| Config | Result |
-| --- | --- |
-| Subject `until: inference`, judge `from: inference`, no `stop_after` | One run finishes; the judge takes the subject's GPUs in place |
-| The same with `stop_after: inference` | The run ends at `inference` and the judge does not start; a later resume starts only the judge |
-| `stop_after` earlier than a model's `until` | The model stops with the run; not an error |
-| A lifecycle naming an unknown stage, or with `from` at or after `until` | Refused before any engine starts |
-
-- **Fit.** The run is split into phases between barriers. Models alive in the
-  same phase each get a disjoint block of GPUs (`CUDA_VISIBLE_DEVICES`) and
-  their own port; when they need more GPUs than the run has, the run is
-  refused before any engine starts, naming the phase. A model alone in its
-  phases takes every GPU, as today; a model alive across barriers is planned
-  once (window, scaled groups, input-scoring headroom).
-- **Lazy launch.** A model starts only if some sample still has work in a
-  stage that calls it within its lifecycle: the subject while samples are
-  left to infer, a grader or extractor while samples are left to grade. A
-  resume whose inference is complete starts only the judge; a re-report
-  starts nothing.
-- **Identity.** Lifecycles change only when engines start and stop. They are
-  recorded in `runs[].serving.lifecycles` and in no identity, so adding or
-  removing one never changes a resume.
-- **Serving groups.** Models that end at a barrier run per group; one that
-  starts at a barrier launches once for every group: the groups each run up
-  to that barrier, then each resumes from it with the model up. This needs a
-  `result_dir`.
-- `--dry-run` lists `barriers`, `phases` (each model's lifecycle, GPUs and
-  devices) and `launches`, every engine the run would start, judges
-  included. `needs_inference` counts only models under test.
+- **Stopping early.** With `stop_after: inference` the judge never starts; a
+  later resume starts only the judge. A `stop_after` before a model's `until`
+  just stops it with the run.
+- **Fit.** Models alive at the same time get disjoint GPU blocks (indices into
+  an inherited `CUDA_VISIBLE_DEVICES`, if set) and their own ports. If they do
+  not fit, the run is refused before any engine starts. A model alone takes
+  every GPU.
+- **Lazy launch.** A model starts only if some sample still needs it: a
+  resume with inference complete starts only the judge, a re-report nothing.
+- **Identity.** Lifecycles are recorded in `runs[].serving.lifecycles` and in
+  no identity.
+- **Serving groups.** A model starting at a barrier launches once for all
+  groups, which each run up to it and then resume. Needs a `result_dir`.
+- `--dry-run` lists `barriers`, `phases` and `launches` (judges included).
+  Malformed lifecycles are refused there.
 
 ### Input-scoring headroom
 

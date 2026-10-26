@@ -189,8 +189,7 @@ class ServingFingerprint(TypedDict):
     endpoint (:data:`STATED_SERVING_KEYS`), as given. ``group`` is the key of
     the serving group the orchestration layer launched that engine for.
     ``lifecycles`` maps each launched model that declares one to its
-    ``lifecycle`` (``from`` / ``until`` a barrier stage): when its engine
-    started and stopped, never what it was asked.
+    ``lifecycle`` (``from`` / ``until`` a barrier stage).
     """
 
     engine: str
@@ -368,10 +367,9 @@ While the run is in flight the entry has neither ``ended`` nor ``reran``.
 A run that saves its ``report.json`` writes both: ``ended`` (ISO 8601 UTC, like
 ``at``) and ``reran``, the stages it executed, ``[]`` for a fast resume.
 ``reported: true`` says the run wrote ``report.json``, which a fast resume does
-not. ``stopped_after`` names the barrier stage a run chose to end at
-(``runner_config.stop_after``); such a run writes ``reran`` and, unless it
-stopped after ``report``, no ``report.json``. A resume continues from the
-next stage. ``resume`` is :class:`ResumeOutcomes`. A run
+not. ``stopped_after`` is the run's ``stop_after``; such a run writes
+``reran`` and, unless it stopped after ``report``, no ``report.json``.
+``resume`` is :class:`ResumeOutcomes`. A run
 stopped by an interrupt writes ``ended`` and ``interrupted: true``, and no
 ``reran``. An entry with no ``ended`` is a run that is still going, or was
 killed or failed before it could say so. ``config`` is the config diff a resume

@@ -55,6 +55,7 @@ from sieval.cli.lifecycle import (
     root_model,
     runs_before_stop,
     session_stop_after,
+    visible_devices,
 )
 from sieval.cli.output import (
     CommandResult,
@@ -561,10 +562,17 @@ def _staged_plan(
     check_iteration_barriers(config, barriers)
     stop = session_stop_after(config)
     phases = plan_phases(tuple(barriers), lifecycles, prepared_launches, stop)
+    # `nvidia-smi` lists every GPU on the node; an inherited
+    # CUDA_VISIBLE_DEVICES is all this run may use.
+    visible = visible_devices()
+    gpu_count = gpu.count if gpu is not None else None
+    if gpu_count is not None and visible is not None:
+        gpu_count = min(gpu_count, len(visible))
     placements = place(
         phases,
         {name: plan.total_gpus for name, (plan, _) in prepared_launches.items()},
-        gpu.count if gpu is not None else None,
+        gpu_count,
+        {name: len(commands) for name, (_, commands) in prepared_launches.items()},
     )
     roles = {
         task: {root_model(config, name) for name in names}
@@ -578,10 +586,14 @@ def _placed_groups(
 ) -> list[_GroupLaunch]:
     """*groups* with each engine on its placement's devices and port, and each
     group launching the roots its tasks name as a role too."""
+    visible = visible_devices()
     out = []
     for group in groups:
         prepared = {
-            name: (plan, placed_commands(commands, staged.placements.get(name)))
+            name: (
+                plan,
+                placed_commands(commands, staged.placements.get(name), visible),
+            )
             for name, (plan, commands) in group.prepared.items()
         }
         roles = set().union(

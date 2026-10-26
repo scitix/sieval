@@ -1,21 +1,16 @@
 """Model lifecycles: when each engine ``sieval run`` launches starts and stops.
 
-A root model that ``sieval run`` launches may name a ``lifecycle``: ``until: S``
-stops its engine at the barrier on stage ``S`` and frees its GPUs; ``from: S``
-starts it only after that barrier. Lifecycle boundaries and
-``runner_config.stop_after`` are the session's barriers
+``until: S`` stops an engine at the barrier on ``S``; ``from: S`` starts it
+there. Lifecycle boundaries and ``stop_after`` are the session's barriers
 (:mod:`sieval.core.runners.barriers`); the stretches between them are phases.
-
-Everything here is decided before any engine starts: which barriers a config
-implies and why, which models are alive in each phase, whether those that are
-alive together fit on the run's GPUs, and the devices and port each gets.
-Lifecycles only change when engines start and stop, so they enter no request
-identity; ``runs[].serving`` records them.
+Everything here is planned before any engine starts: the barriers, who is alive
+in each phase, whether they fit, and each engine's devices and port.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
 import dataclasses
+import os
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
@@ -29,8 +24,8 @@ from sieval.core.runners.barriers import (
 )
 from sieval.infer.backends.translator import BackendCommand
 
-#: Spacing between the ports of engines alive at the same time. A plan with
-#: several roles already takes consecutive ports from its base.
+#: Least spacing between the base ports of engines alive at the same time; a
+#: plan with more commands than this takes one port per command.
 PORT_STEP = 10
 
 _LIFECYCLE_KEYS = frozenset({"from", "until"})
@@ -260,11 +255,19 @@ def _alive(life: Lifecycle, barriers: Sequence[str], phase: int) -> bool:
     return first <= phase <= last
 
 
+def visible_devices(environ: Mapping[str, str] | None = None) -> list[str] | None:
+    """The inherited ``CUDA_VISIBLE_DEVICES`` entries; ``None`` when unset."""
+    raw = (os.environ if environ is None else environ).get("CUDA_VISIBLE_DEVICES")
+    if raw is None:
+        return None
+    return [entry.strip() for entry in raw.split(",") if entry.strip()]
+
+
 @dataclass(frozen=True)
 class Placement:
-    """Where one engine runs: its GPUs (``None`` when it is never alive with
-    another engine, so it takes every GPU as it does today) and its port
-    offset from the backend's default."""
+    """Where one engine runs: its GPUs, as indices into the run's visible GPUs
+    (``None`` when it is never alive with another engine, so it takes every
+    GPU), and its port offset from the backend's default."""
 
     gpus: int
     devices: tuple[int, ...] | None
@@ -275,9 +278,11 @@ def place(
     phases: Sequence[Phase],
     gpus: Mapping[str, int],
     gpu_count: int | None,
+    ports: Mapping[str, int] | None = None,
 ) -> dict[str, Placement]:
-    """Disjoint devices and distinct ports for models alive at the same time.
+    """Disjoint devices and port ranges for models alive at the same time.
 
+    *ports* is how many consecutive ports each model takes (1 when absent).
     Raises :class:`LifecycleFitError` when the models of a phase need more GPUs
     than the run has; with *gpu_count* unknown, nothing is checked and no
     devices are assigned.
@@ -306,7 +311,11 @@ def place(
     devices: dict[str, tuple[int, ...]] = {}
     if gpu_count is not None and together:
         devices = _assign(phases, together, gpus, gpu_count)
-    ordered = sorted(together)
+    offsets: dict[str, int] = {}
+    next_offset = 0
+    for name in sorted(together):
+        offsets[name] = next_offset
+        next_offset += max(PORT_STEP, (ports or {}).get(name, 1))
     out: dict[str, Placement] = {}
     for phase in phases:
         for name in phase.models:
@@ -315,9 +324,7 @@ def place(
             out[name] = Placement(
                 gpus=gpus.get(name, 0),
                 devices=devices.get(name),
-                port_offset=(
-                    PORT_STEP * ordered.index(name) if name in together else 0
-                ),
+                port_offset=offsets.get(name, 0),
             )
     return out
 
@@ -355,10 +362,13 @@ def _assign(
 
 
 def placed_commands(
-    commands: Sequence[BackendCommand], placement: Placement | None
+    commands: Sequence[BackendCommand],
+    placement: Placement | None,
+    visible: Sequence[str] | None = None,
 ) -> list[BackendCommand]:
     """*commands* on their placement's devices and port; unchanged when the
-    model takes every GPU on the default port."""
+    model takes every GPU on the default port. *visible* is the inherited
+    ``CUDA_VISIBLE_DEVICES`` the device indices select from."""
     if placement is None or (placement.devices is None and not placement.port_offset):
         return list(commands)
     out = []
@@ -374,9 +384,10 @@ def placed_commands(
                 health = health.replace(f":{old}/", f":{new}/")
         env = dict(command.env)
         if placement.devices is not None:
-            env.setdefault(
-                "CUDA_VISIBLE_DEVICES", ",".join(map(str, placement.devices))
-            )
+            devices = [
+                visible[i] if visible is not None else str(i) for i in placement.devices
+            ]
+            env.setdefault("CUDA_VISIBLE_DEVICES", ",".join(devices))
         out.append(
             dataclasses.replace(command, cli_args=args, env=env, health_url=health)
         )
@@ -443,4 +454,5 @@ __all__ = [
     "runs_before_stop",
     "session_stop_after",
     "starts_at",
+    "visible_devices",
 ]

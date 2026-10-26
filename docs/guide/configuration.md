@@ -255,38 +255,30 @@ preprocess -> infer -> postprocess -> feedback -> report
 
 ### Stage barriers and `stop_after`
 
-Samples stream: each moves to its next stage as soon as its last one returns. A
-**barrier** on a stage holds every sample of every task in the session at the
-start of the next stage until every sample has finished that stage or failed.
-YAML has no barrier key; the barriers are the union of `stop_after` and every
-model lifecycle boundary ([Model lifecycles](infer.md#model-lifecycles)), and
-`--dry-run` lists each under `barriers` with what implied it.
+Samples stream through the stages independently. A **barrier** on a stage
+holds every sample of every task until all have finished that stage or failed.
+There is no barrier key: the barriers are `stop_after` plus every model
+lifecycle boundary ([Model lifecycles](infer.md#model-lifecycles)), and
+`--dry-run` lists them under `barriers`.
 
 ```yaml
 runner_config:
   stop_after: inference   # preprocess, inference, postprocess, feedback or report
 ```
 
-- `stop_after: S` ends the run once every sample has finished `S`. Nothing
-  after `S` runs, no `report.json` is written (unless `S` is `report`), and
-  `meta.json` `runs[]` records `stopped_after: S`. `--resume` continues from
-  the stage after `S`; a stop and its resume end with the same stage
-  identities and `requests.digest` as one run without the stop.
-- One `stop_after` per run, in the top-level `runner_config`. Several stops are
-  several runs, each its own `runs[]` entry.
-- Barriers are scheduling: in no identity, and they never refuse a resume.
-- A task that can iterate (`max_iterations` above 1) returns samples from
-  `feedback` to `inference`, so a barrier on `inference` or `postprocess` is
-  refused before anything runs, naming it. With `max_iterations` unset, a
-  sample that asks to iterate past such a barrier fails with
-  `barrier_iteration`, retriable by a resume without it.
-- `stop_after` needs `record_each_stage: true`, so the stages before the stop
-  are on disk.
+- `stop_after: S` ends the run after `S`: no later stage runs, no
+  `report.json` (unless `S` is `report`), and `runs[]` records
+  `stopped_after: S`. `--resume` continues from the next stage, with the same
+  identities as an uninterrupted run. Needs `record_each_stage: true`.
+- One `stop_after` per run, session-wide. Several stops are several runs.
+- Barriers are scheduling only: in no identity, never refuse a resume.
+- A barrier on `inference` or `postprocess` is refused for a task with
+  `max_iterations` above 1. With it unset, a sample asking to iterate past
+  one fails `barrier_iteration`, retriable without the barrier.
 
-From Python, `MultiTaskRunner(stop_after=..., barriers=[...], on_barrier=hook)`
-takes the same stop, any extra barriers (also `add_barrier(stage)`), and an
-async `hook(stage)` awaited once at each barrier before any sample crosses it;
-`effective_barriers()` lists them. A hook that raises stops every task.
+From Python: `MultiTaskRunner(stop_after=..., barriers=[...], on_barrier=hook)`.
+The async `hook(stage)` runs once per barrier before any sample crosses it; if
+it raises, every task stops.
 
 ### Python packages a task needs
 

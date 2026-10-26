@@ -75,7 +75,7 @@ Bump `RESULT_SCHEMA_VERSION` (`sieval/core/tasks/run_meta.py`) in the PR that ma
 
 ## Architecture Guardrails
 
-- Preserve the async staged pipeline design: no synchronous rewrite. A session-wide stage barrier exists only when the config asks for one (`runner_config.stop_after`, a model `lifecycle`); without one, samples stream.
+- Preserve the async staged pipeline design: no synchronous rewrite; stage barriers only when the config asks for one (`stop_after`, a model `lifecycle`).
 - Keep resumability semantics intact (`resume`, per-sample failure handling, bounded iterations).
 - Persistence is append-only and sharded; disk state is source of truth. Do not replace with monolithic or memory-only storage.
 - Respect record-mode behavior: `record_each_stage=True` is the fail-safe default and must remain resume-compatible.
