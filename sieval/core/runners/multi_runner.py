@@ -1,5 +1,9 @@
-"""Parallel orchestrator for running multiple TaskRunners with shared concurrency."""
+"""Parallel orchestrator for running multiple TaskRunners with shared concurrency.
 
+AI-Generated Code - Claude Opus 5.5 (Anthropic)
+"""
+
+from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, Self
@@ -13,6 +17,7 @@ from sieval.core.tasks.run_meta import warn_unmatched_judge_refs
 from sieval.core.tasks.task import Task
 from sieval.core.types import JSONValue
 
+from .barriers import BarrierHook, StageBarriers, check_barrier_stage, stage_index
 from .engine_loss import EngineGuard
 from .runner import TaskRunner, TaskRunnerConfig
 from .stage_resume import LegacyStageMatch, RunPlan
@@ -39,6 +44,10 @@ class MultiTaskRunner:
         ) = None,
         deterministic: bool = False,
         effective_config: str | None = None,
+        *,
+        stop_after: str | None = None,
+        barriers: Iterable[str] = (),
+        on_barrier: BarrierHook | None = None,
     ):
         """Initialize the multi-task runner.
 
@@ -51,16 +60,79 @@ class MultiTaskRunner:
         *deterministic* is session-wide metadata that every child
         :class:`TaskRunner` inherits (recorded in ``meta.json``). Engine-level
         determinism itself is enforced by the backend translators.
+
+        *stop_after* ends the run once every sample of every task has finished
+        that stage; *barriers* hold every sample at the start of the stage
+        after each named one until all have finished it, and *on_barrier* is
+        awaited once at each barrier before any sample crosses it (see
+        :mod:`sieval.core.runners.barriers`). A task config's
+        ``stop_after`` must agree with the session's.
         """
         self._base_result_dir = result_dir
         self._global_limit = concurrency_limit
         self._stage_limits_cfg = concurrency_limits
         self._deterministic = deterministic
         self._effective_config = effective_config
+        self._stop_after = (
+            check_barrier_stage(stop_after, "stop_after")
+            if stop_after is not None
+            else None
+        )
+        self._barrier_stages: set[str] = {
+            check_barrier_stage(stage, "barrier") for stage in barriers
+        }
+        self._on_barrier = on_barrier
         self._runners: list[TaskRunner] = []
         # Track registered names and directories to prevent collisions
         self._task_names: set[str] = set()
         self._output_dirs: set[Path] = set()
+
+    def add_barrier(self, stage: str) -> Self:
+        """Hold every sample at the start of the stage after *stage* until every
+        sample of every task has finished *stage* or failed."""
+        self._barrier_stages.add(check_barrier_stage(stage, "barrier"))
+        return self
+
+    def on_barrier(self, hook: BarrierHook | None) -> Self:
+        """Await *hook* with the stage's name once at each barrier, before any
+        sample crosses it. A hook that raises stops every task."""
+        self._on_barrier = hook
+        return self
+
+    @property
+    def stop_after(self) -> str | None:
+        return self._stop_after
+
+    def effective_barriers(self) -> tuple[str, ...]:
+        """Every barrier this session waits at, ``stop_after`` included, in
+        pipeline order."""
+        stages = set(self._barrier_stages)
+        if self._stop_after is not None:
+            stages.add(self._stop_after)
+        return tuple(sorted(stages, key=stage_index))
+
+    def _session_barriers(self) -> StageBarriers | None:
+        stages = self.effective_barriers()
+        if not stages:
+            return None
+        return StageBarriers(
+            stages,
+            stop_after=self._stop_after,
+            on_barrier=self._on_barrier,
+            members=len(self._runners),
+        )
+
+    def _apply_barriers(self, barriers: StageBarriers | None) -> None:
+        """Give every runner the session's barriers; refuses, before any task
+        runs, one a task cannot pass."""
+        errors = []
+        for runner in self._runners:
+            try:
+                runner.set_barriers(barriers)
+            except ValueError as exc:
+                errors.append(str(exc))
+        if errors:
+            raise ValueError("; ".join(errors))
 
     def add_task(
         self,
@@ -70,6 +142,8 @@ class MultiTaskRunner:
         inference_recipe: dict[str, JSONValue] | None = None,
         context_limit: int | None = None,
         weights: str | None = None,
+        judge_weights: dict[str, str] | None = None,
+        lifecycles: dict[str, dict[str, str]] | None = None,
         stated_serving: dict[str, JSONValue] | None = None,
         resume_config_diff: list[str] | None = None,
         legacy_match: LegacyStageMatch | None = None,
@@ -79,9 +153,9 @@ class MultiTaskRunner:
     ) -> Self:
         """Register a task for parallel execution.
 
-        *inference_recipe*, *context_limit*, *weights*, *stated_serving*,
-        *serving_group*, *resume_config_diff*, *legacy_match*,
-        *unserved_candidate* and *engine_guard* pass through to
+        *inference_recipe*, *context_limit*, *weights*, *judge_weights*,
+        *lifecycles*, *stated_serving*, *serving_group*, *resume_config_diff*,
+        *legacy_match*, *unserved_candidate* and *engine_guard* pass through to
         :class:`TaskRunner`.
 
         Auto-sets ``result_dir`` to ``<base_result_dir>/<task.name>`` when
@@ -97,6 +171,17 @@ class MultiTaskRunner:
             )
 
         cfg = config or TaskRunnerConfig()
+        if cfg.stop_after is not None:
+            if self._stop_after is None and not self._runners:
+                self._stop_after = cfg.stop_after
+            elif cfg.stop_after != self._stop_after:
+                raise ValueError(
+                    f"Task '{task.name}' stops after {cfg.stop_after!r}, but the "
+                    f"session stops after {self._stop_after!r}: stop_after is "
+                    "session-wide"
+                )
+        elif self._stop_after is not None:
+            cfg = replace(cfg, stop_after=self._stop_after)
         if self._base_result_dir and cfg.result_dir is None:
             cfg = replace(cfg, result_dir=str(Path(self._base_result_dir) / task.name))
         if self._effective_config and cfg.effective_config is None:
@@ -112,6 +197,8 @@ class MultiTaskRunner:
             inference_recipe=inference_recipe,
             context_limit=context_limit,
             weights=weights,
+            judge_weights=judge_weights,
+            lifecycles=lifecycles,
             stated_serving=stated_serving,
             resume_config_diff=resume_config_diff,
             legacy_match=legacy_match,
@@ -138,8 +225,10 @@ class MultiTaskRunner:
         would raise before its first sample. Runners that planned are not run.
         """
         plans: dict[str, RunPlan | Exception] = {}
+        barriers = self._session_barriers()
         for runner in self._runners:
             try:
+                runner.set_barriers(barriers)
                 plans[runner._task.name] = await runner.plan_run()
             except Exception as exc:
                 plans[runner._task.name] = exc
@@ -187,7 +276,11 @@ class MultiTaskRunner:
                 shared_stage_limits=norm_stage_limits,
             )
 
-        # 3. Run in Parallel
+        # 3. Barriers, refused before any task runs if one cannot pass them.
+        barriers = self._session_barriers()
+        self._apply_barriers(barriers)
+
+        # 4. Run in Parallel
         results: dict[str, Any] = {}
         failures: dict[str, Exception] = {}
 

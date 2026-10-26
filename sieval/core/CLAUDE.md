@@ -4,7 +4,7 @@ SiEval is a **stateful, persistent, async, staged execution engine**.
 
 ## Execution Model
 
-* Samples move **stage-by-stage** (no global stage barriers); stages may run concurrently across samples
+* Samples move **stage-by-stage**; stages run concurrently across samples. A session barrier (`runners/barriers.py`) holds them only when the config asks for one
 * Iterations bounded by `max_iterations` and persistable
 * Record unit = sample × iteration × stage; disk state is source of truth
 * Storage: **append-only, sharded, async-flushed** — shard records are authoritative; `.idx` is their index, checked against shard length on load. No other per-sample state file
@@ -12,7 +12,7 @@ SiEval is a **stateful, persistent, async, staged execution engine**.
 
 ## Hard Prohibitions
 
-* Do NOT convert to synchronous loop, add global stage barriers, or remove iteration semantics
+* Do NOT convert to synchronous loop, make barriers the default, or remove iteration semantics
 * Do NOT aggregate all results in memory or replace shard storage with monolithic files
 * Do NOT break resume-from-checkpoint behavior
 * Do NOT import from `sieval.infer`, `sieval.tasks`, `sieval.datasets`, or `sieval.cli`

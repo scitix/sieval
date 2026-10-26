@@ -30,6 +30,13 @@ from sieval.core.models.overflow import (
     overflow_scope,
 )
 from sieval.core.models.request_log import StageScope, stage_scope, timeout_phase
+from sieval.core.runners.barriers import (
+    ACTION_STAGE,
+    ITERATION_BARRIERS,
+    StageBarriers,
+    check_barrier_stage,
+    finished,
+)
 from sieval.core.tasks.anomaly import TaskAnomalyDetector, detect_context_overflow
 from sieval.core.tasks.concurrency import (
     compute_stream_buffer_capacity,
@@ -315,6 +322,11 @@ class TaskRunnerConfig:
     # None = unbounded iterations. Use only when task.feedback() is guaranteed
     # to eventually return finalize=True; otherwise execution will loop forever.
     max_iterations: int | None = None
+    # End the run once every sample of every task in the session has finished
+    # this stage (see `sieval.core.runners.barriers`). Session-wide: set it on
+    # the session's `runner_config`, not per task. Scheduling only: in no
+    # identity, never refuses a resume.
+    stop_after: str | None = None
     max_retries: int | None = None
 
     show_progress: bool = True
@@ -331,6 +343,20 @@ class TaskRunnerConfig:
 
     def __post_init__(self) -> None:
         self.resume = as_resume(self.resume)
+        if self.stop_after is not None:
+            check_barrier_stage(self.stop_after, "runner_config.stop_after")
+            if not self.record_each_stage:
+                # Only terminal samples and iteration boundaries are recorded,
+                # so a resume would rerun every stage the stop kept.
+                raise ValueError(
+                    "runner_config.stop_after needs record_each_stage: true, "
+                    "so the stages before the stop are on disk to resume from"
+                )
+
+
+#: Why a sample failed that asked to iterate under a barrier on ``inference``
+#: or ``postprocess``. Retriable, so a resume without that barrier iterates it.
+BARRIER_ITERATION_REASON = "barrier_iteration"
 
 
 def _read_run_meta(root_dir: Path) -> dict | None:
@@ -497,6 +523,8 @@ class TaskRunner:
         inference_recipe: dict[str, JSONValue] | None = None,
         context_limit: int | None = None,
         weights: str | None = None,
+        judge_weights: dict[str, str] | None = None,
+        lifecycles: dict[str, dict[str, str]] | None = None,
         stated_serving: dict[str, JSONValue] | None = None,
         resume_config_diff: list[str] | None = None,
         legacy_match: LegacyStageMatch | None = None,
@@ -517,7 +545,10 @@ class TaskRunner:
         a plan found nothing to infer: a run that would infer is refused.
         *serving_group* is the key of the serving group whose engine serves
         it, recorded in ``runs[].serving``. *engine_guard* fails a stage
-        that needs a lost engine (:mod:`.engine_loss`).
+        that needs a lost engine (:mod:`.engine_loss`). *judge_weights* names,
+        by judge role, the weights a launched judge serves, compared instead of
+        its name. *lifecycles* are the launched models' lifecycles, recorded in
+        ``runs[].serving``.
         """
         # A malformed judge reference would leave every grader identity
         # unknown; refuse it before any work.
@@ -527,6 +558,8 @@ class TaskRunner:
         self._inference_recipe = inference_recipe
         self._context_limit = context_limit
         self._weights = weights
+        self._judge_weights = dict(judge_weights or {})
+        self._lifecycles = lifecycles
         self._stated_serving = stated_serving
         self._resume_config_diff = list(resume_config_diff or [])
         self._legacy_match = LegacyStageMatch(**(legacy_match or {}))
@@ -649,6 +682,13 @@ class TaskRunner:
         self._shared_stage_limiters: dict[str, anyio.CapacityLimiter] = {}
         self._progress_position: int = 0
 
+        # Session barriers (`set_barriers`); samples held at the stop, and the
+        # samples that have finished each barrier stage, by stage.
+        self._barriers: StageBarriers | None = None
+        self._parked: set[str | int] = set()
+        self._finished_stage: dict[str, set[str | int]] = {}
+        self._stopped_after: str | None = None
+
         # Opened once the run is recorded (`_open_request_log`).
         self._request_log: TaskRequestLog | None = None
         self._run_start = time.monotonic()
@@ -691,6 +731,70 @@ class TaskRunner:
             effective_global,
             effective_stages,
         )
+
+    def set_barriers(self, barriers: StageBarriers | None) -> None:
+        """Take part in the session's stage barriers; ``None`` streams freely.
+
+        Refuses, before anything runs, a barrier on ``inference`` or
+        ``postprocess`` for a task that can iterate: its samples go back from
+        ``feedback`` to ``inference``, past a barrier already crossed.
+        """
+        if barriers:
+            blocked = sorted(
+                ITERATION_BARRIERS & set(barriers.stages),
+                key=barriers.stages.index,
+            )
+            if blocked and self.iterates:
+                raise ValueError(
+                    f"Task '{self._task.name}' can iterate (max_iterations "
+                    f"{self._max_iterations}): its samples return from feedback "
+                    f"to inference, so it cannot pass a barrier on "
+                    f"{', '.join(blocked)}; set max_iterations: 1 or drop the "
+                    "barrier"
+                )
+        self._barriers = barriers or None
+
+    @property
+    def iterates(self) -> bool:
+        """Whether ``max_iterations`` lets a sample go round more than once.
+
+        An unset ``max_iterations`` leaves it to the task, and nearly every task
+        finalizes on the first pass; under such a barrier a sample that asks to
+        iterate fails instead (:data:`BARRIER_ITERATION_REASON`).
+        """
+        return self._max_iterations is not None and self._max_iterations > 1
+
+    def _iteration_blocked(self) -> bool:
+        """Whether a barrier this session crossed lies inside an iteration."""
+        return self._barriers is not None and bool(
+            ITERATION_BARRIERS & set(self._barriers.stages)
+        )
+
+    @property
+    def stopped_after(self) -> str | None:
+        """The barrier stage this run stopped after, once it has."""
+        return self._stopped_after
+
+    @property
+    def barrier_name(self) -> str:
+        return self._task.name
+
+    def unfinished(self, stage: str) -> int:
+        """How many of this run's samples have not finished *stage* or failed."""
+        return self._total_samples - len(self._finished_stage.get(stage, ()))
+
+    def _note_finished(self, ctx: TaskContext) -> None:
+        for stage, done in self._finished_stage.items():
+            if ctx.sample_id not in done and finished(ctx, stage):
+                done.add(ctx.sample_id)
+
+    async def _join_barriers(self) -> None:
+        if self._barriers is None:
+            return
+        self._finished_stage = {stage: set() for stage in self._barriers.stages}
+        for ctx in self._contexts.values():
+            self._note_finished(ctx)
+        await self._barriers.join(self)
 
     @property
     def root_dir(self) -> Path:
@@ -751,6 +855,7 @@ class TaskRunner:
                 i for i in range(dataset_size) if i not in self._contexts
             ]
             self._total_samples = max(len(self._contexts), dataset_size)
+            await self._join_barriers()
 
             # 4. Prepare Runtime State
             # For exit check
@@ -821,6 +926,8 @@ class TaskRunner:
             # 5. Check for Early Exit
             total_count = self._total_samples
             if total_count == 0 or (finals_count + fails_count == total_count):
+                if await self._stops_before_report():
+                    return await self._stop()
                 # Hydrate results for report generation
                 await self._loader.hydrate(
                     self._contexts,
@@ -885,7 +992,9 @@ class TaskRunner:
                     except Exception as exc:
                         logger.error("Flush after the run stopped failed: {}", exc)
 
-            # 8. Finalize
+            # 8. Finalize, unless the session stops before `report`.
+            if self._parked or await self._stops_before_report():
+                return await self._stop()
             return await self._finalize()
 
         except (KeyboardInterrupt, anyio.get_cancelled_exc_class()):
@@ -912,8 +1021,40 @@ class TaskRunner:
             # A run that raised; a no-op after `_finalize`.
             with anyio.CancelScope(shield=True):
                 await self._flush_request_log()
+                # Holds no barrier back from here on, however it ended.
+                if self._barriers is not None:
+                    await self._barriers.leave(self)
             # X. Lifecycle Shutdown
             await self._task.shutdown()
+
+    async def _stops_before_report(self) -> bool:
+        """Wait at the barriers before ``report``; whether the run stops there."""
+        if self._barriers is None:
+            return False
+        return await self._barriers.before("report")
+
+    async def _stop(self) -> dict[str, str]:
+        """End a run at its ``stop_after`` barrier: every sample has finished
+        that stage or failed, nothing after it ran, and no ``report.json``.
+
+        A resume plans each sample from its recorded stage, so it continues
+        from the next stage; ``runs[].stopped_after`` records the stop.
+        """
+        assert self._barriers is not None and self._barriers.stop_after is not None
+        stage = self._barriers.stop_after
+        self._stopped_after = stage
+        logger.info(
+            "{}: stopped after {} ({} sample(s) held, {} terminal)",
+            self._task.name,
+            stage,
+            len(self._parked),
+            sum(1 for c in self._contexts.values() if c.is_terminal()),
+        )
+        await self._flush_request_log()
+        await self._end_run(reported=False, stopped_after=stage)
+        if self._progress:
+            await self._progress.aclose()
+        return {"stopped_after": stage}
 
     async def _begin_run(self, resumed: bool) -> list[str | int]:
         """Plan a resume, then record the run in ``meta.json``.
@@ -1228,6 +1369,9 @@ class TaskRunner:
                 # Update local state
                 self._contexts[ctx.sample_id] = ctx
                 self._hydrated_ids.add(ctx.sample_id)
+                if self._barriers is not None:
+                    self._note_finished(ctx)
+                    await self._barriers.update()
 
                 terminal = ctx.is_terminal()
                 if terminal:
@@ -1283,7 +1427,19 @@ class TaskRunner:
                 # Check global completion
                 if terminal:
                     completed_tasks += 1
-                    if completed_tasks >= total_tasks:
+                    if completed_tasks + len(self._parked) >= total_tasks:
+                        break
+                    continue
+
+                # Held at the stop: the run ends without starting its stage.
+                action = ctx.next_action()
+                if (
+                    self._barriers is not None
+                    and action is not None
+                    and self._barriers.stops_before(ACTION_STAGE[action.value])
+                ):
+                    self._parked.add(ctx.sample_id)
+                    if completed_tasks + len(self._parked) >= total_tasks:
                         break
                     continue
 
@@ -1302,6 +1458,9 @@ class TaskRunner:
         action = ctx.next_action()
         if not action:
             return
+        if self._barriers is not None:
+            # Held until every sample of the session finished the stage before.
+            await self._barriers.before_action(action)
 
         shared_limiter = get_limiter_for(
             action, self._shared_global_limiter, self._shared_stage_limiters
@@ -1510,6 +1669,14 @@ class TaskRunner:
                         None,
                         "iteration_limit",
                         f"Max iterations {self._max_iterations} reached",
+                    )
+                if self._iteration_blocked():
+                    # Retriable: a later run without the barrier iterates it.
+                    return next_ctx.to_failed(
+                        TaskAction.FEEDBACK,
+                        BARRIER_ITERATION_REASON,
+                        "feedback asked for another iteration, which would "
+                        "cross a session barrier on inference or postprocess",
                     )
                 return next_ctx.iterate()
             return ctx
@@ -1803,7 +1970,16 @@ class TaskRunner:
                     (), rules_hash=rules_hash, resume=self._resume_plan
                 )
             else:
-                await self._end_run(reported=reported, rules_hash=rules_hash)
+                await self._end_run(
+                    reported=reported,
+                    rules_hash=rules_hash,
+                    stopped_after=(
+                        "report"
+                        if self._barriers is not None
+                        and self._barriers.stop_after == "report"
+                        else None
+                    ),
+                )
         await self._finish_progress(finals, fails, anomalies)
         if refusal is not None:
             raise refusal
@@ -1910,7 +2086,13 @@ class TaskRunner:
         if not isinstance(runs, list) or not runs:
             return True
         last = runs[-1]
-        return isinstance(last, dict) and "reran" in last
+        # A run that stopped before `report` left samples short of it, so an
+        # older `report.json` beside them describes none of its work.
+        return (
+            isinstance(last, dict)
+            and "reran" in last
+            and last.get("stopped_after") in (None, "report")
+        )
 
     # ------------------------------------------------------------------
     # Per-stage resume
@@ -2704,6 +2886,7 @@ class TaskRunner:
                 self._inference_recipe,
                 self._stated_serving,
                 group=self._serving_group,
+                lifecycles=self._lifecycles,
             )
         except (TypeError, ValueError, AttributeError) as exc:
             logger.warning("Serving fingerprint unavailable: {}", exc)
@@ -2721,6 +2904,7 @@ class TaskRunner:
                 self._task.judge_models(),
                 self._task.judge_prompts(),
                 versions=self._judge_versions,
+                weights=self._judge_weights,
             )
             task_cls = type(self._task)
             code = self._stage_code_once([j["role"] for j in judges])
@@ -2810,7 +2994,9 @@ class TaskRunner:
 
     def _current_judges(self) -> list[JudgeIdentity]:
         try:
-            return judge_identities(self._task.judge_models(), {})
+            return judge_identities(
+                self._task.judge_models(), {}, weights=self._judge_weights
+            )
         except (TypeError, ValueError, AttributeError) as exc:
             logger.warning("Judge models unavailable: {}", exc)
             return []
@@ -2919,7 +3105,13 @@ class TaskRunner:
             return ctx.error_action not in (TaskAction.PREPROCESS, TaskAction.INFER)
         return ctx.stage not in (TaskStage.INITIAL, TaskStage.PREPROCESSED)
 
-    async def _end_run(self, *, reported: bool, rules_hash: str | None = None) -> None:
+    async def _end_run(
+        self,
+        *,
+        reported: bool,
+        rules_hash: str | None = None,
+        stopped_after: str | None = None,
+    ) -> None:
         """Finish this run's ``runs[]`` entry once its report is settled.
 
         *reported* says ``report.json`` was written; ``report()`` returning
@@ -2963,6 +3155,7 @@ class TaskRunner:
             rules_hash=rules_hash,
             requests=self._request_counts(),
             resume=self._resume_plan,
+            stopped_after=stopped_after,
         )
 
     def _resolve_result_dir(

@@ -317,6 +317,7 @@ class TestPrelaunchSequencing:
                 "plan": plan_dicts["model_a"],
                 "launch": [],
                 "needs_inference": False,
+                "lifecycle": None,
             }
         }
         assert (result["tasks"], result["needs_inference"]) == ({}, False)
@@ -2132,6 +2133,96 @@ class TestServingGroups:
         assert recipe["context_length"] == 32768
 
     @pytest.mark.anyio
+    async def test_a_judge_starting_at_a_barrier_spans_the_groups_and_starts_once(
+        self, tmp_path: Path
+    ) -> None:
+        # Each group answers with its own subject engine up to the barrier;
+        # the judge then starts once and grades every group's tasks.
+        from sieval.cli.run import _run_all
+
+        config_path = self._config(tmp_path)
+        cfg = yaml.safe_load(config_path.read_text())
+        cfg["models"]["m"]["lifecycle"] = {"until": "inference"}
+        cfg["models"]["judge"] = {
+            "path": "/tmp/judge",
+            "lifecycle": {"from": "inference"},
+        }
+        for task in cfg["tasks"].values():
+            task["model"] = "m"
+            task["class"] = "tests.integration.test_staged_run.JudgedTask"
+            task["args"] = {"grader": "judge"}
+        config_path.write_text(yaml.safe_dump(cfg))
+        events: list[str] = []
+
+        async def launch(name: str, *_: object, **__: object):
+            events.append(f"launch {name}")
+            return [_fake_handle()], None
+
+        async def cleanup(name: str, *_: object, **__: object) -> None:
+            events.append(f"stop {name}")
+
+        async def session(*_: object, **kwargs: object) -> dict[str, object]:
+            serving = cast(SessionServing, kwargs["serving"])
+            tasks = sorted(serving.tasks or ())
+            stop = serving.stop_after
+            events.append(f"session {tasks} stop={stop} resume={kwargs['resume']}")
+            if serving.on_barrier is not None:
+                await serving.on_barrier("inference")
+            return dict.fromkeys(tasks, stop or "ok")
+
+        prepare = MagicMock()
+        prepare.return_value.deployment_plans = {}
+        with (
+            patch("sieval.cli.infer.lifecycle.HANDLE_DIR", tmp_path / "handles"),
+            patch(
+                "sieval.cli.run.auto_resolve_plan",
+                new=AsyncMock(
+                    return_value=ResolveResult(plan=_sglang_plan(32768), steps=())
+                ),
+            ),
+            patch("sieval.cli.run.get_translator", return_value=self._translator()),
+            patch("sieval.cli.run.launch_model", new=AsyncMock(side_effect=launch)),
+            patch("sieval.cli.run.cleanup_model", new=AsyncMock(side_effect=cleanup)),
+            patch("sieval.cli.run.check_launch_gpu", new=AsyncMock()),
+            patch("sieval.cli.run._plan_gpu", new=AsyncMock(return_value=None)),
+            patch("sieval.cli.run._plan_gpu_text", new=AsyncMock(return_value=None)),
+            patch(
+                "sieval.cli.validation.prepare_prelaunch_reconciliation", new=prepare
+            ),
+            patch(
+                "sieval.cli.session.arun_session", new=AsyncMock(side_effect=session)
+            ),
+            # The resume after the barrier: every task has samples to grade.
+            patch(
+                "sieval.cli.run._plan_tasks",
+                new=AsyncMock(
+                    return_value=(
+                        {"short": "m", "long": "m"},
+                        {
+                            task: {"to_infer": 0, "to_grade": 1}
+                            for task in ("short", "long")
+                        },
+                    )
+                ),
+            ),
+        ):
+            reports = await _run_all(config_path)
+
+        assert events == [
+            "launch m",
+            "session ['short'] stop=inference resume=None",
+            "stop m",
+            "launch m@100000",
+            "session ['long'] stop=inference resume=None",
+            "stop m@100000",
+            "session ['short'] stop=None resume=True",
+            "launch judge",
+            "session ['long'] stop=None resume=True",
+            "stop judge",
+        ]
+        assert reports == {"short": "ok", "long": "ok"}
+
+    @pytest.mark.anyio
     async def test_a_root_with_every_task_scaled_starts_no_default_engine(
         self, tmp_path: Path
     ) -> None:
@@ -2456,6 +2547,65 @@ class TestSessionWatching:
             session, {"m": [_fake_handle()]}, loss, deployer=deployer, reports={}
         )
         assert set(lost) == {"m"}
+
+    @pytest.mark.anyio
+    async def test_an_engine_started_mid_session_is_watched(self):
+        # A judge that starts at a barrier is lost after it started.
+        from sieval.cli.run import _session_watching, _Watches
+        from sieval.core.runners import EngineLoss
+
+        loss = EngineLoss()
+        deployer = MagicMock()
+        deployer.watch = AsyncMock(return_value=self._exit())
+        watches = _Watches(loss, deployer)
+
+        async def session():
+            watches.start("judge", [_fake_handle()])
+            await anyio.sleep(0.01)
+            assert loss.lost(frozenset({"judge"})) is not None
+            loss.failed["t"] = 1
+            return {}
+
+        lost = await _session_watching(
+            session, {}, loss, deployer=deployer, reports={}, watches=watches
+        )
+        assert set(lost) == {"judge"}
+
+    @pytest.mark.anyio
+    async def test_an_engine_stopped_at_its_until_is_no_loss(self):
+        # The subject's watch ends before its lifecycle stops it.
+        from sieval.cli.run import _session_watching, _Watches
+        from sieval.core.runners import EngineLoss
+
+        loss = EngineLoss()
+        cancelled = []
+
+        async def watch(_handles):
+            try:
+                await anyio.sleep_forever()
+            finally:
+                cancelled.append(True)
+
+        deployer = MagicMock()
+        deployer.watch = watch
+        watches = _Watches(loss, deployer)
+
+        async def session():
+            await anyio.sleep(0)
+            await watches.stop("subject")
+            assert cancelled == [True]
+            return {}
+
+        lost = await _session_watching(
+            session,
+            {"subject": [_fake_handle()]},
+            loss,
+            deployer=deployer,
+            reports={},
+            watches=watches,
+        )
+        assert lost == {}
+        assert loss.lost(frozenset({"subject"})) is None
 
     @pytest.mark.anyio
     async def test_a_broken_watch_leaves_the_run_alone(self):

@@ -1347,6 +1347,61 @@ class TestValidateRunnerConfig:
         assert result.ok
         assert any("unknown_field" in w for w in result.warnings)
 
+    def test_stop_after_names_a_stage(self):
+        cfg = {
+            "models": {},
+            "datasets": {},
+            "tasks": {},
+            "runner_config": {"stop_after": "infer"},
+        }
+        result = validate_eval_config(cfg)
+        assert any(
+            "runner_config.stop_after must be one of" in e for e in result.errors
+        )
+        cfg["runner_config"]["stop_after"] = "inference"
+        assert validate_eval_config(cfg).ok
+
+    def test_stop_after_is_session_wide(self):
+        cfg = {
+            "models": {},
+            "datasets": {},
+            "tasks": {"t": {"runner_config": {"stop_after": "inference"}}},
+        }
+        result = validate_eval_config(cfg)
+        assert any("Task 't': 'stop_after' is session-wide" in e for e in result.errors)
+
+    def test_a_lifecycle_is_checked_on_a_launched_root(self):
+        cfg = {
+            "models": {
+                "ok": {"path": "/m", "lifecycle": {"until": "inference"}},
+                "bad": {"path": "/m", "lifecycle": {"until": "infer"}},
+                "child": {"base": "ok", "lifecycle": {"until": "inference"}},
+                "api": {
+                    "api_base": "http://x/v1",
+                    "name": "a",
+                    "lifecycle": {"from": "inference"},
+                },
+            },
+            "datasets": {},
+            "tasks": {},
+        }
+        errors = validate_eval_config(cfg).errors
+        assert not any("'ok'" in e for e in errors)
+        assert any("Model 'bad': 'lifecycle'.until must be one of" in e for e in errors)
+        assert any(
+            "Model 'child': derived models cannot set 'lifecycle'" in e for e in errors
+        )
+        assert any("Model 'api': 'lifecycle' applies to a model" in e for e in errors)
+
+    def test_a_model_named_as_grader_is_referenced(self):
+        cfg = {
+            "models": {"s": {"path": "/s"}, "j": {"path": "/j"}},
+            "datasets": {"d": {}},
+            "tasks": {"t": {"model": "s", "dataset": "d", "args": {"grader": "j"}}},
+        }
+        warnings = validate_eval_config(cfg).warnings
+        assert not any("Model 'j' defined but not referenced" in w for w in warnings)
+
     def test_invalid_concurrency_limits_key(self):
         cfg = {
             "models": {},

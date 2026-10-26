@@ -314,12 +314,14 @@ class TaskSaver:
         rules_hash: str | None = None,
         requests: RunRequests | None = None,
         resume: ResumeOutcomes | None = None,
+        stopped_after: str | None = None,
     ) -> None:
         """Mark the current ``runs[]`` entry ended, with the stages it reran.
 
         *reported* is set by a run that wrote ``report.json``; *rules_hash* by
         one that wrote ``anomalies.json``; *requests* by one that recorded any;
-        *resume* by a resume that planned per sample.
+        *resume* by a resume that planned per sample; *stopped_after* by a run
+        that ended at its ``stop_after`` barrier.
         """
         meta = self._require_meta()
         run = meta["runs"][-1]
@@ -329,6 +331,8 @@ class TaskSaver:
             run["resume"] = resume
         if reported:
             run["reported"] = True
+        if stopped_after is not None:
+            run["stopped_after"] = stopped_after
         if rules_hash is not None:
             run["rules_hash"] = rules_hash
         if requests:

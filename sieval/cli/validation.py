@@ -25,6 +25,7 @@ from sieval.cli._filter_spec import (
     check_by_digest,
     check_values_source,
 )
+from sieval.cli.lifecycle import LifecycleError, parse_lifecycle
 from sieval.cli.resolution import (
     binding_resource_argument_paths,
     model_config_extra,
@@ -51,6 +52,7 @@ from sieval.core.models.dialect_registry import (
 )
 from sieval.core.models.reconcile import ReconcileResult
 from sieval.core.runners import TaskRunnerConfig
+from sieval.core.runners.barriers import check_barrier_stage
 from sieval.core.tasks.consts import TaskAction
 from sieval.core.tasks.python_requires import MissingPythonRequirementsError
 from sieval.core.tasks.run_meta import STATED_SERVING_KEYS
@@ -265,6 +267,23 @@ def _validate_models(cfg: dict, result: ValidationResult) -> None:
                 )
             elif not check(mcfg[key]):
                 result.errors.append(f"Model '{name}': '{key}' must be {kind}")
+
+        if "lifecycle" in mcfg:
+            if has_base:
+                result.errors.append(
+                    f"Model '{name}': derived models cannot set 'lifecycle'; it is "
+                    "the root's engine. Set it on the base instead."
+                )
+            elif mcfg.get("api_base"):
+                result.errors.append(
+                    f"Model '{name}': 'lifecycle' applies to a model `sieval run` "
+                    "launches, not an 'api_base' endpoint"
+                )
+            else:
+                try:
+                    parse_lifecycle(name, mcfg["lifecycle"])
+                except LifecycleError as exc:
+                    result.errors.append(str(exc))
 
         if not has_base and isinstance(mcfg.get("context"), dict):
             try:
@@ -649,6 +668,19 @@ def _validate_runner_config(cfg: dict, result: ValidationResult) -> None:
             for key in runner_cfg:
                 if key not in _RUNNER_CONFIG_FIELDS:
                     result.warnings.append(f"runner_config: unknown field '{key}'")
+            stop = runner_cfg.get("stop_after")
+            if stop is not None:
+                try:
+                    check_barrier_stage(stop, "runner_config.stop_after")
+                except ValueError as exc:
+                    result.errors.append(str(exc))
+    for name, tcfg in (cfg.get("tasks") or {}).items():
+        task_runner = tcfg.get("runner_config") if isinstance(tcfg, dict) else None
+        if isinstance(task_runner, dict) and "stop_after" in task_runner:
+            result.errors.append(
+                f"Task '{name}': 'stop_after' is session-wide; set it in the "
+                "top-level 'runner_config'"
+            )
 
     conc_limits = cfg.get("concurrency_limits")
     if isinstance(conc_limits, dict):
@@ -672,6 +704,11 @@ def _validate_unreferenced(cfg: dict, result: ValidationResult) -> None:
         model_ref = tcfg.get("model")
         if isinstance(model_ref, str):
             referenced_models.add(model_ref)
+        task_args = tcfg.get("args")
+        if isinstance(task_args, dict):
+            for role in ("grader", "extractor"):
+                if isinstance(task_args.get(role), str):
+                    referenced_models.add(task_args[role])
         ds_ref = tcfg.get("dataset")
         if isinstance(ds_ref, str):
             referenced_datasets.add(ds_ref)

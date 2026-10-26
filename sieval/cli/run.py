@@ -16,6 +16,7 @@ from typing import Annotated, Any, cast
 import anyio
 import typer
 import yaml
+from anyio.abc import TaskGroup
 from loguru import logger
 
 from sieval.cli._cli_model import (
@@ -37,6 +38,23 @@ from sieval.cli.infer import (
     resolve_infer_config,
     resolve_keep_logs,
     run_handle_dir,
+)
+from sieval.cli.lifecycle import (
+    Lifecycle,
+    LifecycleError,
+    Placement,
+    check_iteration_barriers,
+    check_lifecycles_launched,
+    effective_barriers,
+    model_lifecycles,
+    phases_json,
+    place,
+    placed_commands,
+    plan_phases,
+    role_models,
+    root_model,
+    runs_before_stop,
+    session_stop_after,
 )
 from sieval.cli.output import (
     CommandResult,
@@ -65,6 +83,7 @@ from sieval.cli.session import (
 from sieval.cli.signals import terminate_as_interrupt
 from sieval.core.models import Deployment
 from sieval.core.runners import EngineLoss, RunPlan
+from sieval.core.runners.barriers import BARRIER_STAGES
 from sieval.core.utils.logging import configure_logging, log_user
 from sieval.infer.backends import get_translator
 from sieval.infer.backends.translator import BackendCommand, inject_user_env
@@ -486,6 +505,98 @@ def _serving_groups(
     return out
 
 
+@dataclasses.dataclass(frozen=True)
+class _StagedPlan:
+    """The run's barriers, phases and engine placements, decided before launch.
+
+    *barriers* maps each effective barrier stage to what implied it; *stop*
+    is ``runner_config.stop_after``. *lifecycles* and *placements* are by root
+    model; *roles* maps each task to the roots it names as ``grader`` or
+    ``extractor``.
+    """
+
+    barriers: dict[str, list[str]]
+    stop: str | None
+    lifecycles: dict[str, Lifecycle]
+    phases: list[Any]
+    placements: dict[str, Placement]
+    roles: dict[str, set[str]]
+
+    @property
+    def stages(self) -> tuple[str, ...]:
+        return tuple(self.barriers)
+
+    def starts(self, root: str) -> str | None:
+        life = self.lifecycles.get(root)
+        return None if life is None else life.start
+
+    def stops(self, root: str) -> str | None:
+        life = self.lifecycles.get(root)
+        return None if life is None else life.stop
+
+    def runs(self, root: str) -> bool:
+        """Whether *root* has a phase in this run: one starting at or after
+        ``stop_after`` never does."""
+        return runs_before_stop(self.lifecycles.get(root), self.stop)
+
+    def lifecycles_json(self, roots: Iterable[str]) -> dict[str, dict[str, str]]:
+        return {
+            root: self.lifecycles[root].to_json()
+            for root in sorted(roots)
+            if root in self.lifecycles
+        }
+
+
+def _staged_plan(
+    config: Mapping[str, Any],
+    prepared_launches: Mapping[str, tuple[DeploymentPlan, list[BackendCommand]]],
+    gpu: GPUInfo | None,
+) -> _StagedPlan:
+    """Barriers, phases and placements for *config*; refuses, before launch, a
+    malformed lifecycle, one on a model the run does not launch, a barrier an
+    iterating task cannot pass, and models alive together that do not fit."""
+    lifecycles = model_lifecycles(config)
+    check_lifecycles_launched(lifecycles, prepared_launches)
+    barriers = effective_barriers(config, lifecycles)
+    check_iteration_barriers(config, barriers)
+    stop = session_stop_after(config)
+    phases = plan_phases(tuple(barriers), lifecycles, prepared_launches, stop)
+    placements = place(
+        phases,
+        {name: plan.total_gpus for name, (plan, _) in prepared_launches.items()},
+        gpu.count if gpu is not None else None,
+    )
+    roles = {
+        task: {root_model(config, name) for name in names}
+        for task, names in role_models(config).items()
+    }
+    return _StagedPlan(barriers, stop, lifecycles, phases, placements, roles)
+
+
+def _placed_groups(
+    groups: list[_GroupLaunch], staged: _StagedPlan
+) -> list[_GroupLaunch]:
+    """*groups* with each engine on its placement's devices and port, and each
+    group launching the roots its tasks name as a role too."""
+    out = []
+    for group in groups:
+        prepared = {
+            name: (plan, placed_commands(commands, staged.placements.get(name)))
+            for name, (plan, commands) in group.prepared.items()
+        }
+        roles = set().union(
+            *(staged.roles.get(task, set()) for task in group.group.tasks)
+        )
+        out.append(
+            dataclasses.replace(
+                group,
+                prepared=prepared,
+                own=frozenset(group.own | (roles & set(prepared))),
+            )
+        )
+    return out
+
+
 def _select_group(groups: list[_GroupLaunch], key: str | None) -> list[_GroupLaunch]:
     """The groups a run executes: all of them, or the one *key* names."""
     if key is None:
@@ -549,17 +660,26 @@ def _models_to_launch(
     served: Iterable[str],
     task_models: Mapping[str, str],
     plans: Mapping[str, RunPlan | Exception],
+    roles: Mapping[str, set[str]] | None = None,
 ) -> set[str]:
-    """The *served* models some task still has samples to infer with.
+    """The *served* models some task still has work for: its model under test
+    while it has samples to infer, each model it names in *roles* (``grader``,
+    ``extractor``) while it has samples to grade.
 
     A task whose plan raises infers nothing: its run raises the same before
     its first sample.
     """
-    return {
+    served = set(served)
+    out = {
         task_models[task]
         for task, plan in plans.items()
         if _infers(plan) and task_models.get(task) in served
     }
+    for task, plan in plans.items():
+        if isinstance(plan, Exception) or not (plan["to_grade"] or plan["to_infer"]):
+            continue
+        out |= (roles or {}).get(task, set()) & served
+    return out
 
 
 def _infers(plan: RunPlan | Exception) -> bool:
@@ -572,6 +692,7 @@ async def _models_to_infer(
     config: Mapping[str, Any],
     prepared_launches: Mapping[str, tuple[DeploymentPlan, list[BackendCommand]]],
     plan_dicts: dict[str, dict[str, Any]],
+    roles: Mapping[str, set[str]] | None = None,
     **session: Any,
 ) -> set[str]:
     """The served models to launch: all of them for a run where nothing
@@ -583,7 +704,7 @@ async def _models_to_infer(
     task_models, plans = await _plan_tasks(
         config_path, prepared_launches, plan_dicts, **session
     )
-    return _models_to_launch(prepared_launches, task_models, plans)
+    return _models_to_launch(prepared_launches, task_models, plans, roles)
 
 
 def _launch_json(command: BackendCommand) -> dict[str, object]:
@@ -681,7 +802,16 @@ async def _run_dry_run(
 
     def unplanned(result: dict[str, object]) -> dict[str, object]:
         # Every report key is present; ``None`` where the dry-run stopped first.
-        for key in ("gpu", "models", "serving", "tasks", "needs_inference"):
+        for key in (
+            "gpu",
+            "models",
+            "serving",
+            "tasks",
+            "needs_inference",
+            "barriers",
+            "phases",
+            "launches",
+        ):
             result.setdefault(key, None)
         return result
 
@@ -705,12 +835,20 @@ async def _run_dry_run(
     )
     groups: list[_GroupLaunch] = []
     serving_error: Exception | None = None
+    staged: _StagedPlan | None = None
     gpu = await _plan_gpu() if prepared_launches else None
     try:
-        groups = _select_group(
-            _serving_groups(loaded, batch_plans, prepared_launches, gpu),
-            serving_group,
+        staged = _staged_plan(loaded, prepared_launches, gpu)
+        groups = _placed_groups(
+            _select_group(
+                _serving_groups(loaded, batch_plans, prepared_launches, gpu),
+                serving_group,
+            ),
+            staged,
         )
+    except LifecycleError as exc:
+        serving_error = exc
+        staged = None
     except ValueError as exc:
         serving_error = exc
     # The plans the first group launches: the recipe plans, unless a shortfall
@@ -735,9 +873,29 @@ async def _run_dry_run(
     result["gpu"] = format_target_gpu(gpu) if gpu is not None else None
     result["models"] = models
     checks_list = cast(list[dict[str, object]], result["checks"])
+    if staged is not None:
+        # Every barrier the session waits at, and what implied each.
+        result["barriers"] = [
+            {"stage": stage, "implied_by": implied}
+            for stage, implied in staged.barriers.items()
+        ]
+        result["phases"] = phases_json(
+            staged.phases, staged.lifecycles, staged.placements
+        )
+        for name, entry in models.items():
+            life = staged.lifecycles.get(name)
+            entry["lifecycle"] = life.to_json() if life is not None else None
     if serving_error is not None:
         checks_list.append(
-            {"name": "serving", "ok": False, "detail": cli_error_message(serving_error)}
+            {
+                "name": (
+                    "lifecycle"
+                    if isinstance(serving_error, LifecycleError)
+                    else "serving"
+                ),
+                "ok": False,
+                "detail": cli_error_message(serving_error),
+            }
         )
         result["n_errors"] = cast(int, result["n_errors"]) + 1
     elif len(groups) > 1 or serving_group is not None:
@@ -785,14 +943,17 @@ async def _run_dry_run(
         task_models |= group_models
         plans |= group_plans
         # The launch decision `_models_to_infer` makes for the run.
-        launches_by_group[group.key] = set(
-            group.own
+        roles = staged.roles if staged is not None else {}
+        launches_by_group[group.key] = {
+            root
+            for root in group.own
             & (
-                _models_to_launch(group.prepared, group_models, group_plans)
+                _models_to_launch(group.prepared, group_models, group_plans, roles)
                 if _resumes(resume, loaded)
                 else set(group.prepared)
             )
-        )
+            if staged is None or staged.runs(root)
+        }
     refused = {t: p for t, p in plans.items() if isinstance(p, Exception)}
     metrics: dict[str, dict[str, list[str]] | None] = {}
     malformed: dict[str, TypeError] = {}
@@ -835,9 +996,20 @@ async def _run_dry_run(
         entry["needs_inference"] = name in first_launches
     for key, entry in serving.items():
         entry["needs_inference"] = bool(launches_by_group.get(key))
-    # Whether an engine starts. A task inferring through an `api_base` model
-    # needs no engine, so it does not count.
-    result["needs_inference"] = any(launches_by_group.values())
+    # Whether a model under test starts: a judge or extractor alone does not
+    # count. A task inferring through an `api_base` model needs no engine.
+    candidates = set(task_models.values())
+    graders = (
+        set().union(*staged.roles.values()) - candidates
+        if staged is not None
+        else set()
+    )
+    result["needs_inference"] = any(
+        launched - graders for launched in launches_by_group.values()
+    )
+    # Every engine the run starts, judges included: what a caller deciding
+    # whether the run needs GPUs at all reads.
+    result["launches"] = sorted(set().union(*launches_by_group.values()))
     return result
 
 
@@ -936,15 +1108,16 @@ async def _run_all(
             recorded=_recorded_plans(resume, effective_result_dir),
         )
 
-        # Shortfalls are refused before the first subprocess starts.
-        groups = _select_group(
-            _serving_groups(
-                config,
-                plan_dicts,
-                prepared_launches,
-                await _plan_gpu() if prepared_launches else None,
+        # Shortfalls, malformed lifecycles and models alive together that do
+        # not fit are refused before the first subprocess starts.
+        gpu = await _plan_gpu() if prepared_launches else None
+        staged = _staged_plan(config, prepared_launches, gpu)
+        groups = _placed_groups(
+            _select_group(
+                _serving_groups(config, plan_dicts, prepared_launches, gpu),
+                serving_group,
             ),
-            serving_group,
+            staged,
         )
         if SERVICE_LOG_DIR in {n for g in groups for n in g.names.values()}:
             raise ValueError(
@@ -956,7 +1129,6 @@ async def _run_all(
         # plan must reconcile as one batch before the first subprocess starts.
         # The final EvalSession intentionally repeats this pure check so its
         # execution setup never trusts orchestration-only state.
-        from sieval.cli.session import arun_session
         from sieval.cli.validation import prepare_prelaunch_reconciliation
 
         for index, group in enumerate(groups):
@@ -993,97 +1165,72 @@ async def _run_all(
                     f"refusing to ignore them: {details}"
                 )
 
+        engines = _Engines(
+            deployer=deployer,
+            launched=launched,
+            handle_dir=handle_dir,
+            result_dir=effective_result_dir,
+            keep_logs=keep,
+            ready_timeout=ready_timeout,
+        )
+        # Models that start at a barrier launch once, after every serving group
+        # has reached it: the groups first run up to the earliest such barrier,
+        # then each continues from it with those models already up.
+        spanning = sorted(
+            {
+                staged.starts(root)
+                for root in prepared_launches
+                if staged.starts(root) is not None and staged.runs(root)
+            },
+            key=BARRIER_STAGES.index,
+        )
+        segments: list[tuple[str | None, bool]] = [(None, False)]
+        if spanning and len(groups) > 1:
+            if not effective_result_dir:
+                raise ValueError(
+                    f"A model starting at the barrier on {spanning[0]!r} serves "
+                    "every serving group, so the groups run up to it and then "
+                    "resume from it: set result_dir"
+                )
+            segments = [(spanning[0], False), (None, True)]
         reports: dict[str, object] = {}
-        for group in groups:
-            if len(groups) > 1:
-                log_user(
-                    "Serving group {}: {}", group.key, ", ".join(group.group.tasks)
+        for segment_stop, continuing in segments:
+            last_segment = segment_stop is None
+            for index, group in enumerate(groups):
+                if len(groups) > 1:
+                    log_user(
+                        "Serving group {}: {}",
+                        group.key,
+                        ", ".join(group.group.tasks),
+                    )
+                lost, failed = await _run_group(
+                    config_path,
+                    config,
+                    group,
+                    staged,
+                    engines,
+                    resume=True if continuing else resume,
+                    stop_override=segment_stop,
+                    # A model that starts at a barrier outlives one group's
+                    # run only while another group still needs it.
+                    keep_spanning=last_segment
+                    and index < len(groups) - 1
+                    or not last_segment,
+                    spanning_segment=not continuing and segment_stop is not None,
+                    model=model,
+                    result_dir=result_dir,
+                    deterministic=deterministic,
+                    invocation=invocation,
+                    cli_model=cli_model,
+                    reports=reports,
                 )
-            serving = group.serving()
-            # Plan the resume first: an engine starts only for a model some task
-            # still has samples to infer with.
-            to_launch = group.own & await _models_to_infer(
-                config_path,
-                config,
-                group.prepared,
-                group.plan_dicts,
-                model=model,
-                resume=resume,
-                result_dir=result_dir,
-                deterministic=deterministic,
-                invocation=invocation,
-                cli_model=cli_model,
-                serving=serving,
-            )
-            if to_launch:
-                await check_launch_gpu(required=True)
-            for model_name in sorted(group.own - to_launch):
-                log_user(
-                    "No inference needed for model {}; not starting it",
-                    group.names[model_name],
-                )
-            realized_deployments: dict[str, Deployment] = {}
-            for model_name, (plan, commands) in group.prepared.items():
-                if model_name not in to_launch:
-                    continue
-                realized_deployments[model_name] = await _launch(
-                    group.names[model_name],
-                    plan,
-                    commands,
-                    deployer=deployer,
-                    launched=launched,
-                    handle_dir=handle_dir,
-                    result_dir=effective_result_dir,
-                    keep_logs=keep,
-                    ready_timeout=ready_timeout,
-                )
-
-            # `self_managed_endpoints` scopes the best-effort warning away
-            # from endpoints we launched ourselves.
-            engine_loss = EngineLoss(settle=_ENGINE_LOSS_SETTLE)
-            session = functools.partial(
-                arun_session,
-                config_path,
-                model=model,
-                resume=resume,
-                result_dir=result_dir,
-                deterministic=deterministic,
-                self_managed_endpoints=frozenset(group.prepared),
-                infer_plans=group.plan_dicts or None,
-                invocation=invocation,
-                realized_deployments=realized_deployments or None,
-                unlaunched_deployments=(
-                    _unlaunched(group.prepared, set(group.prepared) - to_launch) or None
-                ),
-                cli_model=cli_model,
-                infer_gpu=await _plan_gpu_text() if group.plan_dicts else None,
-                serving=serving,
-                engine_loss=engine_loss,
-            )
-            lost = await _session_watching(
-                session,
-                {m: launched[group.names[m]] for m in to_launch},
-                engine_loss,
-                deployer=deployer,
-                reports=reports,
-            )
-            # The next group's engines need the GPUs this one holds. Stopped
-            # after the watch ended, so a stop is not a loss.
-            for name in [group.names[m] for m in to_launch]:
-                await cleanup_model(
-                    name,
-                    launched.pop(name),
-                    deployer=deployer,
-                    handle_path=handle_dir / f"{name}.json",
-                )
-            if lost:
-                skipped = [g.key for g in groups[groups.index(group) + 1 :]]
-                raise EngineLostError(
-                    {group.names[m]: e for m, e in lost.items()},
-                    engine_loss.failed,
-                    skipped,
-                    reports,
-                )
+                if lost:
+                    raise EngineLostError(
+                        lost,
+                        failed,
+                        [g.key for g in groups[index + 1 :]],
+                        reports,
+                    )
         return reports
 
     finally:
@@ -1098,6 +1245,52 @@ async def _run_all(
         remove_run_handle_dir(handle_dir)
 
 
+class _Watches:
+    """The engines a session watches, by root model. A lifecycle starts and
+    stops engines mid-session: :meth:`stop` ends a watch before a deliberate
+    stop, so the stop is not a loss."""
+
+    def __init__(self, engine_loss: EngineLoss, deployer: LocalDeployer) -> None:
+        self._loss = engine_loss
+        self._deployer = deployer
+        self._tg: TaskGroup | None = None
+        self._scopes: dict[str, tuple[anyio.CancelScope, anyio.Event]] = {}
+        self.lost: dict[str, EngineExit] = {}
+
+    def start(self, root: str, handles: list[InferHandle]) -> None:
+        if self._tg is None or root in self._scopes:
+            return
+        scope, done = anyio.CancelScope(), anyio.Event()
+        self._scopes[root] = (scope, done)
+        self._tg.start_soon(self._watch, root, handles, scope, done)
+
+    async def stop(self, root: str) -> None:
+        entry = self._scopes.pop(root, None)
+        if entry is not None:
+            entry[0].cancel()
+            await entry[1].wait()
+
+    async def _watch(
+        self,
+        root: str,
+        handles: list[InferHandle],
+        scope: anyio.CancelScope,
+        done: anyio.Event,
+    ) -> None:
+        try:
+            with scope:
+                engine_exit = await self._deployer.watch(handles)
+                summary = engine_exit.summary()
+                self.lost[root] = engine_exit
+                logger.error("Engine {} lost: {}", root, summary)
+                self._loss.mark_lost(root, f"engine {root} lost: {summary}")
+        except Exception as exc:
+            # A broken watch must not take the run down with it.
+            logger.warning("Stopped watching engine {}: {!r}", root, exc)
+        finally:
+            done.set()
+
+
 async def _session_watching(
     session: Callable[[], Awaitable[dict[str, Any]]],
     engines: Mapping[str, list[InferHandle]],
@@ -1105,45 +1298,204 @@ async def _session_watching(
     *,
     deployer: LocalDeployer,
     reports: dict[str, object],
+    watches: _Watches | None = None,
 ) -> dict[str, EngineExit]:
-    """Run *session* into *reports* while watching *engines* (by root model).
+    """Run *session* into *reports* while watching *engines* (by root model),
+    and any *watches* starts while it runs.
 
     A lost engine is marked in *engine_loss*. Returns the lost engines some
     sample failed for; a loss after the last sample costs nothing. A session
     error after such a loss is logged and reported as the loss.
     """
-    lost: dict[str, EngineExit] = {}
-
-    async def watch(root: str, handles: list[InferHandle]) -> None:
-        try:
-            engine_exit = await deployer.watch(handles)
-        except Exception as exc:
-            # A broken watch must not take the run down with it.
-            logger.warning("Stopped watching engine {}: {!r}", root, exc)
-            return
-        lost[root] = engine_exit
-        summary = engine_exit.summary()
-        logger.error("Engine {} lost: {}", root, summary)
-        engine_loss.mark_lost(root, f"engine {root} lost: {summary}")
+    watches = watches or _Watches(engine_loss, deployer)
 
     # Held, not raised inside the task group, which would wrap it in a group.
     error: BaseException | None = None
     async with anyio.create_task_group() as tg:
+        watches._tg = tg
         for root, handles in engines.items():
-            tg.start_soon(watch, root, handles)
+            watches.start(root, handles)
         try:
             reports |= await session()
         except (Exception, KeyboardInterrupt) as exc:
             error = exc
         finally:
+            watches._tg = None
             tg.cancel_scope.cancel()
-    if not engine_loss.failed:
-        lost = {}
+    lost = dict(watches.lost) if engine_loss.failed else {}
     if error is not None and (not lost or not isinstance(error, Exception)):
         raise error
     if error is not None:
         logger.error("The session also raised after the engine was lost: {}", error)
     return lost
+
+
+@dataclasses.dataclass
+class _Engines:
+    """The engines this ``sieval run`` holds, by engine name, and what
+    launching one takes."""
+
+    deployer: LocalDeployer
+    launched: dict[str, list[InferHandle]]
+    handle_dir: Path
+    result_dir: str | None
+    keep_logs: int | None
+    ready_timeout: float
+    deployments: dict[str, Deployment] = dataclasses.field(default_factory=dict)
+
+    async def start(
+        self, name: str, plan: DeploymentPlan, commands: list[BackendCommand]
+    ) -> Deployment:
+        if name in self.launched:
+            return self.deployments[name]
+        self.deployments[name] = await _launch(
+            name,
+            plan,
+            commands,
+            deployer=self.deployer,
+            launched=self.launched,
+            handle_dir=self.handle_dir,
+            result_dir=self.result_dir,
+            keep_logs=self.keep_logs,
+            ready_timeout=self.ready_timeout,
+        )
+        return self.deployments[name]
+
+    async def stop(self, name: str) -> None:
+        handles = self.launched.pop(name, None)
+        self.deployments.pop(name, None)
+        if handles is None:
+            return
+        log_user("Stopping inference for model: {}", name)
+        await cleanup_model(
+            name,
+            handles,
+            deployer=self.deployer,
+            handle_path=self.handle_dir / f"{name}.json",
+        )
+
+
+async def _run_group(
+    config_path: Path,
+    config: Mapping[str, Any],
+    group: _GroupLaunch,
+    staged: _StagedPlan,
+    engines: _Engines,
+    *,
+    resume: bool | str | Path | None,
+    stop_override: str | None,
+    keep_spanning: bool,
+    spanning_segment: bool,
+    reports: dict[str, object],
+    **session: Any,
+) -> tuple[dict[str, EngineExit], dict[str, int]]:
+    """Run one serving group's session into *reports*, starting and stopping
+    its engines at the barriers and watching each while it is up: a model
+    starts before the session or at its ``from``, and stops at its ``until``
+    or the session's end.
+
+    *keep_spanning* keeps a model starting at a barrier up for the next group;
+    *stop_override* ends this session at a barrier the groups share;
+    *spanning_segment* says models starting there do not start in it.
+
+    Returns the engines lost while samples needed them, by engine name, and
+    the samples failed for them per task.
+    """
+    from sieval.cli.session import arun_session
+
+    stop = stop_override or staged.stop
+    serving = dataclasses.replace(
+        group.serving(),
+        barriers=staged.stages,
+        stop_after=stop_override,
+        lifecycles=staged.lifecycles_json(group.prepared),
+    )
+    needed = group.own & await _models_to_infer(
+        config_path,
+        config,
+        group.prepared,
+        group.plan_dicts,
+        roles=staged.roles,
+        resume=resume,
+        serving=dataclasses.replace(serving, on_barrier=None),
+        **session,
+    )
+    # A model starting at or after the stop never runs in this session.
+    runnable = {
+        root for root in needed if runs_before_stop(staged.lifecycles.get(root), stop)
+    }
+    upfront = {root for root in runnable if staged.starts(root) is None}
+    deferred = runnable - upfront
+    if runnable:
+        await check_launch_gpu(required=True)
+    for root in sorted(group.own - runnable):
+        log_user("No work for model {} in this run; not starting it", group.names[root])
+    realized: dict[str, Deployment] = {}
+    for root in sorted(upfront):
+        plan, commands = group.prepared[root]
+        realized[root] = await engines.start(group.names[root], plan, commands)
+    for root in sorted(deferred):
+        # Up already, kept from an earlier group.
+        name = group.names[root]
+        if name in engines.launched:
+            realized[root] = engines.deployments[name]
+
+    engine_loss = EngineLoss(settle=_ENGINE_LOSS_SETTLE)
+    watches = _Watches(engine_loss, engines.deployer)
+
+    async def on_barrier(stage: str) -> None:
+        for root in sorted(upfront | deferred):
+            if staged.stops(root) == stage:
+                # Unwatched first, so the stop is not a loss.
+                await watches.stop(root)
+                await engines.stop(group.names[root])
+        if stage == stop:
+            return  # nothing after the stop runs; nothing starts for it
+        for root in sorted(deferred):
+            if staged.starts(root) == stage:
+                plan, commands = group.prepared[root]
+                await engines.start(group.names[root], plan, commands)
+                watches.start(root, engines.launched[group.names[root]])
+
+    serving = dataclasses.replace(serving, on_barrier=on_barrier)
+    unlaunched = set(group.prepared) - set(realized)
+    session_call = functools.partial(
+        arun_session,
+        config_path,
+        resume=resume,
+        # `self_managed_endpoints` scopes the best-effort warning away
+        # from endpoints we launched ourselves.
+        self_managed_endpoints=frozenset(group.prepared),
+        infer_plans=group.plan_dicts or None,
+        realized_deployments=realized or None,
+        unlaunched_deployments=_unlaunched(group.prepared, unlaunched) or None,
+        deferred_roots=frozenset(deferred - set(realized)),
+        infer_gpu=await _plan_gpu_text() if group.plan_dicts else None,
+        serving=serving,
+        engine_loss=engine_loss,
+        **session,
+    )
+    try:
+        lost = await _session_watching(
+            session_call,
+            {
+                root: engines.launched[group.names[root]]
+                for root in sorted(realized)
+                if group.names[root] in engines.launched
+            },
+            engine_loss,
+            deployer=engines.deployer,
+            reports=reports,
+            watches=watches,
+        )
+    finally:
+        # The next group's engines need the GPUs this one holds. Stopped
+        # after the watch ended, so a stop is not a loss.
+        for root in sorted(upfront | deferred):
+            if root in deferred and keep_spanning and not spanning_segment:
+                continue
+            await engines.stop(group.names[root])
+    return {group.names[root]: e for root, e in lost.items()}, engine_loss.failed
 
 
 async def _launch(

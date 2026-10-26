@@ -706,6 +706,17 @@ class TestRunMeta:
         assert runs[2]["requests"] == counts
 
     @pytest.mark.anyio
+    async def test_end_run_records_where_a_run_stopped(self, saver, tmp_root):
+        await saver.begin_run(resumed=False)
+        await saver.end_run(["data", "preprocess"], stopped_after="preprocess")
+        await saver.begin_run(resumed=True)
+        await saver.end_run(["inference"], reported=True)
+        first, second = _read_meta(tmp_root)["runs"]
+        assert first["stopped_after"] == "preprocess"
+        assert "reported" not in first
+        assert "stopped_after" not in second
+
+    @pytest.mark.anyio
     async def test_end_run_orders_stages(self, saver, tmp_root):
         await saver.begin_run(resumed=False)
         await saver.end_run(["report", "feedback", "preprocess", "grader"])

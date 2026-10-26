@@ -1366,6 +1366,9 @@ class TestEvalSessionConfigLoading:
             result_dir=str(tmp_path / "from_override"),
             concurrency_limit=7,
             concurrency_limits={"infer": 3},
+            stop_after=None,
+            barriers=(),
+            on_barrier=None,
             deterministic=False,
             effective_config=str(tmp_path / "from_override" / "effective_config.yaml"),
         )
@@ -5820,8 +5823,8 @@ tasks:
             pytest.raises(
                 ValueError,
                 match=(
-                    "Task 'extracted' extractor must be 'self', an inline mapping, "
-                    "or Model"
+                    "Task 'extracted' extractor names 'itself', which is not a "
+                    "model in 'models:'"
                 ),
             ),
         ):
@@ -7758,6 +7761,7 @@ class TestEvalSessionWrappers:
             unlaunched_deployments=None,
             serving=None,
             engine_loss=None,
+            deferred_roots=frozenset(),
         )
         assert result == {"task_a": {"ok": True}}
 
@@ -7794,6 +7798,7 @@ class TestEvalSessionWrappers:
             unlaunched_deployments=None,
             serving=None,
             engine_loss=None,
+            deferred_roots=frozenset(),
         )
         assert result == {"task_a": {"ok": True}}
 
@@ -7858,6 +7863,7 @@ class TestEvalSessionWrappers:
             unlaunched_deployments=None,
             serving=None,
             engine_loss=None,
+            deferred_roots=frozenset(),
         )
 
     def test_run_session_forwards_legacy_external_endpoint_adapter_positionally(

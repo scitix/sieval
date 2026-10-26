@@ -358,9 +358,39 @@ def _render_dry_run_plan(data: dict) -> None:
     if not isinstance(tasks, dict) or not tasks:
         return
     log_user("")
+    for barrier in data.get("barriers") or ():
+        log_user(
+            "barrier after {} ({})", barrier["stage"], ", ".join(barrier["implied_by"])
+        )
+    launches = data.get("launches")
     for name, entry in (data.get("models") or {}).items():
-        starts = "starts" if entry.get("needs_inference") else "not started"
-        log_user("model {}: engine {}", name, starts)
+        started = (
+            name in launches
+            if isinstance(launches, list)
+            else entry.get("needs_inference")
+        )
+        starts = "starts" if started else "not started"
+        life = entry.get("lifecycle") or {}
+        span = ", ".join(f"{key} {value}" for key, value in life.items())
+        log_user("model {}: engine {}{}", name, starts, f" ({span})" if span else "")
+    phases = data.get("phases") or []
+    if len(phases) > 1:
+        for phase in phases:
+            alive = ", ".join(
+                name
+                + (
+                    f" on GPUs {','.join(map(str, spec['devices']))}"
+                    if spec.get("devices")
+                    else ""
+                )
+                for name, spec in phase["models"].items()
+            )
+            log_user(
+                "phase {} → {}: {}",
+                phase["after"] or "start",
+                phase["until"] or "end",
+                alive or "no engine",
+            )
     serving = data.get("serving") or {}
     for entry in serving.values():
         for engine, spec in (entry.get("engines") or {}).items():

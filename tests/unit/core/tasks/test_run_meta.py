@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import textwrap
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -61,6 +62,7 @@ from sieval.core.tasks.run_meta import (
     request_definition,
     request_digest,
     serving_fingerprint,
+    stage_key,
     validate_judge_model_ref,
     warn_unmatched_judge_refs,
 )
@@ -430,6 +432,38 @@ class TestInferenceMatches:
         assert inference_matches(block, "sha256:a") is None
         block = {"schema": IDENTITY_SCHEMA, "inference": {"digest": "sha256:a"}}
         assert inference_matches(block, None) is None
+
+
+class TestLifecycleAndJudgeWeights:
+    def test_lifecycles_are_recorded_sorted_and_copied(self):
+        lifecycles = {
+            "subject": {"until": "inference"},
+            "judge": {"from": "inference"},
+        }
+        fingerprint = serving_fingerprint(MockChatModel(), None, lifecycles=lifecycles)
+        assert list(fingerprint["lifecycles"]) == ["judge", "subject"]
+        assert fingerprint["lifecycles"]["judge"] == {"from": "inference"}
+        assert fingerprint["lifecycles"]["judge"] is not lifecycles["judge"]
+        assert "lifecycles" not in serving_fingerprint(MockChatModel(), None)
+
+    def test_a_judge_stated_by_weights_is_compared_by_them_not_its_name(self):
+        judge = MockJudgeModel()
+        (named,) = judge_identities({"grader": judge}, {})
+        (weighed,) = judge_identities(
+            {"grader": judge}, {}, weights={"grader": "sha256:j"}
+        )
+        assert "weights" not in named
+        assert weighed["weights"] == "sha256:j"
+
+        def stage(judge: Mapping[str, Any]) -> dict[str, Any]:
+            return {"modules": {}, "judges": [dict(judge)]}
+
+        renamed = {**weighed, "model": "another-name"}
+        assert stage_key(stage(renamed)) == stage_key(stage(weighed))
+        reweighed = {**weighed, "weights": "sha256:k"}
+        assert stage_key(stage(reweighed)) != stage_key(stage(weighed))
+        # Without weights, the name still decides.
+        assert stage_key(stage({**named, "model": "x"})) != stage_key(stage(named))
 
 
 class TestServingFingerprint:

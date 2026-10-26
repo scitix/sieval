@@ -1023,6 +1023,7 @@ class ModelConfigDict(TypedDict, total=False):
     infer: _InferDict  # infer config for `sieval infer`
     infer_meta: _InferMetaDict  # infer metadata for audit
     context: dict[str, Any]  # native/max/scaling, see cli/serving.py
+    lifecycle: dict[str, str]  # from/until a barrier stage, see cli/lifecycle.py
 
 
 # Use functional syntax to support "class" key which is a Python keyword
@@ -1356,6 +1357,8 @@ def _stage_config(cfg: Mapping[str, Any], task_name: str, stage: str) -> object:
             "client_timeout",
             "concurrency_limit",
             "max_retries",
+            # When its engine runs, never what it is asked.
+            "lifecycle",
         ):
             mcfg.pop(key, None)
         args = dict(mcfg.get("args") or {})
@@ -1690,6 +1693,7 @@ class EvalSession:
         unlaunched_deployments: Mapping[str, Deployment] | None = None,
         serving: SessionServing | None = None,
         engine_loss: EngineLoss | None = None,
+        deferred_roots: frozenset[str] = frozenset(),
     ):
         self.config_path = Path(config_path)
         self._engine_loss = engine_loss
@@ -1719,8 +1723,10 @@ class EvalSession:
             )
         # Roots served by no engine: bound like launched ones, so every
         # identity is the launched one, but a task never infers through them.
-        self._unlaunched_roots = frozenset(unlaunched)
-        self._launched_roots = frozenset(realized_deployment_map)
+        # A root whose lifecycle starts it at a barrier is bound to the
+        # deployment its launch will realize: up by the time a stage calls it.
+        self._unlaunched_roots = frozenset(unlaunched) - deferred_roots
+        self._launched_roots = frozenset(realized_deployment_map) | deferred_roots
         self._realized_deployments = {**realized_deployment_map, **unlaunched}
         for root_name, deployment in self._realized_deployments.items():
             if not isinstance(root_name, str) or not root_name:
@@ -1881,6 +1887,9 @@ class EvalSession:
             result_dir=self.result_dir,
             concurrency_limit=self.config.get("concurrency_limit"),
             concurrency_limits=self.config.get("concurrency_limits"),
+            stop_after=self._serving.stop_after,
+            barriers=self._serving.barriers,
+            on_barrier=self._serving.on_barrier,
             deterministic=self.deterministic,
             # Written by `_persist_effective_config`.
             effective_config=(
@@ -2246,7 +2255,10 @@ class EvalSession:
         task_cfg: Mapping[str, Any],
         task_class: type[Any],
         candidate: NamedModelBinding,
+        named: Mapping[str, NamedModelBinding] | None = None,
     ) -> RequirementContext:
+        """*named* holds a binding per ``models:`` entry: a role that names one
+        is bound to it, so ``sieval run`` launches it like any served model."""
         raw_task_args = self._normalize_dict(
             task_cfg.get("args"), f"Task '{task_name}' args"
         )
@@ -2268,7 +2280,14 @@ class EvalSession:
             json_task_args.pop(role, None)
             if role_source is None:
                 continue
-            if isinstance(role_source, Model):
+            if isinstance(role_source, str) and role_source in (named or {}):
+                role_binding = (named or {})[role_source]
+            elif isinstance(role_source, str):
+                raise ValueError(
+                    f"Task '{task_name}' {role} names {role_source!r}, which is "
+                    "not a model in 'models:'"
+                )
+            elif isinstance(role_source, Model):
                 role_binding = self._normalized_external_binding(
                     task_name, role, role_source
                 )
@@ -2280,9 +2299,9 @@ class EvalSession:
                 raise ValueError(
                     f"Task '{task_name}' {role} must be "
                     + (
-                        "'self', an inline mapping, or Model"
+                        "'self', a 'models:' name, an inline mapping, or Model"
                         if role == "extractor"
-                        else "an inline mapping or Model"
+                        else "a 'models:' name, an inline mapping or Model"
                     )
                 )
             bindings[role] = role_binding
@@ -3270,6 +3289,7 @@ class EvalSession:
                 task_cfg,
                 task_class,
                 named_by_config[model_name],
+                named_by_config,
             )
             self._task_requirement_contexts[task_name] = context
             self._check_python_requires(task_name, task_class, context)
@@ -4971,6 +4991,11 @@ class EvalSession:
                 inference_recipe=self._inference_recipe_for(candidate.config_name),
                 context_limit=self._context_limit_for(candidate.config_name),
                 weights=self._weights_for(candidate.config_name),
+                judge_weights=self._judge_weights_for(task_name),
+                lifecycles={
+                    name: dict(life) for name, life in self._serving.lifecycles.items()
+                }
+                or None,
                 stated_serving=self._stated_serving_for(candidate.config_name),
                 resume_config_diff=list(self._resume_config_diff),
                 legacy_match=self._legacy_match_for(task_name, runner_config),
@@ -5165,6 +5190,20 @@ class EvalSession:
         root = self._root_model(model_name)
         return self._get_named_config_map("models").get(root, {}).get("weights")
 
+    def _judge_weights_for(self, task_name: str) -> dict[str, str] | None:
+        """The ``weights`` each judge role of *task_name* states, when it names a
+        ``models:`` entry whose root states them; ``None`` when none does."""
+        models = self._get_named_config_map("models")
+        out: dict[str, str] = {}
+        sources = getattr(self, "_task_role_model_sources", {})
+        for role, source in sources.get(task_name, {}).items():
+            if role == "candidate" or not isinstance(source, str):
+                continue
+            weights = models.get(self._root_model(source), {}).get("weights")
+            if isinstance(weights, str) and weights:
+                out[role] = weights
+        return out or None
+
     def _stated_serving_for(self, model_name: str) -> dict[str, JSONValue] | None:
         """The root model's ``serving``; ``None`` when absent or empty."""
         root = self._root_model(model_name)
@@ -5236,6 +5275,11 @@ class EvalSession:
         task_runner_cfg = self._normalize_dict(
             task_cfg.get("runner_config"), "Task 'runner_config'"
         )
+        if "stop_after" in task_runner_cfg:
+            raise ValueError(
+                f"Task '{task_name}': 'stop_after' is session-wide; set it in the "
+                "top-level 'runner_config'"
+            )
         cfg_dict.update(task_runner_cfg)
 
         configured = as_resume(cfg_dict.get("resume"), "runner_config.resume")
@@ -5258,6 +5302,9 @@ class EvalSession:
             if own is not None and resume_source(configured, Path(own)) is None:
                 configured = True
         cfg_dict["resume"] = configured
+        if self._serving.stop_after is not None:
+            # `sieval run` splits a run at a barrier the serving groups share.
+            cfg_dict["stop_after"] = self._serving.stop_after
 
         # Filter to valid TaskRunnerConfig fields
         valid_fields = set(TaskRunnerConfig.__dataclass_fields__.keys())
@@ -5566,6 +5613,7 @@ async def arun_session(
     unlaunched_deployments: Mapping[str, Deployment] | None = None,
     serving: SessionServing | None = None,
     engine_loss: EngineLoss | None = None,
+    deferred_roots: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Run tasks defined in a YAML configuration file asynchronously.
 
@@ -5607,6 +5655,9 @@ async def arun_session(
         engine_loss: Where ``sieval run`` records an engine it launched as
             lost, by root model name; a stage that calls it then fails as
             ``engine_died``.
+        deferred_roots: Roots among *unlaunched_deployments* whose lifecycle
+            starts them at a barrier, in the session's barrier hook; a task
+            may call them once it is past that barrier.
 
     Returns:
         A dictionary mapping task names to their reports.
@@ -5627,6 +5678,7 @@ async def arun_session(
         unlaunched_deployments=unlaunched_deployments,
         serving=serving,
         engine_loss=engine_loss,
+        deferred_roots=deferred_roots,
     )
 
     return await runner.arun()

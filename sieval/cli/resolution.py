@@ -932,6 +932,7 @@ def _config_task_records(
             task_class,
             bindings[model_name],
             datasets,
+            bindings,
         )
         requirement_hook = getattr(task_class, "model_requirements_for", None)
         if not callable(requirement_hook):
@@ -1044,6 +1045,7 @@ def _config_requirement_context(
     task_class: type[Any],
     candidate: NamedModelBinding,
     datasets: Mapping[str, dict[str, Any]],
+    named: Mapping[str, NamedModelBinding] | None = None,
 ) -> RequirementContext:
     raw_args = task_config.get("args")
     if raw_args is None:
@@ -1066,13 +1068,17 @@ def _config_requirement_context(
         task_args.pop(role, None)
         if role_source is None:
             continue
+        if isinstance(role_source, str) and role_source in (named or {}):
+            # A `models:` entry: a model `sieval run` launches.
+            model_bindings[role] = (named or {})[role_source]
+            continue
         if not isinstance(role_source, Mapping):
             raise ValueError(
                 f"Task '{task_name}' {role} must be "
                 + (
-                    "'self' or an inline mapping before launch"
+                    "'self', a 'models:' name or an inline mapping before launch"
                     if role == "extractor"
-                    else "an inline mapping before launch"
+                    else "a 'models:' name or an inline mapping before launch"
                 )
             )
         model_bindings[role] = normalize_inline_model_binding(

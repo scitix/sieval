@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sieval.cli.resolution import config_task_candidates, validate_named_config_map
+from sieval.core.runners.barriers import BarrierHook
 from sieval.infer.config import ParamValue
 from sieval.infer.introspect import logit_shape, native_context_window
 from sieval.infer.topology import DeploymentPlan
@@ -151,12 +152,21 @@ class SessionServing:
     to *infer_plans_file*, so groups sharing a ``result_dir`` keep one each,
     with *recipes*: the recipe plans this group's changed plans started from
     (scaled, or given input-scoring headroom).
+
+    *barriers* and *on_barrier* are the stage barriers the session waits at and
+    the hook awaited at each (:mod:`sieval.core.runners.barriers`); *stop_after*
+    replaces the config's ``runner_config.stop_after`` when set. *lifecycles*
+    are the launched models' lifecycles, recorded in ``runs[].serving``.
     """
 
     tasks: frozenset[str] | None = None
     group: str | None = None
     infer_plans_file: str = "infer_plans.yaml"
     recipes: Mapping[str, Any] = field(default_factory=dict)
+    barriers: tuple[str, ...] = ()
+    on_barrier: BarrierHook | None = None
+    stop_after: str | None = None
+    lifecycles: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
     def runs(self, task_name: str) -> bool:
         return self.tasks is None or task_name in self.tasks

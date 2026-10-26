@@ -188,6 +188,9 @@ class ServingFingerprint(TypedDict):
     checkpoint or host; ``stated`` is what the caller declared about an
     endpoint (:data:`STATED_SERVING_KEYS`), as given. ``group`` is the key of
     the serving group the orchestration layer launched that engine for.
+    ``lifecycles`` maps each launched model that declares one to its
+    ``lifecycle`` (``from`` / ``until`` a barrier stage): when its engine
+    started and stopped, never what it was asked.
     """
 
     engine: str
@@ -196,6 +199,7 @@ class ServingFingerprint(TypedDict):
     recipe: dict[str, JSONValue] | None
     stated: NotRequired[dict[str, JSONValue]]
     group: NotRequired[str]
+    lifecycles: NotRequired[dict[str, dict[str, str]]]
 
 
 #: What a caller may state about how an external endpoint serves the model.
@@ -210,6 +214,8 @@ class JudgeIdentity(TypedDict):
     the task declares through :meth:`~sieval.core.tasks.task.Task.judge_prompts`,
     else ``None``; a template in code is already covered by ``modules``. ``ref``
     is present only when :data:`JUDGE_MODEL_REF_ENV` names the served model.
+    ``weights`` is present for a judge ``sieval run`` launches whose model
+    states them; a resume then compares it instead of ``model``.
     """
 
     role: str
@@ -218,6 +224,7 @@ class JudgeIdentity(TypedDict):
     sampling: dict[str, JSONValue]
     prompt: str | None
     ref: NotRequired[str]
+    weights: NotRequired[str]
 
 
 class GraderIdentity(TypedDict):
@@ -342,6 +349,7 @@ RunRecord = TypedDict(
         "ended": NotRequired[str],
         "reran": NotRequired[list[str]],
         "reported": NotRequired[bool],
+        "stopped_after": NotRequired[str],
         "interrupted": NotRequired[bool],
         "rules_hash": NotRequired[str],
         "config": NotRequired[list[str]],
@@ -360,7 +368,10 @@ While the run is in flight the entry has neither ``ended`` nor ``reran``.
 A run that saves its ``report.json`` writes both: ``ended`` (ISO 8601 UTC, like
 ``at``) and ``reran``, the stages it executed, ``[]`` for a fast resume.
 ``reported: true`` says the run wrote ``report.json``, which a fast resume does
-not. ``resume`` is :class:`ResumeOutcomes`. A run
+not. ``stopped_after`` names the barrier stage a run chose to end at
+(``runner_config.stop_after``); such a run writes ``reran`` and, unless it
+stopped after ``report``, no ``report.json``. A resume continues from the
+next stage. ``resume`` is :class:`ResumeOutcomes`. A run
 stopped by an interrupt writes ``ended`` and ``interrupted: true``, and no
 ``reran``. An entry with no ``ended`` is a run that is still going, or was
 killed or failed before it could say so. ``config`` is the config diff a resume
@@ -641,6 +652,7 @@ def serving_fingerprint(
     stated: Mapping[str, JSONValue] | None = None,
     *,
     group: str | None = None,
+    lifecycles: Mapping[str, Mapping[str, str]] | None = None,
 ) -> ServingFingerprint:
     """How *model* is served. A *stated* ``engine_version`` fills one the
     deployment did not report."""
@@ -658,6 +670,10 @@ def serving_fingerprint(
             fingerprint["engine_version"] = version
     if group is not None:
         fingerprint["group"] = group
+    if lifecycles:
+        fingerprint["lifecycles"] = {
+            name: dict(lifecycles[name]) for name in sorted(lifecycles)
+        }
     return fingerprint
 
 
@@ -2182,6 +2198,7 @@ def judge_identities(
     prompts: Mapping[str, JSONValue],
     versions: Mapping[str, str | None] | None = None,
     environ: Mapping[str, str] | None = None,
+    weights: Mapping[str, str] | None = None,
 ) -> list[JudgeIdentity]:
     """Describe each judge by model, version, sampling and prompt, never endpoint."""
     refs = judge_model_refs(judges, environ)
@@ -2205,6 +2222,8 @@ def judge_identities(
         }
         if role in refs:
             entry["ref"] = refs[role]
+        if weights and role in weights:
+            entry["weights"] = weights[role]
         out.append(entry)
     return out
 
@@ -2316,8 +2335,14 @@ def stage_key(stage: Mapping[str, Any] | None) -> str | None:
     if "judges" in stage:
         if not isinstance(stage["judges"], list):
             return None
+        # A judge that states its weights is compared by them, not its name.
         payload["judges"] = [
-            {k: v for k, v in j.items() if k not in ("version", "ref")}
+            {
+                k: v
+                for k, v in j.items()
+                if k not in ("version", "ref")
+                and not (k == "model" and j.get("weights"))
+            }
             for j in stage["judges"]
             if isinstance(j, Mapping)
         ]
