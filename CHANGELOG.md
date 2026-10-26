@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.13.2] - 2026-10-26
+
+A patch release: a model that serves input-scoring tasks on SGLang reserves
+memory for their logits, so the engine no longer runs out of memory under full
+load. The plan lowers `mem_fraction_static` and sets a `chunked_prefill_size`,
+reported in `--dry-run` under `serving.<group>.engines.<model>.headroom`;
+`infer.overrides` wins. No identity or on-disk format changes: `meta.json`
+`identity` stays schema 4 and 0.13.1 result directories resume.
+
+### Fixed
+
+- **An engine that serves input scoring reserves logit headroom.** A task that scores its input (`TaskRequirements.input_scoring`: the PPL and CLP tasks) makes SGLang compute full-vocabulary logits for every prompt token of a prefill batch, and a recipe sized for generation left too little memory for them: under full load the engine died and every later request failed. An SGLang plan serving such a task now caps `chunked_prefill_size` at `min(10% of GPU memory ÷ row, longest scored prompt, 8192)`, rounded to 1024, where `row = vocab_size × (dtype bytes + 12)`, and lowers `mem_fraction_static` by that reserve's share of GPU memory (Qwen3-30B-A3B-Base on H100 80GB: 3072 tokens, 0.87 becomes 0.79). `vocab_size` and `torch_dtype` come from `config.json`, GPU memory from `SIEVAL_TARGET_GPU` or `nvidia-smi`; when either is unknown, or on a vLLM plan, the plan is unchanged and the reason says why. A pinned `infer.overrides` value is kept, but a pinned `chunked_prefill_size` whose reserve exceeds the 10% budget is refused unless `mem_fraction_static` is pinned too. The reserve changes the launch only, so it is recorded in `infer_plans.yaml` and `runs[].serving`, never in the inference identity, and a resume does not take it twice (#243, closes #242).
+
 ## [0.13.1] - 2026-10-25
 
 A patch release: a `max_tokens`-derived context need reserves room for the
@@ -540,6 +553,7 @@ Mainstream benchmarks registered in `sieval/meta/index.json`:
 - Project-wide preflight (`scripts/check_preflight.py`): links, deps, tasks, datasets, imports, examples, meta-index sync, version.
 - Tooling: `ruff`, `ty`, `mypy strict`, `pytest`.
 
+[0.13.2]: https://github.com/scitix/sieval/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/scitix/sieval/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/scitix/sieval/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/scitix/sieval/compare/v0.11.0...v0.12.0
