@@ -362,6 +362,11 @@ def _render_dry_run_plan(data: dict) -> None:
         starts = "starts" if entry.get("needs_inference") else "not started"
         log_user("model {}: engine {}", name, starts)
     serving = data.get("serving") or {}
+    for entry in serving.values():
+        for engine, spec in (entry.get("engines") or {}).items():
+            headroom = spec.get("headroom")
+            if headroom:
+                log_user("engine {}: {}", engine, headroom["reason"])
     if len(serving) > 1:
         for key, entry in serving.items():
             windows = ", ".join(

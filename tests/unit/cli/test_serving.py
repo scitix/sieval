@@ -11,13 +11,16 @@ import pytest
 
 from sieval.cli.serving import (
     DEFAULT_GROUP,
+    SCORING_FP32_BYTES,
     ContextNeed,
+    ScoringHeadroom,
     ServedWindow,
     ServingShortfallError,
     check_context_fits,
     parse_model_context,
     plan_serving_groups,
     plan_window,
+    reserve_scoring_headroom,
     task_context_needs,
     with_window,
 )
@@ -33,6 +36,12 @@ from sieval.infer.topology import (
 
 TASK = "GSM8KZeroShotGenTask"
 LONG = "tests.unit.cli.test_serving._LongContextTask"
+SCORING = "tests.unit.cli.test_serving._ScoringTask"
+
+#: One H100 80GB, as ``nvidia-smi`` reports its memory.
+H100_MIB = 81559
+#: Qwen3's vocabulary.
+VOCAB = 151936
 
 
 class _LongContextTask(Task):
@@ -41,13 +50,20 @@ class _LongContextTask(Task):
     requires: ClassVar[TaskRequirements] = TaskRequirements(min_context=50000)
 
 
+class _ScoringTask(Task):
+    """Scores its prompts' tokens, as perplexity tasks do."""
+
+    requires: ClassVar[TaskRequirements] = TaskRequirements(input_scoring=True)
+
+
 def _plan(
     window: int | None = 32768,
     *,
     backend: str = "sglang",
     checkpoint: str = "/models/m",
+    **engine: Any,
 ) -> DeploymentPlan:
-    params: dict[str, Any] = {}
+    params: dict[str, Any] = dict(engine)
     if window is not None:
         params["context_length" if backend == "sglang" else "max_model_len"] = window
     return DeploymentPlan(
@@ -504,3 +520,248 @@ class TestCheckContextFits:
         )
 
         check_context_fits(config, None)
+
+
+def _checkpoint(tmp_path: Path, **config: Any) -> str:
+    (tmp_path / "config.json").write_text(
+        json.dumps({"vocab_size": VOCAB, "torch_dtype": "bfloat16", **config})
+    )
+    return str(tmp_path)
+
+
+def _params(plan: DeploymentPlan) -> dict[str, Any]:
+    return dict(plan.assignments[0].engine_params)
+
+
+class TestReserveScoringHeadroom:
+    """The rule, worked for Qwen3's vocabulary on one H100 80GB."""
+
+    ROW = VOCAB * (2 + SCORING_FP32_BYTES)  # 2,127,104 B per scored token
+
+    def _reserve(
+        self, plan: DeploymentPlan, longest: int | None = None, **kwargs: Any
+    ) -> tuple[DeploymentPlan, ScoringHeadroom]:
+        kwargs.setdefault("gpu_memory_mib", H100_MIB)
+        return reserve_scoring_headroom(
+            plan, ("ppl",), longest_prompt=longest, **kwargs
+        )
+
+    def test_an_unknown_prompt_length_takes_the_largest_cap_the_share_allows(
+        self, tmp_path: Path
+    ) -> None:
+        """10% of 81559 MiB holds 4020 rows: the cap is 3072, a whole step
+        below; 3072 rows are 6231 MiB, 7.6%, so 0.87 becomes 0.79."""
+        plan = _plan(checkpoint=_checkpoint(tmp_path), mem_fraction_static=0.87)
+
+        served, headroom = self._reserve(plan)
+
+        assert _params(served) == {
+            "context_length": 32768,
+            "mem_fraction_static": 0.79,
+            "chunked_prefill_size": 3072,
+        }
+        assert headroom.prefill_tokens == 3072
+        assert headroom.reserve_mib == 3072 * self.ROW // 2**20 == 6231
+        assert headroom.params == {
+            "chunked_prefill_size": (None, 3072),
+            "mem_fraction_static": (0.87, 0.79),
+        }
+        assert headroom.reason == (
+            "input scoring by ppl: full-vocabulary logits of 3072 prefill tokens "
+            f"x {VOCAB} vocab x (2+12) B = 6231 MiB per GPU, 7.6% of 81559 MiB"
+        )
+
+    def test_a_short_scored_prompt_reserves_only_what_it_needs(
+        self, tmp_path: Path
+    ) -> None:
+        """1500 tokens round up to 2048: 4154 MiB, 5.1%, so 0.87 becomes 0.81."""
+        plan = _plan(checkpoint=_checkpoint(tmp_path), mem_fraction_static=0.87)
+
+        served, headroom = self._reserve(plan, longest=1500)
+
+        assert _params(served)["chunked_prefill_size"] == 2048
+        assert _params(served)["mem_fraction_static"] == 0.81
+        assert headroom.reserve_mib == 4154
+
+    def test_a_larger_gpu_or_fp32_logits_scale_the_cap(self, tmp_path: Path) -> None:
+        h200 = _plan(checkpoint=_checkpoint(tmp_path), mem_fraction_static=0.9)
+        _, on_h200 = self._reserve(h200, gpu_memory_mib=143771)
+        assert on_h200.prefill_tokens == 6144  # 7087 rows, a whole step below
+
+        (tmp_path / "fp32").mkdir()
+        fp32 = _plan(
+            checkpoint=_checkpoint(tmp_path / "fp32", torch_dtype="float32"),
+            mem_fraction_static=0.9,
+        )
+        _, wide = self._reserve(fp32)
+        assert wide.prefill_tokens == 3072  # 16 B/row: 3519 rows
+
+    def test_the_cap_never_exceeds_the_engine_default(self, tmp_path: Path) -> None:
+        plan = _plan(checkpoint=_checkpoint(tmp_path), mem_fraction_static=0.9)
+        _, headroom = self._reserve(plan, gpu_memory_mib=10 * H100_MIB)
+        assert headroom.prefill_tokens == 8192
+
+    def test_a_smaller_cap_already_set_is_kept_and_sizes_the_reserve(
+        self, tmp_path: Path
+    ) -> None:
+        plan = _plan(
+            checkpoint=_checkpoint(tmp_path),
+            mem_fraction_static=0.87,
+            chunked_prefill_size=1024,
+        )
+
+        served, headroom = self._reserve(plan)
+
+        assert _params(served)["chunked_prefill_size"] == 1024
+        assert _params(served)["mem_fraction_static"] == 0.84
+        assert headroom.params == {"mem_fraction_static": (0.87, 0.84)}
+
+    def test_overrides_win(self, tmp_path: Path) -> None:
+        """A pinned cap stays, even above the budget, and sizes the reserve;
+        a pinned share stays as it is."""
+        plan = _plan(
+            checkpoint=_checkpoint(tmp_path),
+            mem_fraction_static=0.85,
+            chunked_prefill_size=8192,
+        )
+
+        served, headroom = self._reserve(
+            plan, pinned=frozenset({"chunked_prefill_size", "mem_fraction_static"})
+        )
+
+        assert served == plan
+        assert headroom.params == {}
+        assert headroom.prefill_tokens == 8192
+        assert "mem_fraction_static kept: set by infer.overrides" in headroom.reason
+
+    def test_a_share_left_to_the_engine_is_not_lowered(self, tmp_path: Path) -> None:
+        """SGLang then sizes its own share from the cap the reserve sets."""
+        served, headroom = self._reserve(_plan(checkpoint=_checkpoint(tmp_path)))
+
+        assert _params(served) == {
+            "context_length": 32768,
+            "chunked_prefill_size": 3072,
+        }
+        assert "mem_fraction_static left to the engine" in headroom.reason
+
+    @pytest.mark.parametrize(
+        ("backend", "config", "gpu", "reason"),
+        [
+            ("vllm", {"vocab_size": VOCAB}, H100_MIB, "no headroom rule for backend"),
+            ("sglang", {}, H100_MIB, "vocab_size is unknown"),
+            ("sglang", {"vocab_size": VOCAB}, None, "GPU memory is unknown"),
+            ("sglang", {"vocab_size": 10**9}, H100_MIB, "exceeds the budget"),
+        ],
+    )
+    def test_a_missing_fact_leaves_the_plan_and_says_why(
+        self,
+        tmp_path: Path,
+        backend: str,
+        config: dict[str, Any],
+        gpu: int | None,
+        reason: str,
+    ) -> None:
+        (tmp_path / "config.json").write_text(json.dumps(config))
+        plan = _plan(
+            backend=backend, checkpoint=str(tmp_path), mem_fraction_static=0.87
+        )
+
+        served, headroom = self._reserve(plan, gpu_memory_mib=gpu)
+
+        assert served == plan
+        assert reason in headroom.reason
+        assert (headroom.params, headroom.prefill_tokens) == ({}, None)
+        assert headroom.to_json()["params"] == {}
+
+
+class TestScoringHeadroomInServingGroups:
+    def _config(self, checkpoint: str, **model: Any) -> dict[str, Any]:
+        config = _config(
+            {"ppl": {"class": SCORING}, "gen": _gen(1024)},
+            model={"path": checkpoint, **model},
+        )
+        return config
+
+    def test_scoring_and_generation_share_one_engine_with_headroom(
+        self, tmp_path: Path
+    ) -> None:
+        """The headroom changes no output, so it does not split the group."""
+        checkpoint = _checkpoint(tmp_path)
+        plan = _plan(checkpoint=checkpoint, mem_fraction_static=0.87)
+
+        (group,) = plan_serving_groups(self._config(checkpoint), {"m": plan}, H100_MIB)
+
+        assert group.tasks == ("ppl", "gen")
+        assert _params(group.plans["m"])["mem_fraction_static"] == 0.79
+        assert group.headroom["m"].tasks == ("ppl",)
+        assert group.headroom["m"].to_json()["params"] == {
+            "chunked_prefill_size": {"recipe": None, "served": 3072},
+            "mem_fraction_static": {"recipe": 0.87, "served": 0.79},
+        }
+
+    def test_generation_alone_keeps_the_recipe(self, tmp_path: Path) -> None:
+        checkpoint = _checkpoint(tmp_path)
+        plan = _plan(checkpoint=checkpoint, mem_fraction_static=0.87)
+        config = _config({"gen": _gen(1024)}, model={"path": checkpoint})
+
+        (group,) = plan_serving_groups(config, {"m": plan}, H100_MIB)
+
+        assert group.plans["m"] == plan
+        assert group.headroom == {}
+
+    def test_overrides_in_the_config_win(self, tmp_path: Path) -> None:
+        checkpoint = _checkpoint(tmp_path)
+        plan = _plan(checkpoint=checkpoint, mem_fraction_static=0.85)
+        config = self._config(
+            checkpoint, infer={"overrides": {"mem-fraction-static": 0.85}}
+        )
+
+        (group,) = plan_serving_groups(config, {"m": plan}, H100_MIB)
+
+        assert _params(group.plans["m"])["mem_fraction_static"] == 0.85
+        assert _params(group.plans["m"])["chunked_prefill_size"] == 3072
+
+    def test_a_scaled_group_sizes_its_own_headroom(self, tmp_path: Path) -> None:
+        checkpoint = _checkpoint(tmp_path)
+        plan = _plan(checkpoint=checkpoint, mem_fraction_static=0.87)
+        config = _config(
+            {"gen": _gen(1024), "long_ppl": {"class": SCORING, "min_context": 60000}},
+            model={
+                "path": checkpoint,
+                "context": {"native": 32768, "max": 131072, "scaling": {"x": 1}},
+            },
+        )
+
+        default, scaled = plan_serving_groups(config, {"m": plan}, H100_MIB)
+
+        assert default.plans["m"] == plan
+        assert default.headroom == {}
+        assert scaled.tasks == ("long_ppl",)
+        assert scaled.headroom["m"].tasks == ("long_ppl",)
+        assert _params(scaled.plans["m"])["chunked_prefill_size"] == 3072
+        assert _params(scaled.plans["m"])["context_length"] == 60000
+
+    def test_the_longest_scored_prompt_is_the_need_within_the_window(
+        self, tmp_path: Path
+    ) -> None:
+        checkpoint = _checkpoint(tmp_path)
+        plan = _plan(checkpoint=checkpoint, mem_fraction_static=0.87)
+        config = _config(
+            {"ppl": {"class": SCORING, "min_context": 1500}},
+            model={"path": checkpoint},
+        )
+
+        (group,) = plan_serving_groups(config, {"m": plan}, H100_MIB)
+
+        assert group.headroom["m"].prefill_tokens == 2048
+
+    def test_unknown_gpu_memory_reports_the_unchanged_plan(
+        self, tmp_path: Path
+    ) -> None:
+        checkpoint = _checkpoint(tmp_path)
+        plan = _plan(checkpoint=checkpoint, mem_fraction_static=0.87)
+
+        (group,) = plan_serving_groups(self._config(checkpoint), {"m": plan})
+
+        assert group.plans["m"] == plan
+        assert "GPU memory is unknown" in group.headroom["m"].reason

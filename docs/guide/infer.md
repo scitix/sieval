@@ -235,6 +235,55 @@ can run as separate jobs into one `result_dir`. Each group writes
 A `gen` model served by SGLang with no `dialect:` gets `sglang_legacy` when a
 task scores input: SGLang's `/v1/completions` cannot.
 
+### Input-scoring headroom
+
+A task that scores its input (`TaskRequirements.input_scoring`: the PPL and
+CLP tasks) makes the engine compute full-vocabulary logits for every prompt
+token of a prefill forward, where generation keeps one row per sequence.
+Recipes are sized for generation and leave too little memory free for that:
+the engine runs out of memory under full load and every later request fails.
+
+So when a task on an SGLang plan scores input, that plan reserves memory for
+the logits, per GPU (tensor parallelism gathers the whole vocabulary on each):
+
+```text
+row      = vocab_size × (dtype bytes + 12)    # fp32 cast, gathered rows, log-softmax
+budget   = 10% of GPU memory ÷ row
+prefill  = min(budget, longest scored prompt, 8192), up to a multiple of 1024
+           (down, if that exceeds budget)
+reserve  = prefill × row
+```
+
+`chunked_prefill_size` is lowered to `prefill`, which bounds the logit rows
+one forward holds, and `mem_fraction_static` is lowered by `reserve` as a
+share of GPU memory, rounded down to 0.01. `vocab_size` and `torch_dtype` come
+from the checkpoint's `config.json`; GPU memory from `SIEVAL_TARGET_GPU` or
+`nvidia-smi`. The longest scored prompt is the task's context need within the
+served window; unknown, the budget sets the cap.
+
+For Qwen3-30B-A3B-Base (vocabulary 151936, bf16) on H100 80GB: a row is
+2 MiB, the cap 3072 tokens, the reserve 6231 MiB (7.6%), so the recipe's
+`mem_fraction_static` 0.87 becomes 0.79.
+
+- `infer.overrides` wins: a pinned `chunked_prefill_size` is kept and sizes
+  the reserve; a pinned `mem_fraction_static` is kept as it is.
+- A smaller `chunked_prefill_size` already in the plan is kept. A plan that
+  leaves `mem_fraction_static` to SGLang gets only the cap: SGLang sizes its
+  share from it.
+- Unknown vocabulary or GPU memory leaves the plan unchanged. vLLM plans are
+  not adjusted.
+- Scoring and generation tasks keep one engine: the reserve changes how fast
+  the engine runs, not what it returns, and a second engine would double the
+  launches of every mixed run. A task in a scaled group gets its own reserve.
+
+`--dry-run` reports it under `serving.<group>.engines.<engine>.headroom`:
+the scoring `tasks`, `prefill_tokens`, `reserve_mib`, each changed parameter
+as `{recipe, served}`, and the `reason`. It is part of the serving plan, so it
+lands in `infer_plans.yaml` and `runs[].serving`, never in the inference
+identity: a result directory recorded without it resumes. `infer_plans.yaml`
+records the plan it started from under `recipes`, which a resume under
+`SIEVAL_TARGET_GPU` reuses.
+
 ### Anthropic Messages
 
 To call the native Anthropic Messages API, select the dialect explicitly and

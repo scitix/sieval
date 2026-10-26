@@ -25,6 +25,7 @@ from sieval.infer.introspect import (
     detect_local_gpu,
     extract_moe_info,
     introspect_checkpoint,
+    logit_shape,
     native_context_window,
 )
 
@@ -728,3 +729,30 @@ class TestNativeContextWindow:
         assert native_context_window(str(tmp_path)) is None
         (tmp_path / "config.json").write_text("{not json")
         assert native_context_window(str(tmp_path)) is None
+
+
+class TestLogitShape:
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [
+            ({"vocab_size": 151936, "torch_dtype": "bfloat16"}, (151936, 2.0)),
+            ({"vocab_size": 32000, "torch_dtype": "float32"}, (32000, 4.0)),
+            ({"vocab_size": 32000}, (32000, 2.0)),
+            ({"vocab_size": 32000, "torch_dtype": "int8"}, (32000, 2.0)),
+            (
+                {"torch_dtype": "float32", "text_config": {"vocab_size": 262144}},
+                (262144, 4.0),
+            ),
+            ({"vocab_size": 0}, None),
+            ({}, None),
+            ([], None),
+        ],
+    )
+    def test_reads_vocab_size_and_dtype(
+        self, tmp_path: Path, config: object, expected: tuple[int, float] | None
+    ) -> None:
+        (tmp_path / "config.json").write_text(json.dumps(config))
+        assert logit_shape(str(tmp_path)) == expected
+
+    def test_missing_config_is_none(self, tmp_path: Path) -> None:
+        assert logit_shape(str(tmp_path)) is None

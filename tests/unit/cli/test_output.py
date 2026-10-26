@@ -486,6 +486,25 @@ class TestRenderTextDryRunPlan:
         )
         assert not any(line.startswith("serving group") for line in single)
 
+    def test_an_engine_with_scoring_headroom_states_why(self) -> None:
+        task = {"start": "fresh", "resume_plan": None, "to_infer": 1, "to_grade": 1}
+        reason = "input scoring by ppl: 6231 MiB per GPU"
+        lines = self._render(
+            True,
+            serving={
+                "default": {
+                    "tasks": ["ppl", "gen"],
+                    "engines": {
+                        "m": {"window": 32768, "headroom": {"reason": reason}},
+                        "other": {"window": 32768},
+                    },
+                }
+            },
+            tasks={"ppl": task, "gen": task},
+        )
+        assert f"engine m: {reason}" in lines
+        assert not any(line.startswith("engine other") for line in lines)
+
     def test_a_refused_task_is_named_on_a_failed_dry_run(self) -> None:
         lines = self._render(
             False,

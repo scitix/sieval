@@ -391,6 +391,27 @@ def introspect_checkpoint_with_config(
     return identity, config
 
 
+def _text_configs(checkpoint: str) -> list[dict[str, Any]]:
+    """*checkpoint*'s ``config.json``, then its nested ``text_config`` (a
+    multimodal checkpoint's language model); empty when unreadable."""
+    try:
+        config = orjson.loads((Path(checkpoint) / "config.json").read_bytes())
+    except (OSError, orjson.JSONDecodeError):
+        return []
+    if not isinstance(config, dict):
+        return []
+    text = config.get("text_config")
+    return [config, text] if isinstance(text, dict) else [config]
+
+
+def _positive_config_int(checkpoint: str, key: str) -> int | None:
+    for source in _text_configs(checkpoint):
+        value = source.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None
+
+
 def native_context_window(checkpoint: str) -> int | None:
     """The context window *checkpoint* was trained for, in tokens.
 
@@ -398,19 +419,22 @@ def native_context_window(checkpoint: str) -> int | None:
     ``text_config`` of a multimodal checkpoint. ``None`` when the file is
     missing or unreadable, or holds no such positive integer.
     """
-    try:
-        config = orjson.loads((Path(checkpoint) / "config.json").read_bytes())
-    except (OSError, orjson.JSONDecodeError):
+    return _positive_config_int(checkpoint, "max_position_embeddings")
+
+
+def logit_shape(checkpoint: str) -> tuple[int, float] | None:
+    """*checkpoint*'s output vocabulary and the bytes of one logit in its dtype.
+
+    ``vocab_size`` from ``config.json`` (or its ``text_config``), and
+    ``torch_dtype`` in bytes (2 when unstated or unknown, as
+    :func:`bytes_per_param`). ``None`` when no vocabulary size can be read.
+    """
+    vocab = _positive_config_int(checkpoint, "vocab_size")
+    if vocab is None:
         return None
-    if not isinstance(config, dict):
-        return None
-    for source in (config, config.get("text_config")):
-        if not isinstance(source, dict):
-            continue
-        value = source.get("max_position_embeddings")
-        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-            return value
-    return None
+    dtypes = [s.get("torch_dtype") for s in _text_configs(checkpoint)]
+    dtype = next((d for d in dtypes if isinstance(d, str)), "bfloat16")
+    return vocab, _DTYPE_BYTES.get(dtype, 2.0)
 
 
 async def introspect_checkpoint(checkpoint: str) -> ModelIdentity:

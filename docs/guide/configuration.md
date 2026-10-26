@@ -509,7 +509,10 @@ in `SIEVAL_TARGET_GPU` ([Resolving for declared GPUs](infer.md#resolving-for-dec
 - `serving` has one entry per serving group (`default`, or `<model>@<window>`):
   its `tasks`, their served windows, the `engines` it launches and whether any
   starts. The `serving` check fails on a window shortfall. See
-  [Serving plans](infer.md#serving-plans-context-window-and-dialect).
+  [Serving plans](infer.md#serving-plans-context-window-and-dialect). An
+  engine serving a task that scores input has `headroom`: what its launch
+  changed from the recipe, and why
+  ([Input-scoring headroom](infer.md#input-scoring-headroom)).
 - `tasks.<task>.start` is `fresh`, `resume` (stage by stage) or `reuse` (the
   recorded `report.json` stands, recomputed when only `report` changed).
   `resume_plan` counts the recorded samples as `runs[].resume` will, and is

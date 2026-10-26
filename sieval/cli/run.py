@@ -74,6 +74,7 @@ from sieval.infer.deployer import (
     unlaunched_deployment,
 )
 from sieval.infer.introspect import (
+    GPUInfo,
     check_launch_gpu,
     declared_target_gpu,
     detect_local_gpu,
@@ -140,8 +141,9 @@ class _RecordedPlans:
     were resolved for, and only for a model whose serving config is unchanged:
     a recipe the installed SiEval resolves differently would otherwise change
     the inference identity and refuse the resume. Each serving group's
-    ``infer_plans[.<key>].yaml`` is read, a scaled group's ``recipes`` standing
-    for the plans its scaled ones started from.
+    ``infer_plans[.<key>].yaml`` is read, a group's ``recipes`` standing for
+    the plans its changed ones (scaled, or given input-scoring headroom)
+    started from.
     """
 
     def __init__(self, session_dir: Path | None, gpu: str | None) -> None:
@@ -214,10 +216,15 @@ def _declared_gpu_text() -> str | None:
     return format_target_gpu(declared) if declared is not None else None
 
 
+async def _plan_gpu() -> GPUInfo | None:
+    """The GPUs this run's plans are resolved for: the declared ones, else
+    this node's."""
+    return declared_target_gpu() or await detect_local_gpu()
+
+
 async def _plan_gpu_text() -> str | None:
-    """The GPUs this run's plans were resolved for, as ``SIEVAL_TARGET_GPU``
-    spells them: the declared ones, else this node's."""
-    gpu = declared_target_gpu() or await detect_local_gpu()
+    """:func:`_plan_gpu`, as ``SIEVAL_TARGET_GPU`` spells it."""
+    gpu = await _plan_gpu()
     return format_target_gpu(gpu) if gpu is not None else None
 
 
@@ -329,7 +336,8 @@ class _GroupLaunch:
     the default group's, so a task outside the group still binds; *own* are the
     roots this group launches. A root's engine is named *names*[root]: its
     model name in the default group, the group key otherwise. *recipes* are
-    the recipe plans of the roots this group scales, recorded for a resume.
+    the recipe plans of the roots whose plan this group changed, recorded for
+    a resume.
     """
 
     group: ServingGroup
@@ -363,12 +371,17 @@ def _serving_groups(
     config: Mapping[str, Any],
     plan_dicts: Mapping[str, dict[str, Any]],
     prepared_launches: Mapping[str, tuple[DeploymentPlan, list[BackendCommand]]],
+    gpu: GPUInfo | None = None,
 ) -> list[_GroupLaunch]:
-    """:func:`plan_serving_groups`, each group with its launches translated;
-    an unchanged plan keeps what :func:`_prepare_launch_batch` resolved."""
+    """:func:`plan_serving_groups` for *gpu*, each group with its launches
+    translated; an unchanged plan keeps what :func:`_prepare_launch_batch`
+    resolved. A group that changes a plan records the plan it started from
+    in ``recipes``, which a resume reuses (:class:`_RecordedPlans`)."""
     models = config.get("models") or {}
     groups = plan_serving_groups(
-        config, {name: plan for name, (plan, _) in prepared_launches.items()}
+        config,
+        {name: plan for name, (plan, _) in prepared_launches.items()},
+        gpu.memory_mib if gpu is not None else None,
     )
 
     def entry(
@@ -386,7 +399,13 @@ def _serving_groups(
         entries = dict(default)
         names = {name: name for name in default}
         recipes: dict[str, dict[str, Any]] = {}
-        if group.key != DEFAULT_GROUP:
+        if group.key == DEFAULT_GROUP:
+            recipes = {
+                name: plan_dicts[name]
+                for name, plan in group.plans.items()
+                if plan != prepared_launches[name][0]
+            }
+        else:
             for name, plan in group.plans.items():
                 entries[name] = entry(name, plan)
                 names[name] = group.key
@@ -623,9 +642,11 @@ async def _run_dry_run(
     )
     groups: list[_GroupLaunch] = []
     serving_error: Exception | None = None
+    gpu = await _plan_gpu() if prepared_launches else None
     try:
         groups = _select_group(
-            _serving_groups(loaded, batch_plans, prepared_launches), serving_group
+            _serving_groups(loaded, batch_plans, prepared_launches, gpu),
+            serving_group,
         )
     except ValueError as exc:
         serving_error = exc
@@ -648,7 +669,7 @@ async def _run_dry_run(
         }
         for name, (_, commands) in prepared.items()
     }
-    result["gpu"] = await _plan_gpu_text() if prepared_launches else None
+    result["gpu"] = format_target_gpu(gpu) if gpu is not None else None
     result["models"] = models
     checks_list = cast(list[dict[str, object]], result["checks"])
     if serving_error is not None:
@@ -759,21 +780,27 @@ async def _run_dry_run(
 
 def _serving_json(group: _GroupLaunch) -> dict[str, object]:
     """A serving group's entry in the dry-run report: the tasks it runs, each
-    one's served window, and the engines it launches."""
+    one's served window, and the engines it launches, with the input-scoring
+    headroom of each engine that has one."""
+    engines: dict[str, dict[str, object]] = {}
+    for name, (plan, commands) in group.prepared.items():
+        if name not in group.own:
+            continue
+        engine: dict[str, object] = {
+            "model": name,
+            "window": served_window(plan, None),
+            "launch": [_launch_json(command) for command in commands],
+        }
+        headroom = group.group.headroom.get(name)
+        if headroom is not None:
+            engine["headroom"] = headroom.to_json()
+        engines[group.names[name]] = engine
     return {
         "tasks": list(group.group.tasks),
         "windows": {
             task: window.window for task, window in group.group.windows.items()
         },
-        "engines": {
-            group.names[name]: {
-                "model": name,
-                "window": served_window(plan, None),
-                "launch": [_launch_json(command) for command in commands],
-            }
-            for name, (plan, commands) in group.prepared.items()
-            if name in group.own
-        },
+        "engines": engines,
         "needs_inference": None,
     }
 
@@ -845,7 +872,13 @@ async def _run_all(
 
         # Shortfalls are refused before the first subprocess starts.
         groups = _select_group(
-            _serving_groups(config, plan_dicts, prepared_launches), serving_group
+            _serving_groups(
+                config,
+                plan_dicts,
+                prepared_launches,
+                await _plan_gpu() if prepared_launches else None,
+            ),
+            serving_group,
         )
         if SERVICE_LOG_DIR in {n for g in groups for n in g.names.values()}:
             raise ValueError(

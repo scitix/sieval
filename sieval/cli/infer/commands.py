@@ -38,7 +38,12 @@ from sieval.infer.deployer import (
     DeployError,
     DeployTimeoutError,
 )
-from sieval.infer.introspect import check_launch_gpu
+from sieval.infer.introspect import (
+    GPUInfo,
+    check_launch_gpu,
+    declared_target_gpu,
+    detect_local_gpu,
+)
 from sieval.infer.params import merge_params
 from sieval.infer.recipes import capability_model_type
 from sieval.infer.topology.models import (
@@ -273,13 +278,16 @@ def infer_start(
                 param_hint="--model-type",
             )
 
-        async def _resolve_yaml() -> ResolvedInferConfig:
-            return await resolve_infer_config(target_path, model)
+        async def _resolve_yaml() -> tuple[ResolvedInferConfig, GPUInfo | None]:
+            resolved = await resolve_infer_config(target_path, model)
+            return resolved, declared_target_gpu() or await detect_local_gpu()
 
-        model_name, plan, user_env = anyio.run(_resolve_yaml)
+        (model_name, plan, user_env), gpu = anyio.run(_resolve_yaml)
         # The default serving group's plan, sized as `sieval run` sizes it.
         default_group = plan_serving_groups(
-            yaml.safe_load(target_path.read_text()) or {}, {model_name: plan}
+            yaml.safe_load(target_path.read_text()) or {},
+            {model_name: plan},
+            gpu.memory_mib if gpu is not None else None,
         )[0]
         plan = default_group.plans[model_name]
         serving = SessionServing(tasks=frozenset(default_group.tasks))
