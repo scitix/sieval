@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.14.0] - 2026-10-27
+
+A minor bump: new config keys `runner_config.stop_after` and a model's
+`lifecycle`, a task's `grader` / `extractor` may name a `models:` entry that
+`sieval run` launches, `sieval run` gains exit code 6 for an engine lost
+mid-run, and `--dry-run` reports new `barriers`, `phases` and `launches`
+fields. No identity or on-disk format changes: `meta.json` `identity` stays
+schema 4, `RESULT_SCHEMA_VERSION` stays 1, and 0.13.x result directories
+resume.
+
+### Migrating from 0.13.x
+
+- **Exit code 6** (#246): `sieval run` exits 6 when an engine it launched exits or fails its health check for 180 s in a row mid-run. It is not a refusal and writes no `SIEVAL_REFUSAL` line; under `-o json`, `data.outcome` is `engine_died`. A scheduler that treated every non-zero exit alike now sees this code; `--resume` retries the failed samples.
+- **New `error_reason` values** (#246): `engine_died` (in flight when the engine was lost; a resume retries it and spends a retry) and `engine_died_unsent` (never sent; retried without spending one). An older SiEval reads both as ordinary retriable failures.
+- **`stop_after` goes in the top-level `runner_config`** (#247). It is session-wide: a task's own `runner_config.stop_after` is refused, and it needs `record_each_stage: true` (the default). The stopped run writes no `report.json` unless it stopped after `report`, and records `runs[].stopped_after`.
+- **New `error_reason` value `barrier_iteration`** (#247): with `max_iterations` unset, a sample asking to iterate past a barrier on `inference` or `postprocess` fails with it; a resume without that barrier can retry it. A task with `max_iterations` above 1 under such a barrier is refused before the run.
+- **`--dry-run` `needs_inference` vs `launches`** (#247): the top-level `needs_inference` says whether a model under test starts; a launched judge or extractor does not set it. The new `launches` lists every engine the run starts, judges included: a caller that read `needs_inference` to decide whether the run needs GPUs should read `launches`.
+- Barriers and lifecycles are scheduling only: they enter no identity and never refuse a resume. `runs[]` gains `stopped_after` and `serving.lifecycles`, both additive.
+
+### Added
+
+- **Stage barriers and `stop_after`.** `runner_config.stop_after: <stage>` (`preprocess`, `inference`, `postprocess`, `feedback` or `report`) ends the run once every sample of every task has finished that stage or failed; `--resume` continues from the next stage with the same identities as an uninterrupted run. The barriers are `stop_after` plus every lifecycle boundary, with no key of their own; at each, no sample starts the next stage until all have finished this one. `--dry-run` lists them under `barriers`, with what implied each. From Python: `MultiTaskRunner(stop_after=, barriers=, on_barrier=)` (#247, closes #245).
+- **Model lifecycles and launched judges.** A model `sieval run` launches may set `lifecycle: {from: S, until: T}` (either bound optional) to run its engine only between those barriers and then free its GPUs. A task's `grader` or `extractor` may name a `models:` entry, which `sieval run` launches like the subject; a launched judge that states `weights` is compared by them instead of its name in the `feedback` identity. With the subject `until: inference` and the judge `from: inference`, the judge takes the subject's GPUs within one run. Models alive at the same time get disjoint GPU blocks (indices into an inherited `CUDA_VISIBLE_DEVICES`) and their own ports, and a phase that does not fit is refused before any engine starts. A model starts only when some sample still needs it, so a resume with inference complete starts only the judge. `--dry-run` reports `phases` and `launches`; `runs[].serving.lifecycles` records the lifecycles (#247, closes #245).
+
+### Fixed
+
+- **A run fails fast when an engine it launched dies.** An engine lost mid-run (an SGLang out-of-memory exit) used to fail every later request one by one through its client retries until no sample was left. `sieval run` now polls each launched engine's process every second and its health every 10 s; on a loss, every stage still needing that engine fails at once and stages on other engines carry on. Each task still writes `report.json`, the engine is stopped (its leftover process group killed so no worker keeps the GPUs), no later serving group starts, and the run exits 6 naming the engine, its exit code or failing health check, the failures per task and its last log lines. An engine stopped on purpose, lost after its last sample, or not launched by SiEval (`api_base`, `sieval infer start`) is not a loss (#246, follow-up to #243).
+
 ## [0.13.2] - 2026-10-26
 
 A patch release: a model that serves input-scoring tasks on SGLang reserves
@@ -553,6 +581,7 @@ Mainstream benchmarks registered in `sieval/meta/index.json`:
 - Project-wide preflight (`scripts/check_preflight.py`): links, deps, tasks, datasets, imports, examples, meta-index sync, version.
 - Tooling: `ruff`, `ty`, `mypy strict`, `pytest`.
 
+[0.14.0]: https://github.com/scitix/sieval/compare/v0.13.2...v0.14.0
 [0.13.2]: https://github.com/scitix/sieval/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/scitix/sieval/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/scitix/sieval/compare/v0.12.0...v0.13.0
