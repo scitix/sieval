@@ -3,6 +3,7 @@
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any, ClassVar
@@ -14,6 +15,7 @@ from sieval.cli.serving import (
     SCORING_FP32_BYTES,
     ContextNeed,
     ScoringHeadroom,
+    ScoringHeadroomError,
     ServedWindow,
     ServingShortfallError,
     check_context_fits,
@@ -633,6 +635,66 @@ class TestReserveScoringHeadroom:
         assert headroom.params == {}
         assert headroom.prefill_tokens == 8192
         assert "mem_fraction_static kept: set by infer.overrides" in headroom.reason
+
+    @pytest.mark.parametrize("cap", [16384, 32768])
+    def test_a_pinned_cap_over_the_budget_is_refused(
+        self, tmp_path: Path, cap: int
+    ) -> None:
+        """16384 rows would take 41% of the GPU, 32768 more than all of it:
+        the share must not be lowered by that."""
+        plan = _plan(
+            checkpoint=_checkpoint(tmp_path),
+            mem_fraction_static=0.87,
+            chunked_prefill_size=cap,
+        )
+
+        with pytest.raises(
+            ScoringHeadroomError, match=f"chunked_prefill_size {cap} pinned"
+        ) as error:
+            self._reserve(plan, pinned=frozenset({"chunked_prefill_size"}))
+        assert "at most 4020" in str(error.value)
+
+    def test_a_pinned_cap_over_the_budget_stands_with_a_pinned_share(
+        self, tmp_path: Path
+    ) -> None:
+        plan = _plan(
+            checkpoint=_checkpoint(tmp_path),
+            mem_fraction_static=0.6,
+            chunked_prefill_size=16384,
+        )
+
+        served, headroom = self._reserve(
+            plan, pinned=frozenset({"chunked_prefill_size", "mem_fraction_static"})
+        )
+
+        assert served == plan
+        assert headroom.prefill_tokens == 16384
+
+    def test_each_role_reports_and_reserves_its_own_cap(self, tmp_path: Path) -> None:
+        """A prefill/decode split keys *params* by role; a role that already
+        holds a smaller cap reserves only for it."""
+        plan = _plan(checkpoint=_checkpoint(tmp_path), mem_fraction_static=0.87)
+        full = plan.assignments[0]
+        prefill = dataclasses.replace(full, role=WellKnownRole.PREFILL)
+        decode = dataclasses.replace(
+            full,
+            role=WellKnownRole.DECODE,
+            engine_params={**full.engine_params, "chunked_prefill_size": 1024},
+        )
+        plan = dataclasses.replace(plan, assignments=(prefill, decode))
+
+        served, headroom = self._reserve(plan)
+
+        assert headroom.params == {
+            "decode.mem_fraction_static": (0.87, 0.84),
+            "prefill.chunked_prefill_size": (None, 3072),
+            "prefill.mem_fraction_static": (0.87, 0.79),
+        }
+        assert [a.engine_params["mem_fraction_static"] for a in served.assignments] == [
+            0.79,
+            0.84,
+        ]
+        assert headroom.prefill_tokens == 3072
 
     def test_a_share_left_to_the_engine_is_not_lowered(self, tmp_path: Path) -> None:
         """SGLang then sizes its own share from the cap the reserve sets."""

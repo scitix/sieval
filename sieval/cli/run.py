@@ -375,8 +375,7 @@ def _serving_groups(
 ) -> list[_GroupLaunch]:
     """:func:`plan_serving_groups` for *gpu*, each group with its launches
     translated; an unchanged plan keeps what :func:`_prepare_launch_batch`
-    resolved. A group that changes a plan records the plan it started from
-    in ``recipes``, which a resume reuses (:class:`_RecordedPlans`)."""
+    resolved, a changed one records its recipe in ``recipes``."""
     models = config.get("models") or {}
     groups = plan_serving_groups(
         config,
@@ -780,8 +779,7 @@ async def _run_dry_run(
 
 def _serving_json(group: _GroupLaunch) -> dict[str, object]:
     """A serving group's entry in the dry-run report: the tasks it runs, each
-    one's served window, and the engines it launches, with the input-scoring
-    headroom of each engine that has one."""
+    one's served window, and the engines it launches (with any headroom)."""
     engines: dict[str, dict[str, object]] = {}
     for name, (plan, commands) in group.prepared.items():
         if name not in group.own:

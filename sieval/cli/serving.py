@@ -32,36 +32,38 @@ _MAX_TOKENS_KEYS = ("max_tokens", "max_completion_tokens")
 PROMPT_HEADROOM = 4096
 
 
-#: The engine parameters the input-scoring headroom sets, by backend: the share
-#: of GPU memory the engine takes up front (weights, KV pool), and the tokens
-#: one prefill forward may hold, which bounds the rows of logits it computes.
-#: SGLang only: input scoring goes through its native ``/generate``
-#: (``sglang_legacy``); vLLM's prompt-logprob path has no measured rule yet.
+#: The engine parameters the input-scoring headroom sets, by backend: the GPU
+#: memory share taken up front, and the tokens of one prefill batch, which
+#: bound the rows of logits it computes (SGLang charges every request of the
+#: batch against it: ``rem_chunk_tokens`` in
+#: https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/srt/managers/schedule_policy.py#L846).
+#: SGLang only; vLLM's prompt-logprob path has no measured rule yet.
 MEMORY_PARAMS: dict[str, str] = {"sglang": "mem_fraction_static"}
 PREFILL_PARAMS: dict[str, str] = {"sglang": "chunked_prefill_size"}
 
-#: Bytes per scored logit beyond the model dtype's: SGLang casts the logits to
-#: fp32, gathers the scored rows (``logits[input_logprob_indices]``) and takes
-#: a log-softmax over them, three fp32 copies alive at once.
+#: Bytes per scored logit beyond the model dtype's: SGLang's worst case holds
+#: three fp32 vocabulary rows per token (``matrices_per_chunk`` in
+#: https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/srt/layers/logprob_processor.py#L561-L564).
 SCORING_FP32_BYTES = 3 * 4
 
-#: The most of one GPU's memory the input-scoring reserve may take. It bounds
-#: the prefill cap, so a large vocabulary shortens the prefill chunk rather
-#: than shrinking the KV pool without limit.
+#: The most of one GPU's memory the reserve may take: a large vocabulary
+#: shortens the prefill cap instead of shrinking the KV pool.
 SCORING_RESERVE_SHARE = 0.10
 
-#: The prefill cap is a multiple of this, and at least this, unless one such
-#: step exceeds the reserve share.
+#: The prefill cap is a multiple of this, unless one step exceeds the budget.
 SCORING_PREFILL_STEP = 1024
 
-#: The prefill cap never exceeds this: SGLang's own ``chunked_prefill_size``
-#: on 80 to 160 GB GPUs. A larger one would raise activation memory, not
-#: reserve it.
+#: The prefill cap never exceeds SGLang's own default on 80 to 160 GB GPUs.
 SCORING_MAX_PREFILL = 8192
 
 
 class ServingShortfallError(ValueError):
     """A task needs a longer context window than its model can serve."""
+
+
+class ScoringHeadroomError(ValueError):
+    """A pinned prefill cap needs more memory for its logits than the
+    input-scoring budget allows."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,10 +97,10 @@ class ServedWindow:
 class ScoringHeadroom:
     """The memory reserved on one engine for the tasks that score input.
 
-    *params* maps each engine parameter the reserve changed to its value
-    before and after (``None`` before: unset). Empty when nothing changed,
-    and *reason* then says why. *prefill_tokens* and *reserve_mib* are
-    ``None`` when the reserve could not be sized.
+    *params* maps each changed engine parameter (``<role>.<param>`` on a plan
+    with several roles) to its value before (``None``: unset) and after.
+    *prefill_tokens* and *reserve_mib* are the largest role's, ``None`` when
+    the reserve could not be sized; *reason* then says why.
     """
 
     tasks: tuple[str, ...]
@@ -441,27 +443,21 @@ def reserve_scoring_headroom(
 ) -> tuple[DeploymentPlan, ScoringHeadroom]:
     """*plan* with GPU memory set aside for the logits input scoring computes.
 
-    Scoring a prompt materializes full-vocabulary logits for every token of a
-    prefill forward; generation keeps one row per sequence. A recipe sized for
-    generation leaves too little memory free for them, and the engine dies.
     Per GPU (tensor parallelism gathers the full vocabulary on every rank)::
 
-        row      = vocab_size * (dtype_bytes + SCORING_FP32_BYTES)
-        budget   = SCORING_RESERVE_SHARE * gpu_bytes // row
-        prefill  = min(budget, longest_prompt, SCORING_MAX_PREFILL),
-                   rounded up to a SCORING_PREFILL_STEP, then down to fit budget
-        reserve  = prefill * row
-        memory   = recipe_memory - reserve / gpu_bytes, floored to 0.01
+        row     = vocab_size * (dtype_bytes + SCORING_FP32_BYTES)
+        budget  = SCORING_RESERVE_SHARE * gpu_bytes // row
+        prefill = min(budget, longest_prompt, SCORING_MAX_PREFILL), up to a
+                  SCORING_PREFILL_STEP, down again if that exceeds budget
+        memory  = recipe_memory - prefill * row / gpu_bytes, floored to 0.01
 
-    The prefill cap goes to :data:`PREFILL_PARAMS` and only ever lowers it; the
-    memory share to :data:`MEMORY_PARAMS`. *longest_prompt* is the longest
-    scored prompt as far as it is known (the task's context need, at most the
-    served window); ``None`` leaves the cap to the budget. A parameter in
-    *pinned* (set by ``infer.overrides``) is kept; a pinned prefill cap sizes
-    the reserve. A memory share left to the engine is not lowered, since the
-    engine then sizes it from the prefill cap. Missing facts (vocabulary, GPU
-    memory) leave the plan as it is, and the returned :class:`ScoringHeadroom`
-    says why.
+    Each role keeps a smaller or pinned prefill cap, and its reserve follows
+    that cap. A memory share pinned in *pinned* or left to the engine is not
+    lowered. A missing fact (backend rule, vocabulary, GPU memory) leaves the
+    plan as it is, and the reason says why.
+
+    Raises :class:`ScoringHeadroomError` when a pinned cap's reserve exceeds
+    the budget and the share would be lowered by it.
     """
     memory_key = MEMORY_PARAMS.get(plan.backend)
     prefill_key = PREFILL_PARAMS.get(plan.backend)
@@ -488,34 +484,43 @@ def reserve_scoring_headroom(
             tasks, f"unchanged: one logit row of vocab {vocab} exceeds the budget"
         )
 
+    def key(role: str, param: str) -> str:
+        return param if len(plan.assignments) == 1 else f"{role}.{param}"
+
     params: dict[str, tuple[ParamValue | None, ParamValue]] = {}
     engines: list[dict[str, ParamValue]] = []
     caps: list[int] = []
+    kept: set[str] = set()
     for assignment in plan.assignments:
         engine = dict(assignment.engine_params)
+        cap = prefill
         current = _count(engine.get(prefill_key))
         if current is not None and (prefill_key in pinned or current <= prefill):
-            caps.append(current)
+            cap = current
         else:
             engine[prefill_key] = prefill
-            params[prefill_key] = (current, prefill)
-            caps.append(prefill)
-        engines.append(engine)
-    prefill = max(caps)
-    reserve = prefill * row
-    share = reserve / gpu_bytes
-    kept: set[str] = set()
-    for engine in engines:
+            params[key(assignment.role, prefill_key)] = (current, prefill)
         memory = engine.get(memory_key)
         if memory_key in pinned:
             kept.add(f"{memory_key} kept: set by infer.overrides")
         elif isinstance(memory, bool) or not isinstance(memory, int | float):
             kept.add(f"{memory_key} left to the engine")
+        elif cap > budget:
+            raise ScoringHeadroomError(
+                f"Input scoring by {', '.join(tasks)}: the {prefill_key} {cap} "
+                f"pinned in infer.overrides needs {cap * row // 2**20} MiB per "
+                f"GPU for its logits, over {SCORING_RESERVE_SHARE:.0%} of "
+                f"{gpu_memory_mib} MiB. Pin {prefill_key} at most {budget}, "
+                f"or pin {memory_key} as well."
+            )
         else:
-            lowered = math.floor(round((memory - share) * 100, 6)) / 100
-            if lowered < memory:
-                engine[memory_key] = lowered
-                params[memory_key] = (memory, lowered)
+            lowered = math.floor(round((memory - cap * row / gpu_bytes) * 100, 6))
+            if lowered / 100 < memory:
+                engine[memory_key] = lowered / 100
+                params[key(assignment.role, memory_key)] = (memory, lowered / 100)
+        engines.append(engine)
+        caps.append(cap)
+
     adjusted = dataclasses.replace(
         plan,
         assignments=tuple(
@@ -523,11 +528,13 @@ def reserve_scoring_headroom(
             for assignment, engine in zip(plan.assignments, engines, strict=True)
         ),
     )
+    prefill = max(caps)
+    reserve = prefill * row
     reason = (
         f"input scoring by {', '.join(tasks)}: full-vocabulary logits of "
         f"{prefill} prefill tokens x {vocab} vocab x "
         f"({dtype_bytes:g}+{SCORING_FP32_BYTES}) B = {reserve // 2**20} MiB "
-        f"per GPU, {share:.1%} of {gpu_memory_mib} MiB"
+        f"per GPU, {reserve / gpu_bytes:.1%} of {gpu_memory_mib} MiB"
     )
     if kept:
         reason += "; " + "; ".join(sorted(kept))
