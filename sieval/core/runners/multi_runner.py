@@ -13,6 +13,7 @@ from sieval.core.tasks.run_meta import warn_unmatched_judge_refs
 from sieval.core.tasks.task import Task
 from sieval.core.types import JSONValue
 
+from .engine_loss import EngineGuard
 from .runner import TaskRunner, TaskRunnerConfig
 from .stage_resume import LegacyStageMatch, RunPlan
 
@@ -74,12 +75,14 @@ class MultiTaskRunner:
         legacy_match: LegacyStageMatch | None = None,
         unserved_candidate: bool = False,
         serving_group: str | None = None,
+        engine_guard: EngineGuard | None = None,
     ) -> Self:
         """Register a task for parallel execution.
 
         *inference_recipe*, *context_limit*, *weights*, *stated_serving*,
-        *serving_group*, *resume_config_diff*, *legacy_match* and
-        *unserved_candidate* pass through to :class:`TaskRunner`.
+        *serving_group*, *resume_config_diff*, *legacy_match*,
+        *unserved_candidate* and *engine_guard* pass through to
+        :class:`TaskRunner`.
 
         Auto-sets ``result_dir`` to ``<base_result_dir>/<task.name>`` when
         a base was provided and the task's config lacks its own.
@@ -114,6 +117,7 @@ class MultiTaskRunner:
             legacy_match=legacy_match,
             unserved_candidate=unserved_candidate,
             serving_group=serving_group,
+            engine_guard=engine_guard,
         )
 
         if runner.root_dir in self._output_dirs:

@@ -49,6 +49,18 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
+def kill_orphaned_group(pid: int) -> None:
+    """SIGKILL what is left of the process group *pid* led, once *pid* has exited.
+
+    An engine launched with ``start_new_session`` leads a group whose ID is its
+    PID, and a worker that outlives it keeps its GPUs. The kernel does not hand
+    out a PID still in use as a group ID, so this reaches only that group.
+    Silent when nothing is left.
+    """
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pid, signal.SIGKILL)
+
+
 def kill_process_group(pid: int, sig: signal.Signals) -> None:
     """Send *sig* to the process group led by *pid*.
 

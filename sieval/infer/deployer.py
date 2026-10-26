@@ -17,6 +17,7 @@ import shutil
 import signal
 import subprocess
 from collections.abc import AsyncIterator, Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
@@ -32,7 +33,11 @@ from sieval.core.models import (
     Engine,
     ServingFacts,
 )
-from sieval.infer.backends.process import kill_process_group, pid_alive
+from sieval.infer.backends.process import (
+    kill_orphaned_group,
+    kill_process_group,
+    pid_alive,
+)
 from sieval.infer.backends.translator import BackendCommand
 from sieval.infer.config import InferCondition, InferEnv, InferHandle, InferPhase
 from sieval.infer.topology.models import (
@@ -59,7 +64,50 @@ _FAILURE_LOG_TAIL = 30
 # _tail_lines) can turn tens of kilobytes into one line, emptying such a window.
 _LOG_TAIL_WINDOW_BYTES = 256 * 1024
 
+# Watching a ready engine (`LocalDeployer.watch`). Its process is polled every
+# ENGINE_POLL_INTERVAL seconds, a cheap syscall. Its health endpoint is probed
+# every ENGINE_HEALTH_INTERVAL seconds, and only failing it for
+# ENGINE_UNHEALTHY_AFTER seconds in a row counts: an engine under full load can
+# miss a 2s probe now and then without being lost.
+ENGINE_POLL_INTERVAL = 1.0
+ENGINE_HEALTH_INTERVAL = 10.0
+ENGINE_UNHEALTHY_AFTER = 180.0
+
 ProgressCallback = Callable[[float, str], None]
+
+
+@dataclass(frozen=True, slots=True)
+class EngineExit:
+    """How a launched engine was lost while it should have been serving.
+
+    *exit_code* reads as ``subprocess.Popen.returncode``: negative for a
+    signal, ``None`` for a process still alive that stopped answering its
+    health check for *unhealthy_for* seconds (*reason* the last probe's).
+    *log* is the role's log block: launch command, path and last lines.
+    """
+
+    role: str
+    pid: str
+    exit_code: int | None
+    log: str
+    unhealthy_for: float | None = None
+    reason: str = ""
+
+    def summary(self) -> str:
+        """One line: which process, and how it was lost."""
+        who = f"process {self.pid} ({self.role})"
+        if self.exit_code is None:
+            return (
+                f"{who} failed its health check for {self.unhealthy_for:.0f}s "
+                f"({self.reason or 'unhealthy'})"
+            )
+        if self.exit_code < 0:
+            try:
+                name = signal.Signals(-self.exit_code).name
+            except ValueError:
+                name = f"signal {-self.exit_code}"
+            return f"{who} was killed by {name}"
+        return f"{who} exited with code {self.exit_code}"
 
 
 def _tail_lines(text: str) -> list[str]:
@@ -100,7 +148,13 @@ class LocalDeployer:
     Replaces: VLLMBackend.create/status/delete/logs +
               SglangBackend.create/status/delete/logs +
               launcher.launch.
+
+    Holds each process it launched, by handle ID, so :meth:`watch` can read its
+    exit code; :meth:`delete` lets go of it.
     """
+
+    def __init__(self) -> None:
+        self._processes: dict[str, subprocess.Popen] = {}
 
     async def deploy(
         self,
@@ -231,6 +285,7 @@ class LocalDeployer:
                 cwd=cmd.working_dir,
             )
 
+        self._processes[str(process.pid)] = process
         return InferHandle(
             backend=cmd.backend or cmd.role,  # engine name; fallback to role
             handle_id=str(process.pid),
@@ -262,42 +317,89 @@ class LocalDeployer:
             return InferPhase.STOPPED, {
                 "ready": InferCondition(status=False, reason="process_exited")
             }
+        ready = await self._probe_health(handle)
+        if ready is None:
+            ready = InferCondition(status=False, reason="no_health_url")
+        return InferPhase.RUNNING, {"ready": ready}
 
+    async def _probe_health(self, handle: InferHandle) -> InferCondition | None:
+        """One probe of *handle*'s health endpoint; ``None`` when it has none."""
         health_url = handle.metadata.get("health_url", "")
         if not health_url:
-            if handle.endpoint:
-                parsed = urlparse(handle.endpoint)
-                health_url = urlunparse(
-                    (parsed.scheme, parsed.netloc, "/health", "", "", "")
-                )
-            else:
-                return InferPhase.RUNNING, {
-                    "ready": InferCondition(status=False, reason="no_health_url")
-                }
+            if not handle.endpoint:
+                return None
+            parsed = urlparse(handle.endpoint)
+            health_url = urlunparse(
+                (parsed.scheme, parsed.netloc, "/health", "", "", "")
+            )
 
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(str(health_url), timeout=_HEALTH_CHECK_TIMEOUT)
                 if resp.status_code == 200:
-                    return InferPhase.RUNNING, {"ready": InferCondition(status=True)}
-                return InferPhase.RUNNING, {
-                    "ready": InferCondition(status=False, reason="health_check_failed")
-                }
+                    return InferCondition(status=True)
+                return InferCondition(status=False, reason="health_check_failed")
         except httpx.ConnectError:
-            return InferPhase.RUNNING, {
-                "ready": InferCondition(status=False, reason="connection_refused")
-            }
+            return InferCondition(status=False, reason="connection_refused")
         except httpx.TimeoutException:
-            return InferPhase.RUNNING, {
-                "ready": InferCondition(status=False, reason="health_check_timeout")
-            }
+            return InferCondition(status=False, reason="health_check_timeout")
         except httpx.TransportError as exc:
-            return InferPhase.RUNNING, {
-                "ready": InferCondition(status=False, reason=type(exc).__name__)
-            }
+            return InferCondition(status=False, reason=type(exc).__name__)
+
+    async def watch(self, handles: list[InferHandle]) -> EngineExit:
+        """Return once one of *handles* is lost: its process exits, or it fails
+        its health check for ``ENGINE_UNHEALTHY_AFTER`` seconds in a row.
+
+        Only processes this deployer launched are watched; with none, this
+        waits until cancelled. Cancel it before stopping the engine on purpose,
+        or the stop reads as a loss. A process that exited has what is left of
+        its process group killed, so no orphaned worker keeps the GPUs.
+        """
+        watched = [
+            (handle, self._processes[handle.handle_id])
+            for handle in handles
+            if handle.handle_id in self._processes
+        ]
+        if not watched:
+            await anyio.sleep_forever()
+        failing_since: dict[str, float] = {}
+        next_probe = anyio.current_time() + ENGINE_HEALTH_INTERVAL
+        while True:
+            for handle, process in watched:
+                # Popen.poll, not pid_alive: only the waiter that reaps the
+                # child learns its exit code.
+                code = process.poll()
+                if code is not None:
+                    kill_orphaned_group(process.pid)
+                    return EngineExit(
+                        role=str(handle.metadata.get("role", "?")),
+                        pid=handle.handle_id,
+                        exit_code=code,
+                        log=await self._quote_logs([handle]),
+                    )
+            now = anyio.current_time()
+            if now >= next_probe:
+                next_probe = now + ENGINE_HEALTH_INTERVAL
+                for handle, _ in watched:
+                    ready = await self._probe_health(handle)
+                    if ready is None or ready.status:
+                        failing_since.pop(handle.handle_id, None)
+                        continue
+                    since = failing_since.setdefault(handle.handle_id, now)
+                    if now - since >= ENGINE_UNHEALTHY_AFTER:
+                        return EngineExit(
+                            role=str(handle.metadata.get("role", "?")),
+                            pid=handle.handle_id,
+                            exit_code=None,
+                            log=await self._quote_logs([handle]),
+                            unhealthy_for=now - since,
+                            reason=ready.reason,
+                        )
+            await anyio.sleep(ENGINE_POLL_INTERVAL)
 
     async def delete(self, handle: InferHandle) -> None:
         """Stop process gracefully (SIGTERM), force-kill if needed (SIGKILL)."""
+        self._processes.pop(handle.handle_id, None)
         try:
             pid = int(handle.handle_id)
         except ValueError:

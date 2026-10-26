@@ -39,3 +39,19 @@ def test_kill_process_group_fallback_to_pid():
     ):
         kill_process_group(12345, signal.SIGTERM)
         mock_kill.assert_called_once_with(12345, signal.SIGTERM)
+
+
+def test_kill_orphaned_group_kills_the_group():
+    from sieval.infer.backends.process import kill_orphaned_group
+
+    with patch("sieval.infer.backends.process.os.killpg") as killpg:
+        kill_orphaned_group(12345)
+    killpg.assert_called_once_with(12345, signal.SIGKILL)
+
+
+def test_kill_orphaned_group_is_silent_when_nothing_is_left():
+    from sieval.infer.backends.process import kill_orphaned_group
+
+    for error in (ProcessLookupError, PermissionError):
+        with patch("sieval.infer.backends.process.os.killpg", side_effect=error):
+            kill_orphaned_group(12345)

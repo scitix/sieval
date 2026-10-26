@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
+import anyio
 import pytest
 import yaml
 from typer.testing import CliRunner
@@ -2281,3 +2282,199 @@ class TestServingGroups:
         assert "task 'long' needs 100000 tokens" in check["detail"]
         assert result["n_errors"] == 1
         assert (result["tasks"], result["serving"]) == (None, None)
+
+
+class TestEngineLost:
+    """A run that lost an engine it launched exits 6 with what was lost."""
+
+    @staticmethod
+    def _error():
+        from sieval.cli.run import EngineLostError
+        from sieval.infer.deployer import EngineExit
+
+        return EngineLostError(
+            {"subject": EngineExit("full", "42", 137, "\n--- full (pid 42) ---\nOOM")},
+            {"echo": 5},
+            ["scaled"],
+            {"echo": {"correct": 3}},
+        )
+
+    def test_exit_6_with_the_outcome_in_json(self, tmp_path: Path):
+        from sieval.cli.refusal import REFUSAL_PREFIX
+        from sieval.cli.run import ENGINE_LOST_EXIT_CODE
+
+        config = tmp_path / "test.yaml"
+        config.write_text("models: {}\ntasks: {}")
+        with patch("sieval.cli.run._run_all", AsyncMock(side_effect=self._error())):
+            result = runner.invoke(app, ["run", str(config), "-o", "json"])
+
+        assert result.exit_code == ENGINE_LOST_EXIT_CODE == 6
+        parsed = json.loads(result.stdout)
+        assert parsed["ok"] is False
+        data = parsed["data"]
+        assert data["outcome"] == "engine_died"
+        assert data["engines"]["subject"]["exit_code"] == 137
+        assert "OOM" in data["engines"]["subject"]["log"]
+        assert data["failed"] == {"echo": 5}
+        assert data["skipped_groups"] == ["scaled"]
+        assert data["tasks"] == {"echo": {"report": {"correct": 3}}}
+        assert "exited with code 137" in parsed["error"]
+        assert "--resume" in parsed["error"]
+        # Not a refusal: no SIEVAL_REFUSAL line.
+        assert REFUSAL_PREFIX not in result.stderr
+
+    def test_the_message_names_the_engine_and_the_resume(self):
+        text = str(self._error())
+        assert text.splitlines()[0] == (
+            "Engine subject was lost mid-run: process 42 (full) exited with code 137."
+        )
+        assert "5 sample(s) failed as engine_died (echo: 5)" in text
+        assert "Serving groups not started: scaled" in text
+        assert text.endswith("OOM")
+
+
+class TestSessionWatching:
+    """`_session_watching` runs a group's session while watching its engines."""
+
+    @staticmethod
+    def _exit():
+        from sieval.infer.deployer import EngineExit
+
+        return EngineExit("full", "42", 137, "")
+
+    @pytest.mark.anyio
+    async def test_a_loss_that_failed_samples_is_returned(self):
+        from sieval.cli.run import _session_watching
+        from sieval.core.runners import EngineLoss
+
+        loss = EngineLoss()
+        deployer = MagicMock()
+        deployer.watch = AsyncMock(return_value=self._exit())
+
+        async def session():
+            await anyio.sleep(0.01)
+            assert loss.lost(frozenset({"m"})) is not None
+            loss.failed["t"] = 1
+            return {"t": "report"}
+
+        reports: dict[str, object] = {}
+        lost = await _session_watching(
+            session, {"m": [_fake_handle()]}, loss, deployer=deployer, reports=reports
+        )
+
+        assert lost == {"m": self._exit()}
+        assert reports == {"t": "report"}
+
+    @pytest.mark.anyio
+    async def test_a_loss_after_the_last_sample_is_no_loss(self):
+        from sieval.cli.run import _session_watching
+        from sieval.core.runners import EngineLoss
+
+        deployer = MagicMock()
+        deployer.watch = AsyncMock(return_value=self._exit())
+
+        async def session():
+            await anyio.sleep(0.01)
+            return {}
+
+        lost = await _session_watching(
+            session,
+            {"m": [_fake_handle()]},
+            EngineLoss(),
+            deployer=deployer,
+            reports={},
+        )
+        assert lost == {}
+
+    @pytest.mark.anyio
+    async def test_the_watch_ends_with_the_session(self):
+        from sieval.cli.run import _session_watching
+        from sieval.core.runners import EngineLoss
+
+        cancelled = []
+
+        async def watch(_handles):
+            try:
+                await anyio.sleep_forever()
+            finally:
+                cancelled.append(True)
+
+        deployer = MagicMock()
+        deployer.watch = watch
+
+        async def session():
+            return {"t": 1}
+
+        lost = await _session_watching(
+            session,
+            {"m": [_fake_handle()]},
+            EngineLoss(),
+            deployer=deployer,
+            reports={},
+        )
+        assert lost == {}
+        assert cancelled == [True]
+
+    @pytest.mark.anyio
+    async def test_a_session_error_is_raised_unwrapped(self):
+        from sieval.cli.run import _session_watching
+        from sieval.core.runners import EngineLoss
+
+        async def watch(_handles):
+            await anyio.sleep_forever()
+
+        deployer = MagicMock()
+        deployer.watch = watch
+
+        async def session():
+            raise ValueError("boom")
+
+        with pytest.raises(ValueError, match="boom"):
+            await _session_watching(
+                session,
+                {"m": [_fake_handle()]},
+                EngineLoss(),
+                deployer=deployer,
+                reports={},
+            )
+
+    @pytest.mark.anyio
+    async def test_a_session_error_after_a_costly_loss_reads_as_the_loss(self):
+        from sieval.cli.run import _session_watching
+        from sieval.core.runners import EngineLoss
+
+        loss = EngineLoss()
+        deployer = MagicMock()
+        deployer.watch = AsyncMock(return_value=self._exit())
+
+        async def session():
+            await anyio.sleep(0.01)
+            loss.failed["t"] = 2
+            raise ExceptionGroup("1 of 1 task(s) failed", [RuntimeError("x")])
+
+        lost = await _session_watching(
+            session, {"m": [_fake_handle()]}, loss, deployer=deployer, reports={}
+        )
+        assert set(lost) == {"m"}
+
+    @pytest.mark.anyio
+    async def test_a_broken_watch_leaves_the_run_alone(self):
+        from sieval.cli.run import _session_watching
+        from sieval.core.runners import EngineLoss
+
+        deployer = MagicMock()
+        deployer.watch = AsyncMock(side_effect=OSError("poll failed"))
+
+        async def session():
+            await anyio.sleep(0.01)
+            return {"t": 1}
+
+        reports: dict[str, object] = {}
+        lost = await _session_watching(
+            session,
+            {"m": [_fake_handle()]},
+            EngineLoss(),
+            deployer=deployer,
+            reports=reports,
+        )
+        assert (lost, reports) == ({}, {"t": 1})

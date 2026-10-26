@@ -1,3 +1,8 @@
+from sieval.core.runners.engine_loss import (
+    EngineDiedError,
+    EngineGuard,
+    EngineLoss,
+)
 from sieval.core.runners.multi_runner import MultiTaskRunner
 from sieval.core.runners.resume_gate import ResumeAction, resume_schema_verdict
 from sieval.core.runners.resume_option import (
@@ -25,6 +30,9 @@ from sieval.core.runners.stage_resume import (
 )
 
 __all__ = [
+    "EngineDiedError",
+    "EngineGuard",
+    "EngineLoss",
     "LegacyStageMatch",
     "MultiTaskRunner",
     "ResultDirExistsError",

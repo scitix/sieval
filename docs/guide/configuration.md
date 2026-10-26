@@ -556,7 +556,11 @@ refuses again.
 | 3 | Resume refused: start fresh, or match the stage the refusal names |
 | 4 | Hardware refused: an engine is needed and `nvidia-smi` finds no GPU (and none is declared), or the GPUs differ from `SIEVAL_TARGET_GPU` |
 | 5 | Environment refused (`run`/`eval`): a task's `python_requires` is not installed ([Python packages a task needs](#python-packages-a-task-needs)) |
+| 6 | Engine lost (`run`): an engine the run launched exited or stopped answering while samples needed it; they failed as `engine_died`, and `--resume` retries them ([Losing an engine mid-run](infer.md#losing-an-engine-mid-run)) |
 | 130 / 143 | Interrupted by Ctrl+C / SIGTERM |
+
+Exit 6 is not a refusal: samples ran, and it writes no `SIEVAL_REFUSAL` line.
+Under `-o json` its `data` says what was lost (`outcome: engine_died`).
 
 Each refusal, except under `--dry-run`, also writes one stderr line:
 

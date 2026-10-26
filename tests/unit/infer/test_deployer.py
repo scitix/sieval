@@ -22,6 +22,7 @@ from sieval.infer.deployer import (
     DEFAULT_READY_TIMEOUT,
     DeployError,
     DeployTimeoutError,
+    EngineExit,
     LocalDeployer,
 )
 from sieval.infer.topology.models import (
@@ -1300,3 +1301,100 @@ class TestLogsFollow:
         assert "line1" in lines
         assert "line2" in lines
         assert "line3" in lines or "line4" in lines
+
+
+# ---------- watch ----------
+
+
+class TestWatch:
+    """`watch` returns once a launched engine is lost, and only then."""
+
+    @staticmethod
+    def _launched(
+        deployer: LocalDeployer, poll: list[int | None], pid: str = "12345"
+    ) -> InferHandle:
+        process = MagicMock()
+        process.pid = int(pid)
+        process.poll.side_effect = poll + [poll[-1]] * 1000
+        deployer._processes[pid] = process
+        return _make_handle(pid=pid)
+
+    @pytest.mark.anyio
+    async def test_an_exit_returns_its_code_and_log(self, tmp_path):
+        log = tmp_path / "full.log"
+        log.write_text("loading\ntorch.OutOfMemoryError: CUDA out of memory\n")
+        deployer = LocalDeployer()
+        handle = self._launched(deployer, [None, None, -9])
+        handle.metadata["log_file"] = str(log)
+
+        with (
+            patch("sieval.infer.deployer.ENGINE_POLL_INTERVAL", 0.001),
+            patch("sieval.infer.deployer.kill_orphaned_group") as orphans,
+        ):
+            exit = await deployer.watch([handle])
+
+        assert (exit.role, exit.pid, exit.exit_code) == ("full", "12345", -9)
+        assert "CUDA out of memory" in exit.log
+        assert exit.summary() == "process 12345 (full) was killed by SIGKILL"
+        # Workers left behind would hold the GPUs.
+        orphans.assert_called_once_with(12345)
+
+    @pytest.mark.anyio
+    async def test_a_failing_health_check_counts_only_once_it_lasts(self):
+        deployer = LocalDeployer()
+        handle = self._launched(deployer, [None])
+        probes = iter(
+            [
+                InferCondition(status=False, reason="health_check_timeout"),
+                InferCondition(status=True),  # recovered: the clock restarts
+                *[InferCondition(status=False, reason="health_check_timeout")] * 99,
+            ]
+        )
+        seen: list[float] = []
+
+        async def probe(_handle):
+            seen.append(anyio.current_time())
+            return next(probes)
+
+        with (
+            patch("sieval.infer.deployer.ENGINE_POLL_INTERVAL", 0.001),
+            patch("sieval.infer.deployer.ENGINE_HEALTH_INTERVAL", 0.01),
+            patch("sieval.infer.deployer.ENGINE_UNHEALTHY_AFTER", 0.05),
+            patch.object(deployer, "_probe_health", side_effect=probe),
+        ):
+            exit = await deployer.watch([handle])
+
+        assert exit.exit_code is None
+        assert exit.reason == "health_check_timeout"
+        assert exit.unhealthy_for is not None and exit.unhealthy_for >= 0.05
+        # Counted from the third probe, after the recovery.
+        assert len(seen) >= 3
+        assert "failed its health check" in exit.summary()
+
+    @pytest.mark.anyio
+    async def test_an_engine_it_did_not_launch_is_never_lost(self):
+        deployer = LocalDeployer()
+        with anyio.move_on_after(0.05) as scope:
+            await deployer.watch([_make_handle()])
+        assert scope.cancelled_caught
+
+    @pytest.mark.anyio
+    async def test_delete_stops_watching(self):
+        deployer = LocalDeployer()
+        handle = self._launched(deployer, [None])
+        with patch("sieval.infer.deployer.pid_alive", return_value=False):
+            await deployer.delete(handle)
+        assert deployer._processes == {}
+
+    def test_summary_of_an_exit_code(self):
+        exit = EngineExit(role="full", pid="7", exit_code=137, log="")
+        assert exit.summary() == "process 7 (full) exited with code 137"
+        assert "signal 99" in EngineExit("full", "7", -99, "").summary()
+
+    @pytest.mark.anyio
+    async def test_launch_holds_the_process(self, tmp_path):
+        deployer = LocalDeployer()
+        cmd = BackendCommand(cli_args=["true"], backend="sglang")
+        handle = await deployer._launch_one(cmd, log_file=tmp_path / "x.log")
+        process = deployer._processes[handle.handle_id]
+        assert process.wait(timeout=10) == 0

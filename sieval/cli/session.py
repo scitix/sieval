@@ -125,6 +125,8 @@ from sieval.core.models.requirements import (
     aggregate_task_requirements,
 )
 from sieval.core.runners import (
+    EngineGuard,
+    EngineLoss,
     LegacyStageMatch,
     MultiTaskRunner,
     ResumeValue,
@@ -1686,8 +1688,10 @@ class EvalSession:
         infer_gpu: str | None = None,
         unlaunched_deployments: Mapping[str, Deployment] | None = None,
         serving: SessionServing | None = None,
+        engine_loss: EngineLoss | None = None,
     ):
         self.config_path = Path(config_path)
+        self._engine_loss = engine_loss
         self._serving = serving or SessionServing()
         self.model_override = model_override
         # `True`, or a recorded session dir each task starts from; see
@@ -1715,6 +1719,7 @@ class EvalSession:
         # Roots served by no engine: bound like launched ones, so every
         # identity is the launched one, but a task never infers through them.
         self._unlaunched_roots = frozenset(unlaunched)
+        self._launched_roots = frozenset(realized_deployment_map)
         self._realized_deployments = {**realized_deployment_map, **unlaunched}
         for root_name, deployment in self._realized_deployments.items():
             if not isinstance(root_name, str) or not root_name:
@@ -4976,8 +4981,43 @@ class EvalSession:
                     if self._inference_recipe_for(candidate.config_name) is not None
                     else None
                 ),
+                engine_guard=self._engine_guard_for(task_name, context),
             )
             logger.info("Added task '{}' with class '{}'", task_name, task_spec)
+
+    def _engine_guard_for(
+        self, task_name: str, context: RequirementContext
+    ) -> EngineGuard | None:
+        """Which launched engines each stage of a task calls, keyed by root model.
+
+        The model under test is called at ``infer``. Another role (a judge, an
+        extractor) is called when a sample is graded, at ``postprocess`` or
+        ``feedback``. A role called from ``infer`` that loses its engine fails
+        the sample with the request's own error, which a resume retries too.
+        """
+        # Read with a default: a session built without `__init__` has none.
+        loss = getattr(self, "_engine_loss", None)
+        if loss is None:
+            return None
+        needs: dict[TaskAction, set[str]] = {}
+        for role, binding in context.model_bindings.items():
+            if not isinstance(binding, NamedModelBinding):
+                continue
+            root = self._root_model(binding.config_name)
+            if root not in self._launched_roots:
+                continue
+            actions = (
+                (TaskAction.INFER,)
+                if role in {"candidate", "model"}
+                else (TaskAction.POSTPROCESS, TaskAction.FEEDBACK)
+            )
+            for action in actions:
+                needs.setdefault(action, set()).add(root)
+        return EngineGuard(
+            loss,
+            task_name,
+            {action: frozenset(roots) for action, roots in needs.items()},
+        )
 
     def _cli_resume_for(self, task_name: str) -> ResumeValue:
         """What the session's ``resume`` (``--resume [DIR]``) means for *task_name*.
@@ -5529,6 +5569,7 @@ async def arun_session(
     infer_gpu: str | None = None,
     unlaunched_deployments: Mapping[str, Deployment] | None = None,
     serving: SessionServing | None = None,
+    engine_loss: EngineLoss | None = None,
 ) -> dict[str, Any]:
     """Run tasks defined in a YAML configuration file asynchronously.
 
@@ -5567,6 +5608,9 @@ async def arun_session(
         serving: The serving group this session runs, for ``sieval run``: its
             tasks, each one's ``runs[].serving`` fact, and its plans file.
             ``None`` runs every task.
+        engine_loss: Where ``sieval run`` records an engine it launched as
+            lost, by root model name; a stage that calls it then fails as
+            ``engine_died``.
 
     Returns:
         A dictionary mapping task names to their reports.
@@ -5586,6 +5630,7 @@ async def arun_session(
         infer_gpu=infer_gpu,
         unlaunched_deployments=unlaunched_deployments,
         serving=serving,
+        engine_loss=engine_loss,
     )
 
     return await runner.arun()

@@ -90,7 +90,9 @@ from sieval.core.models.requirements import (
     TaskModelRequirement,
     TaskRequirements,
 )
+from sieval.core.runners import EngineLoss
 from sieval.core.runners.multi_runner import MultiTaskRunner
+from sieval.core.tasks.context import TaskAction
 from sieval.core.types import JSONValue
 from tests.conftest import MockChatModel
 
@@ -7755,6 +7757,7 @@ class TestEvalSessionWrappers:
             infer_gpu=None,
             unlaunched_deployments=None,
             serving=None,
+            engine_loss=None,
         )
         assert result == {"task_a": {"ok": True}}
 
@@ -7790,6 +7793,7 @@ class TestEvalSessionWrappers:
             infer_gpu=None,
             unlaunched_deployments=None,
             serving=None,
+            engine_loss=None,
         )
         assert result == {"task_a": {"ok": True}}
 
@@ -7853,6 +7857,7 @@ class TestEvalSessionWrappers:
             infer_gpu=None,
             unlaunched_deployments=None,
             serving=None,
+            engine_loss=None,
         )
 
     def test_run_session_forwards_legacy_external_endpoint_adapter_positionally(
@@ -10472,3 +10477,58 @@ def test_setup_datasets_refuses_a_hand_placed_staging_dir(monkeypatch, tmp_path)
     ):
         session._setup_datasets()
     mock_load.assert_not_called()
+
+
+class TestEngineGuardFor:
+    """Which engines each stage of a task calls, for failing fast on a loss."""
+
+    MODELS = {
+        "served": {"path": "/ckpt"},
+        "derived": {"base": "served"},
+        "judge": {"path": "/judge"},
+        "external": {"api_base": "http://x/v1"},
+    }
+
+    def _session(self, loss: EngineLoss | None, launched: set[str]):
+        session = object.__new__(EvalSession)
+        session._engine_loss = loss
+        session._launched_roots = frozenset(launched)
+        session.config = {"models": self.MODELS}
+        return session
+
+    @staticmethod
+    def _context(**roles: str) -> RequirementContext:
+        return RequirementContext(
+            model_bindings={
+                role: NamedModelBinding(
+                    binding_id=f"b:{role}",
+                    root_deployment_key=f"model:{name}",
+                    requested_model_id=name,
+                    config_name=name,
+                )
+                for role, name in roles.items()
+            }
+        )
+
+    def test_the_candidate_at_infer_and_a_judge_when_graded(self):
+        loss = EngineLoss()
+        guard = self._session(loss, {"served", "judge"})._engine_guard_for(
+            "t", self._context(candidate="derived", judge="judge")
+        )
+
+        assert guard is not None and guard.loss is loss and guard.task == "t"
+        assert dict(guard.needs) == {
+            TaskAction.INFER: frozenset({"served"}),
+            TaskAction.POSTPROCESS: frozenset({"judge"}),
+            TaskAction.FEEDBACK: frozenset({"judge"}),
+        }
+
+    def test_an_engine_not_launched_is_never_waited_on(self):
+        guard = self._session(EngineLoss(), {"judge"})._engine_guard_for(
+            "t", self._context(candidate="served", grader="external")
+        )
+        assert guard is not None and dict(guard.needs) == {}
+
+    def test_no_loss_to_watch_means_no_guard(self):
+        session = self._session(None, {"served"})
+        assert session._engine_guard_for("t", self._context(candidate="served")) is None
