@@ -71,6 +71,7 @@ from sieval.infer.backends.translator import BackendCommand, inject_user_env
 from sieval.infer.config import InferHandle
 from sieval.infer.deployer import (
     DEFAULT_READY_TIMEOUT,
+    ENGINE_POLL_INTERVAL,
     EngineExit,
     LocalDeployer,
     unlaunched_deployment,
@@ -86,18 +87,20 @@ from sieval.infer.recipes import capability_model_type
 from sieval.infer.topology import DeploymentPlan, plan_from_mapping
 from sieval.infer.topology.resolver import auto_resolve_plan
 
-#: Exit status of a run that lost an engine it launched while samples still
-#: needed it. Not a refusal (3/4/5): samples ran, and a resume retries the ones
-#: it failed.
+#: A launched engine was lost while samples needed it. Not a refusal (3/4/5):
+#: samples ran, and a resume retries the ones it failed.
 ENGINE_LOST_EXIT_CODE = 6
+
+# How long a stage that failed on a launched engine waits for the watch to see
+# that engine lost: a connection drops before the next poll sees the exit.
+_ENGINE_LOSS_SETTLE = 3 * ENGINE_POLL_INTERVAL
 
 
 class EngineLostError(RuntimeError):
     """An engine ``sieval run`` launched was lost while samples needed it.
 
-    *lost* maps each lost engine's name to how it was lost, *failed* each task
-    to the samples that failed for it, *skipped* names the serving groups not
-    started after it, and *reports* holds the reports the run did write.
+    *lost*: how each engine was lost. *failed*: samples failed per task.
+    *skipped*: serving groups not started. *reports*: the reports written.
     """
 
     def __init__(
@@ -113,19 +116,17 @@ class EngineLostError(RuntimeError):
         self.reports = dict(reports)
         total = sum(self.failed.values())
         lines = [
-            f"Engine {name} was lost mid-run: {exit.summary()}."
-            for name, exit in sorted(self.lost.items())
+            f"Engine {name} was lost mid-run: {engine_exit.summary()}."
+            for name, engine_exit in sorted(self.lost.items())
         ]
         lines.append(
-            f"{total} sample(s) failed as engine_died ("
+            f"{total} sample(s) failed with the engine ("
             + ", ".join(f"{task}: {n}" for task, n in sorted(self.failed.items()))
             + "); `sieval run --resume` retries them."
         )
         if self.skipped:
             lines.append("Serving groups not started: " + ", ".join(self.skipped))
-        super().__init__(
-            "\n".join(lines) + "".join(exit.log for exit in self.lost.values())
-        )
+        super().__init__("\n".join(lines) + "".join(e.log for e in self.lost.values()))
 
     def to_json(self) -> dict[str, object]:
         """The ``data`` of the failed ``run`` result."""
@@ -133,14 +134,14 @@ class EngineLostError(RuntimeError):
             "outcome": "engine_died",
             "engines": {
                 name: {
-                    "role": exit.role,
-                    "pid": exit.pid,
-                    "exit_code": exit.exit_code,
-                    "unhealthy_for": exit.unhealthy_for,
-                    "reason": exit.reason or None,
-                    "log": exit.log.strip(),
+                    "role": e.role,
+                    "pid": e.pid,
+                    "exit_code": e.exit_code,
+                    "unhealthy_for": e.unhealthy_for,
+                    "reason": e.reason or None,
+                    "log": e.log.strip(),
                 }
-                for name, exit in sorted(self.lost.items())
+                for name, e in sorted(self.lost.items())
             },
             "failed": dict(sorted(self.failed.items())),
             "skipped_groups": self.skipped,
@@ -894,10 +895,9 @@ async def _run_all(
     to ``<result_dir>/logs/<engine>/<role>.log`` when a result_dir is set,
     otherwise to ``~/.sieval/logs/<engine>/`` pruned to *keep_logs* per role.
 
-    Each launched engine is watched while its group's session runs
-    (:func:`_session_watching`). When one is lost and a sample failed for it,
-    its group's session still finishes and writes its reports, no later group
-    starts, and :class:`EngineLostError` is raised.
+    A launched engine lost while samples needed it (:func:`_session_watching`)
+    lets its group finish and write reports, starts no later group, and raises
+    :class:`EngineLostError`.
 
     Returns:
         Report dict from arun_session (task_name → report string).
@@ -1040,7 +1040,7 @@ async def _run_all(
 
             # `self_managed_endpoints` scopes the best-effort warning away
             # from endpoints we launched ourselves.
-            engine_loss = EngineLoss()
+            engine_loss = EngineLoss(settle=_ENGINE_LOSS_SETTLE)
             session = functools.partial(
                 arun_session,
                 config_path,
@@ -1068,7 +1068,7 @@ async def _run_all(
                 reports=reports,
             )
             # The next group's engines need the GPUs this one holds. Stopped
-            # only now that nothing watches them, so a stop is not a loss.
+            # after the watch ended, so a stop is not a loss.
             for name in [group.names[m] for m in to_launch]:
                 await cleanup_model(
                     name,
@@ -1079,7 +1079,7 @@ async def _run_all(
             if lost:
                 skipped = [g.key for g in groups[groups.index(group) + 1 :]]
                 raise EngineLostError(
-                    {group.names[m]: exit for m, exit in lost.items()},
+                    {group.names[m]: e for m, e in lost.items()},
                     engine_loss.failed,
                     skipped,
                     reports,
@@ -1106,31 +1106,25 @@ async def _session_watching(
     deployer: LocalDeployer,
     reports: dict[str, object],
 ) -> dict[str, EngineExit]:
-    """Run *session* into *reports* while watching each of *engines*.
+    """Run *session* into *reports* while watching *engines* (by root model).
 
-    An engine lost while it runs is marked in *engine_loss*, by root model
-    name, so its stages fail fast. Returns the engines lost that some sample
-    failed for: one lost after its last sample costs nothing. The watch ends
-    with the session, before any engine is stopped on purpose. A session that
-    raises after a loss that failed samples is reported as that loss.
+    A lost engine is marked in *engine_loss*. Returns the lost engines some
+    sample failed for; a loss after the last sample costs nothing. A session
+    error after such a loss is logged and reported as the loss.
     """
     lost: dict[str, EngineExit] = {}
 
     async def watch(root: str, handles: list[InferHandle]) -> None:
         try:
-            exit = await deployer.watch(handles)
+            engine_exit = await deployer.watch(handles)
         except Exception as exc:
             # A broken watch must not take the run down with it.
             logger.warning("Stopped watching engine {}: {!r}", root, exc)
             return
-        lost[root] = exit
-        # Its log tail is quoted once, when the run ends.
-        logger.error(
-            "Engine {} lost: {}. Samples that need it now fail as engine_died.",
-            root,
-            exit.summary(),
-        )
-        engine_loss.mark_lost(root, f"engine {root} lost: {exit.summary()}")
+        lost[root] = engine_exit
+        summary = engine_exit.summary()
+        logger.error("Engine {} lost: {}", root, summary)
+        engine_loss.mark_lost(root, f"engine {root} lost: {summary}")
 
     # Held, not raised inside the task group, which would wrap it in a group.
     error: BaseException | None = None

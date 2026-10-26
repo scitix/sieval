@@ -1372,6 +1372,25 @@ class TestWatch:
         assert "failed its health check" in exit.summary()
 
     @pytest.mark.anyio
+    async def test_a_hanging_probe_does_not_delay_an_exit(self):
+        deployer = LocalDeployer()
+        handle = self._launched(deployer, [None] * 20 + [137])
+
+        async def probe(_handle):
+            await anyio.sleep_forever()
+
+        with (
+            patch("sieval.infer.deployer.ENGINE_POLL_INTERVAL", 0.001),
+            patch("sieval.infer.deployer.ENGINE_HEALTH_INTERVAL", 0.001),
+            patch("sieval.infer.deployer.kill_orphaned_group"),
+            patch.object(deployer, "_probe_health", side_effect=probe),
+            anyio.fail_after(5),
+        ):
+            engine_exit = await deployer.watch([handle])
+
+        assert engine_exit.exit_code == 137
+
+    @pytest.mark.anyio
     async def test_an_engine_it_did_not_launch_is_never_lost(self):
         deployer = LocalDeployer()
         with anyio.move_on_after(0.05) as scope:

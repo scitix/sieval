@@ -2328,7 +2328,7 @@ class TestEngineLost:
         assert text.splitlines()[0] == (
             "Engine subject was lost mid-run: process 42 (full) exited with code 137."
         )
-        assert "5 sample(s) failed as engine_died (echo: 5)" in text
+        assert "5 sample(s) failed with the engine (echo: 5)" in text
         assert "Serving groups not started: scaled" in text
         assert text.endswith("OOM")
 

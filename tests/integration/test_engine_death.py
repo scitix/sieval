@@ -26,7 +26,7 @@ import yaml
 from sieval.cli import run as run_module
 from sieval.cli.run import ENGINE_LOST_EXIT_CODE, EngineLostError, _run_all
 from sieval.core.tasks import Task
-from sieval.core.tasks.consts import ENGINE_DIED_REASON
+from sieval.core.tasks.consts import ENGINE_DIED_REASON, ENGINE_DIED_UNSENT_REASON
 from sieval.infer import deployer as deployer_module
 from sieval.infer.backends.process import pid_alive
 from sieval.infer.backends.translator import BackendCommand
@@ -176,7 +176,7 @@ def engine(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[StubEngi
         yield stub
 
 
-def _write(tmp_path: Path, *, concurrency: int = 1) -> Path:
+def _write(tmp_path: Path, *, concurrency: int = 1, client_retries: int = 5) -> Path:
     checkpoint = tmp_path / "Qwen3-4B"
     checkpoint.mkdir(exist_ok=True)
     (checkpoint / "config.json").write_text(
@@ -200,7 +200,9 @@ def _write(tmp_path: Path, *, concurrency: int = 1) -> Path:
             {
                 "result_dir": str(tmp_path / "results"),
                 # Retries against a dead engine are what made the old run slow.
-                "models": {"subject": {"path": str(checkpoint), "max_retries": 5}},
+                "models": {
+                    "subject": {"path": str(checkpoint), "max_retries": client_retries}
+                },
                 "datasets": {
                     "ds": {
                         "class": "tests.conftest.MockDataset",
@@ -269,7 +271,9 @@ class TestEngineDeath:
         assert len(terminal) == 8
         failed = {sid: r for sid, r in terminal.items() if r["stage"] == "failed"}
         assert len(failed) == 5
-        assert {r["error_reason"] for r in failed.values()} == {ENGINE_DIED_REASON}
+        # One request was in flight; the other four were never sent.
+        reasons = sorted(r["error_reason"] for r in failed.values())
+        assert reasons == [ENGINE_DIED_REASON] + [ENGINE_DIED_UNSENT_REASON] * 4
         assert all("engine subject lost" in r["error_msg"] for r in failed.values())
         # The engine's log stays in the result directory.
         log = tmp_path / "results" / "logs" / "subject" / "full.log"
@@ -284,8 +288,10 @@ class TestEngineDeath:
         assert (report["correct"], report["total"]) == (8, 8)
         terminal = _terminal(tmp_path)
         assert all(r["stage"] == "final" for r in terminal.values())
-        # A lost engine is no fault of the sample: no retry was spent.
-        assert all(r.get("retry_count", 0) == 0 for r in terminal.values())
+        # Only the sample in flight, which may have brought it down, spent one.
+        assert sorted(r.get("retry_count", 0) for r in terminal.values()) == [0] * 7 + [
+            1
+        ]
 
     @pytest.mark.anyio
     async def test_an_engine_that_stops_answering_is_lost_and_stopped(
@@ -308,9 +314,28 @@ class TestEngineDeath:
         assert "failed its health check" in str(caught.value)
         assert caught.value.failed == {"echo": 5}
         failed = [r for r in _terminal(tmp_path).values() if r["stage"] == "failed"]
-        assert {r["error_reason"] for r in failed} == {ENGINE_DIED_REASON}
+        assert {r["error_reason"] for r in failed} == {
+            ENGINE_DIED_REASON,
+            ENGINE_DIED_UNSENT_REASON,
+        }
         # Stopped like any engine once the run ends: nothing is left running.
         assert not pid_alive(int(exit.pid))
+
+    @pytest.mark.anyio
+    async def test_requests_in_flight_that_fail_before_the_watch_sees_it(
+        self, tmp_path: Path, engine: StubEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Every remaining request is in flight when the engine exits, and fails
+        # on the reset at once, before the next poll at the real interval.
+        monkeypatch.setattr(deployer_module, "ENGINE_POLL_INTERVAL", 1.0)
+        engine.budget = 3
+
+        with pytest.raises(EngineLostError) as caught:
+            await _run_all(_write(tmp_path, concurrency=8, client_retries=0))
+
+        assert caught.value.failed == {"echo": 5}
+        failed = [r for r in _terminal(tmp_path).values() if r["stage"] == "failed"]
+        assert [r["error_reason"] for r in failed] == [ENGINE_DIED_REASON] * 5
 
     @pytest.mark.anyio
     async def test_an_engine_that_outlives_its_samples_is_no_loss(

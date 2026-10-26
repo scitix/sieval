@@ -1669,6 +1669,7 @@ class EvalSession:
 
     # Every task; a run of one serving group replaces it in `__init__`.
     _serving: SessionServing = SessionServing()
+    _engine_loss: EngineLoss | None = None
 
     def __init__(
         self,
@@ -4988,15 +4989,10 @@ class EvalSession:
     def _engine_guard_for(
         self, task_name: str, context: RequirementContext
     ) -> EngineGuard | None:
-        """Which launched engines each stage of a task calls, keyed by root model.
-
-        The model under test is called at ``infer``. Another role (a judge, an
-        extractor) is called when a sample is graded, at ``postprocess`` or
-        ``feedback``. A role called from ``infer`` that loses its engine fails
-        the sample with the request's own error, which a resume retries too.
-        """
-        # Read with a default: a session built without `__init__` has none.
-        loss = getattr(self, "_engine_loss", None)
+        """Which launched engines each stage of a task calls, by root model:
+        the model under test at ``infer``, any other role at ``postprocess``
+        and ``feedback``."""
+        loss = self._engine_loss
         if loss is None:
             return None
         needs: dict[TaskAction, set[str]] = {}

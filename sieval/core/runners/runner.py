@@ -40,6 +40,7 @@ from sieval.core.tasks.concurrency import (
 from sieval.core.tasks.consts import (
     CONTEXT_OVERFLOW_REASON,
     ENGINE_DIED_REASON,
+    ENGINE_DIED_UNSENT_REASON,
     NON_RETRIABLE_REASON,
     STAGE_DIRS,
     NonRetriableSampleError,
@@ -516,7 +517,7 @@ class TaskRunner:
         a plan found nothing to infer: a run that would infer is refused.
         *serving_group* is the key of the serving group whose engine serves
         it, recorded in ``runs[].serving``. *engine_guard* fails a stage
-        that needs an engine the run lost (:mod:`.engine_loss`).
+        that needs a lost engine (:mod:`.engine_loss`).
         """
         # A malformed judge reference would leave every grader identity
         # unknown; refuse it before any work.
@@ -1520,7 +1521,7 @@ class TaskRunner:
             else contextlib.nullcontext()
         )
         try:
-            with guard:
+            async with guard:
                 self._check_served(action)
                 match action:
                     case TaskAction.PREPROCESS:
@@ -1542,17 +1543,17 @@ class TaskRunner:
                         new_ctx = _run_stage(TaskStage.FEEDBACK, fb, finalize=finalize)
 
         except Exception as e:
-            # One line per sample, not a traceback: the engine's loss is
-            # reported once, by whoever watched it.
+            # The loss itself is reported once, by the CLI.
             logger.opt(exception=not isinstance(e, EngineDiedError)).error(
                 "Stage {} failed for {}", action, ctx.sample_id
             )
             # A task raising `NonRetriableSampleError` has declared the outcome
             # deterministic in this sample's own input, so it earns the one reason
-            # the loader will not roll back. A lost engine says nothing about
-            # the sample, so it earns one a resume retries.
+            # the loader will not roll back.
             if isinstance(e, EngineDiedError):
-                reason = ENGINE_DIED_REASON
+                reason = (
+                    ENGINE_DIED_REASON if e.in_flight else ENGINE_DIED_UNSENT_REASON
+                )
             elif isinstance(e, ContextOverflowError):
                 reason = CONTEXT_OVERFLOW_REASON
             elif isinstance(e, NonRetriableSampleError):

@@ -64,11 +64,9 @@ _FAILURE_LOG_TAIL = 30
 # _tail_lines) can turn tens of kilobytes into one line, emptying such a window.
 _LOG_TAIL_WINDOW_BYTES = 256 * 1024
 
-# Watching a ready engine (`LocalDeployer.watch`). Its process is polled every
-# ENGINE_POLL_INTERVAL seconds, a cheap syscall. Its health endpoint is probed
-# every ENGINE_HEALTH_INTERVAL seconds, and only failing it for
-# ENGINE_UNHEALTHY_AFTER seconds in a row counts: an engine under full load can
-# miss a 2s probe now and then without being lost.
+# `LocalDeployer.watch`: poll the process every ENGINE_POLL_INTERVAL s, probe
+# health every ENGINE_HEALTH_INTERVAL s, and count only ENGINE_UNHEALTHY_AFTER s
+# of failed probes in a row: a loaded engine can miss one.
 ENGINE_POLL_INTERVAL = 1.0
 ENGINE_HEALTH_INTERVAL = 10.0
 ENGINE_UNHEALTHY_AFTER = 180.0
@@ -149,8 +147,7 @@ class LocalDeployer:
               SglangBackend.create/status/delete/logs +
               launcher.launch.
 
-    Holds each process it launched, by handle ID, so :meth:`watch` can read its
-    exit code; :meth:`delete` lets go of it.
+    Holds each process it launched, by handle ID, for :meth:`watch`.
     """
 
     def __init__(self) -> None:
@@ -351,9 +348,8 @@ class LocalDeployer:
         its health check for ``ENGINE_UNHEALTHY_AFTER`` seconds in a row.
 
         Only processes this deployer launched are watched; with none, this
-        waits until cancelled. Cancel it before stopping the engine on purpose,
-        or the stop reads as a loss. A process that exited has what is left of
-        its process group killed, so no orphaned worker keeps the GPUs.
+        waits until cancelled. Cancel it before a deliberate stop. An exited
+        process has its leftover group killed, so no worker keeps the GPUs.
         """
         watched = [
             (handle, self._processes[handle.handle_id])
@@ -362,40 +358,61 @@ class LocalDeployer:
         ]
         if not watched:
             await anyio.sleep_forever()
-        failing_since: dict[str, float] = {}
-        next_probe = anyio.current_time() + ENGINE_HEALTH_INTERVAL
-        while True:
-            for handle, process in watched:
-                # Popen.poll, not pid_alive: only the waiter that reaps the
-                # child learns its exit code.
-                code = process.poll()
-                if code is not None:
-                    kill_orphaned_group(process.pid)
-                    return EngineExit(
-                        role=str(handle.metadata.get("role", "?")),
-                        pid=handle.handle_id,
-                        exit_code=code,
-                        log=await self._quote_logs([handle]),
-                    )
-            now = anyio.current_time()
-            if now >= next_probe:
-                next_probe = now + ENGINE_HEALTH_INTERVAL
-                for handle, _ in watched:
+        found: list[EngineExit] = []
+        async with anyio.create_task_group() as tg:
+
+            async def lost(engine_exit: EngineExit) -> None:
+                found.append(engine_exit)
+                tg.cancel_scope.cancel()
+
+            async def poll_exits() -> None:
+                while True:
+                    for handle, process in watched:
+                        # Popen.poll, not pid_alive: only the reaper learns
+                        # the exit code.
+                        code = process.poll()
+                        if code is not None:
+                            kill_orphaned_group(process.pid)
+                            await lost(
+                                EngineExit(
+                                    role=str(handle.metadata.get("role", "?")),
+                                    pid=handle.handle_id,
+                                    exit_code=code,
+                                    log=await self._quote_logs([handle]),
+                                )
+                            )
+                            return
+                    await anyio.sleep(ENGINE_POLL_INTERVAL)
+
+            async def probe_health(handle: InferHandle) -> None:
+                # Each engine on its own: a slow probe delays no other check.
+                failing_since: float | None = None
+                while True:
+                    await anyio.sleep(ENGINE_HEALTH_INTERVAL)
                     ready = await self._probe_health(handle)
+                    now = anyio.current_time()
                     if ready is None or ready.status:
-                        failing_since.pop(handle.handle_id, None)
+                        failing_since = None
                         continue
-                    since = failing_since.setdefault(handle.handle_id, now)
-                    if now - since >= ENGINE_UNHEALTHY_AFTER:
-                        return EngineExit(
-                            role=str(handle.metadata.get("role", "?")),
-                            pid=handle.handle_id,
-                            exit_code=None,
-                            log=await self._quote_logs([handle]),
-                            unhealthy_for=now - since,
-                            reason=ready.reason,
+                    if failing_since is None:
+                        failing_since = now
+                    if now - failing_since >= ENGINE_UNHEALTHY_AFTER:
+                        await lost(
+                            EngineExit(
+                                role=str(handle.metadata.get("role", "?")),
+                                pid=handle.handle_id,
+                                exit_code=None,
+                                log=await self._quote_logs([handle]),
+                                unhealthy_for=now - failing_since,
+                                reason=ready.reason,
+                            )
                         )
-            await anyio.sleep(ENGINE_POLL_INTERVAL)
+                        return
+
+            tg.start_soon(poll_exits)
+            for handle, _ in watched:
+                tg.start_soon(probe_health, handle)
+        return found[0]
 
     async def delete(self, handle: InferHandle) -> None:
         """Stop process gracefully (SIGTERM), force-kill if needed (SIGKILL)."""

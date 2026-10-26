@@ -85,10 +85,13 @@ NON_RETRIABLE_REASON = "non_retriable"
 #: default ``score`` the sample is graded instead and never fails for it.
 CONTEXT_OVERFLOW_REASON = "context_overflow"
 
-#: Reason recorded when an engine serving the sample was lost: it exited, or
-#: stopped answering, while the sample still needed it. Says nothing about the
-#: sample, so a resume retries it, and spends none of its ``max_retries``.
+#: The engine serving the sample was lost while its stage ran. A resume
+#: retries it, spending a retry: the sample may be what brought it down.
 ENGINE_DIED_REASON = "engine_died"
+
+#: The engine was already lost when the stage would have started. A resume
+#: retries it without spending a retry.
+ENGINE_DIED_UNSENT_REASON = "engine_died_unsent"
 
 #: Reasons the loader refuses to roll back for another attempt. The two limit
 #: reasons are terminal by exhaustion; ``NON_RETRIABLE_REASON`` and

@@ -176,29 +176,23 @@ retries it.
 
 ### Losing an engine mid-run
 
-`sieval run` watches each engine it launched while that engine's samples run.
-An engine is lost when its process exits, or when it fails its health check
-for 180 s in a row (probed every 10 s; one slow probe under load does not
-count). From then on, every sample that still needs it fails at once with
-reason `engine_died`, and a request in flight is cancelled: nothing waits out
-its retries. Samples that need no engine (grading another model's answers,
-tasks on another engine) carry on.
+`sieval run` watches each engine it launched while its samples run. An engine
+is lost when its process exits, or fails its health check for 180 s in a row.
+Every sample still needing it then fails at once: queued ones as
+`engine_died_unsent`, in-flight ones as `engine_died`. Samples on other
+engines carry on.
 
-The run then finishes as usual: each task writes its `report.json`, counting
-those samples as failed, and the engine is stopped. A later serving group is
-not started. The run exits 6 and says which engine was lost, how (its exit
-code or signal, or the failing health check), how many samples failed, and the
-last lines of its log, which stays at its usual path.
+Each task still writes `report.json`, the engine is stopped, no later serving
+group starts, and the run exits 6 with the engine's exit code (or failing
+health check), the failures per task and its last log lines.
 
-`engine_died` says nothing about the sample, so `sieval run --resume` retries
-it and spends none of its `max_retries`. The same plan on the same GPUs is
-likely to fail the same way after an out-of-memory exit; change the plan
-(`infer.overrides`) before resuming, or resume where it fits.
+`sieval run --resume` retries both reasons. `engine_died_unsent` spends no
+retry; `engine_died` spends one, so a sample that crashes the engine stops at
+`max_retries`. After an out-of-memory exit, change the plan
+(`infer.overrides`) before resuming.
 
-An engine stopped on purpose (its group's samples are done, the run ends, or
-the next serving group needs its GPUs) is not watched by then. Neither is one
-lost after its last sample, nor an engine SiEval did not launch (`api_base`,
-`sieval infer start`).
+An engine stopped on purpose, lost after its last sample, or not launched by
+SiEval (`api_base`, `sieval infer start`) is not reported.
 
 ### Serving plans: context window and dialect
 
