@@ -13,6 +13,7 @@ import anyio
 import pytest
 
 from sieval.infer.introspect import (
+    KvShape,
     ModelIdentity,
     QuantizationInfo,
     _estimate_params_billions,
@@ -22,9 +23,12 @@ from sieval.infer.introspect import (
     _refine_family_from_name,
     _resolve_param_billions,
     bytes_per_param,
+    checkpoint_weight_bytes,
     detect_local_gpu,
+    dtype_bytes,
     extract_moe_info,
     introspect_checkpoint,
+    kv_shape,
     logit_shape,
     native_context_window,
 )
@@ -756,3 +760,97 @@ class TestLogitShape:
 
     def test_missing_config_is_none(self, tmp_path: Path) -> None:
         assert logit_shape(str(tmp_path)) is None
+
+
+class TestKvShape:
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [
+            # Qwen3-30B-A3B: GQA with an explicit head_dim
+            (
+                {
+                    "num_hidden_layers": 48,
+                    "num_attention_heads": 32,
+                    "num_key_value_heads": 4,
+                    "head_dim": 128,
+                    "hidden_size": 2048,
+                },
+                KvShape(48, 4, 256),
+            ),
+            # head_dim derived from hidden_size; no GQA → kv heads = heads
+            (
+                {
+                    "num_hidden_layers": 32,
+                    "num_attention_heads": 32,
+                    "hidden_size": 4096,
+                },
+                KvShape(32, 32, 256),
+            ),
+            (
+                {
+                    "text_config": {
+                        "num_hidden_layers": 4,
+                        "num_attention_heads": 8,
+                        "num_key_value_heads": 2,
+                        "head_dim": 64,
+                    }
+                },
+                KvShape(4, 2, 128),
+            ),
+            # MLA: one latent of kv_lora_rank + qk_rope_head_dim, not sharded
+            (
+                {
+                    "num_hidden_layers": 61,
+                    "num_attention_heads": 128,
+                    "head_dim": 128,
+                    "kv_lora_rank": 512,
+                    "qk_rope_head_dim": 64,
+                },
+                KvShape(61, 1, 576, sharded=False),
+            ),
+            ({"num_hidden_layers": 61, "kv_lora_rank": 512}, None),
+            ({"num_hidden_layers": 32, "num_attention_heads": 32}, None),
+            ({"num_attention_heads": 32, "head_dim": 128}, None),
+        ],
+    )
+    def test_reads_layers_kv_heads_and_head_dim(
+        self, tmp_path: Path, config: dict, expected: KvShape | None
+    ) -> None:
+        (tmp_path / "config.json").write_text(json.dumps(config))
+        assert kv_shape(str(tmp_path)) == expected
+
+    def test_missing_config_is_none(self, tmp_path: Path) -> None:
+        assert kv_shape(str(tmp_path)) is None
+
+
+class TestCheckpointWeightBytes:
+    def test_index_total_size_wins(self, tmp_path: Path) -> None:
+        (tmp_path / "model.safetensors.index.json").write_text(
+            json.dumps({"metadata": {"total_size": 61_064_000_000}})
+        )
+        (tmp_path / "model-00001.safetensors").write_bytes(b"x" * 10)
+        assert checkpoint_weight_bytes(str(tmp_path)) == 61_064_000_000
+
+    def test_sums_safetensors_without_index(self, tmp_path: Path) -> None:
+        (tmp_path / "a.safetensors").write_bytes(b"x" * 10)
+        (tmp_path / "b.safetensors").write_bytes(b"x" * 5)
+        (tmp_path / "other.bin").write_bytes(b"x" * 100)
+        assert checkpoint_weight_bytes(str(tmp_path)) == 15
+
+    def test_bad_index_falls_back_to_files(self, tmp_path: Path) -> None:
+        (tmp_path / "model.safetensors.index.json").write_text("{not json")
+        (tmp_path / "a.safetensors").write_bytes(b"x" * 7)
+        assert checkpoint_weight_bytes(str(tmp_path)) == 7
+
+    def test_nothing_readable_is_none(self, tmp_path: Path) -> None:
+        assert checkpoint_weight_bytes(str(tmp_path)) is None
+        assert checkpoint_weight_bytes(str(tmp_path / "missing")) is None
+
+
+class TestDtypeBytes:
+    @pytest.mark.parametrize(
+        ("dtype", "expected"),
+        [("bfloat16", 2.0), ("float32", 4.0), ("int8", 2.0)],
+    )
+    def test_known_and_unknown(self, dtype: str, expected: float) -> None:
+        assert dtype_bytes(dtype) == expected

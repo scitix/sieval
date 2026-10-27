@@ -6,6 +6,8 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 
 import pytest
 
+from sieval.infer.introspect import KvShape
+from sieval.infer.topology.memory import MemoryDemand
 from sieval.infer.topology.models import (
     HardwareEnv,
     ModelProfile,
@@ -16,55 +18,9 @@ from sieval.infer.topology.models import (
 from sieval.infer.topology.resolver import (
     _derive_topology,
     _overrides_to_hints,
-    compute_tp,
     precision_key,
     resolve_simple,
 )
-
-# ---------- compute_tp ----------
-
-
-class TestComputeTp:
-    """Tests for compute_tp() — formula-based TP derivation."""
-
-    def test_72b_bf16_on_80gb(self):
-        """72B bf16 on 80GB → tp=4 (matches old resolve.compute_tp)."""
-        tp = compute_tp(72.0, 2.0, 81920)
-        assert tp == 4
-
-    def test_72b_fp8_on_80gb(self):
-        """72B fp8 on 80GB → tp=2."""
-        tp = compute_tp(72.0, 1.0, 81920)
-        assert tp == 2
-
-    def test_8b_bf16_on_80gb(self):
-        """8B bf16 on 80GB → tp=1."""
-        tp = compute_tp(8.0, 2.0, 81920)
-        assert tp == 1
-
-    def test_degenerate_zero_params(self):
-        tp = compute_tp(0.0, 2.0, 81920)
-        assert tp == 1
-
-    def test_degenerate_zero_bpp(self):
-        tp = compute_tp(72.0, 0.0, 81920)
-        assert tp == 1
-
-    def test_degenerate_negative_params(self):
-        tp = compute_tp(-1.0, 2.0, 81920)
-        assert tp == 1
-
-    def test_power_of_2_alignment(self):
-        """Result is always a power of 2."""
-        tp = compute_tp(200.0, 2.0, 81920)
-        assert tp > 0
-        assert (tp & (tp - 1)) == 0  # is power of 2
-
-    def test_236b_bf16_on_80gb(self):
-        """236B bf16 on 80GB → tp=16 (472GB / ~53GB per GPU ≈ 9 → next pow2 = 16)."""
-        tp = compute_tp(236.0, 2.0, 81920)
-        assert tp == 16
-
 
 # ---------- _derive_topology ----------
 
@@ -80,10 +36,20 @@ class TestDeriveTopology:
         )
 
     def test_basic_72b(self):
-        """72B bf16 on 8x80GB → tp=4, dp=2."""
+        """72B bf16 on 8x80GB at 0.85 and 32k → tp=4, dp=2.
+
+        tp=2 holds the weights (72.7 GB of a 73.0 GB budget) but not one 32k
+        sequence of KV beside them.
+        """
         model = ModelProfile(param_billions=72.0, num_layers=80)
+        demand = MemoryDemand(
+            weight_bytes=145.4e9,
+            fraction=0.85,
+            context=32768,
+            kv=KvShape(80, 8, 2 * 128),
+        )
         steps: list[ResolveStep] = []
-        topo = _derive_topology(model, self._hw(), None, steps)
+        topo = _derive_topology(model, self._hw(), None, steps, demand=demand)
         assert topo.tp == 4
         assert topo.dp == 2
         assert topo.pp == 1
@@ -141,8 +107,9 @@ class TestDeriveTopology:
             num_experts=128,
             bytes_per_param=2.0,
         )
+        hints = UserHints(tp=2)  # pins tp; this test is about EP/DPA
         steps: list[ResolveStep] = []
-        topo = _derive_topology(model, self._hw(), None, steps, backend="sglang")
+        topo = _derive_topology(model, self._hw(), hints, steps, backend="sglang")
         assert topo.tp == 2
         assert topo.dp == 4
         assert topo.ep == 2  # largest divisor of tp=2 ≤ 128
@@ -182,10 +149,11 @@ class TestDeriveTopology:
             num_experts=128,
             family="deepseek",
         )
-        # 236B bf16 → tp=16, need 32 GPUs for dp=2
+        # tp=16 needs 32 GPUs for dp=2
         hw = self._hw(gpu_count=32)
+        hints = UserHints(tp=16)  # pins tp; this test is about EP/DPA
         steps: list[ResolveStep] = []
-        topo = _derive_topology(model, hw, None, steps, backend="sglang")
+        topo = _derive_topology(model, hw, hints, steps, backend="sglang")
         assert topo.tp == 16
         assert topo.dp == 2
         assert topo.enable_dp_attention is True
@@ -214,8 +182,9 @@ class TestDeriveTopology:
             family="qwen3",
         )
         hw = self._hw(gpu_count=8)
+        hints = UserHints(tp=4)  # pins tp; this test is about EP/DPA
         steps: list[ResolveStep] = []
-        topo = _derive_topology(model, hw, None, steps, backend="sglang")
+        topo = _derive_topology(model, hw, hints, steps, backend="sglang")
         assert topo.dp == 2
         assert topo.enable_dp_attention is False
 
@@ -234,8 +203,9 @@ class TestDeriveTopology:
             family="deepseek",
         )
         hw = self._hw(gpu_count=8)
+        hints = UserHints(tp=2)  # pins tp; this test is about EP/DPA
         steps: list[ResolveStep] = []
-        topo = _derive_topology(model, hw, None, steps, backend="sglang")
+        topo = _derive_topology(model, hw, hints, steps, backend="sglang")
         assert topo.tp == 2
         assert topo.dp == 4
         assert topo.enable_dp_attention is True
@@ -309,15 +279,31 @@ class TestDeriveTopology:
         assert topo.ep is None
 
     def test_steps_record_sources(self):
-        """Steps should record auto vs user_override sources."""
+        """A stated tp is recorded as the user's; dp filled from it as auto."""
         model = ModelProfile(param_billions=72.0, num_layers=80)
-        hints = UserHints(tp=8)
+        hints = UserHints(tp=4)
         steps: list[ResolveStep] = []
         _derive_topology(model, self._hw(), hints, steps)
-        auto_steps = [s for s in steps if s.source == "auto"]
-        override_steps = [s for s in steps if s.source == "user_override"]
-        assert len(auto_steps) >= 1  # at least formula tp
-        assert len(override_steps) >= 1  # user tp override
+        tp_steps = [s for s in steps if s.field == "tp"]
+        dp_steps = [s for s in steps if s.field == "dp"]
+        assert [(s.value, s.source) for s in tp_steps] == [(4, "user_override")]
+        assert [(s.value, s.source) for s in dp_steps] == [(2, "auto")]
+
+    def test_stated_tp_is_not_overridden_by_sizing(self):
+        """A stated tp below the smallest fitting one stays, if it fits."""
+        model = ModelProfile(param_billions=1.0, num_layers=1)
+        demand = MemoryDemand(weight_bytes=10e9, fraction=0.9)
+        steps: list[ResolveStep] = []
+        topo = _derive_topology(
+            model, self._hw(), UserHints(tp=2), steps, demand=demand
+        )
+        assert topo.tp == 2
+
+    def test_stated_tp_that_does_not_fit_is_refused(self):
+        model = ModelProfile(param_billions=72.0, num_layers=80)
+        demand = MemoryDemand(weight_bytes=145.4e9, fraction=0.85)
+        with pytest.raises(RuntimeError, match=r"tp=1 does not fit"):
+            _derive_topology(model, self._hw(), UserHints(tp=1), [], demand=demand)
 
 
 # ---------- resolve_simple ----------
@@ -396,7 +382,7 @@ class TestResolveSimple:
         assert result.plan.assignments[0].engine_params == {}
 
     def test_with_user_hints(self):
-        model = ModelProfile(param_billions=72.0, num_layers=80)
+        model = ModelProfile(param_billions=32.0, num_layers=64)
         hints = UserHints(tp=2, dp=1)
         result = resolve_simple(
             checkpoint="/models/Qwen3-72B",
@@ -539,7 +525,7 @@ class TestDpRederivation:
 
     def test_tp_override_recomputes_dp(self):
         """Setting tp=2 on 8 GPUs should give dp=4 (not stale dp from formula)."""
-        model = ModelProfile(param_billions=72.0, num_layers=80)
+        model = ModelProfile(param_billions=32.0, num_layers=64)
         hints = UserHints(tp=2)
         steps: list[ResolveStep] = []
         topo = _derive_topology(model, self._hw(), hints, steps)
@@ -549,7 +535,7 @@ class TestDpRederivation:
 
     def test_tp_override_with_dp_override_no_rederive(self):
         """When user sets both tp and dp, dp should not be re-derived."""
-        model = ModelProfile(param_billions=72.0, num_layers=80)
+        model = ModelProfile(param_billions=32.0, num_layers=64)
         hints = UserHints(tp=2, dp=1)
         steps: list[ResolveStep] = []
         topo = _derive_topology(model, self._hw(), hints, steps)

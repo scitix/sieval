@@ -103,8 +103,11 @@ from sieval.infer.introspect import (
     detect_local_gpu,
     format_target_gpu,
 )
+from sieval.infer.params import merge_params
 from sieval.infer.recipes import capability_model_type
 from sieval.infer.topology import DeploymentPlan, plan_from_mapping
+from sieval.infer.topology.memory import MemoryFit, engine_fit
+from sieval.infer.topology.models import TP_KEYS
 from sieval.infer.topology.resolver import auto_resolve_plan
 
 #: A launched engine was lost while samples needed it. Not a refusal (3/4/5):
@@ -910,18 +913,23 @@ async def _run_dry_run(
             }
         )
         result["n_errors"] = cast(int, result["n_errors"]) + 1
-    elif len(groups) > 1 or serving_group is not None:
-        checks_list.append(
-            {
-                "name": "serving",
-                "ok": True,
-                "detail": ", ".join(
-                    f"{group.key}: {len(group.group.tasks)} task(s)" for group in groups
-                ),
-            }
-        )
-    serving = {group.key: _serving_json(group) for group in groups}
+    sizing: list[str] = []
+    serving = {group.key: _serving_json(group, loaded, gpu, sizing) for group in groups}
     result["serving"] = serving or None
+    if serving_error is None and (
+        len(groups) > 1 or serving_group is not None or sizing
+    ):
+        serving_check: dict[str, object] = {
+            "name": "serving",
+            "ok": True,
+            "detail": ", ".join(
+                f"{group.key}: {len(group.group.tasks)} task(s)" for group in groups
+            ),
+        }
+        if sizing:
+            serving_check["warnings"] = sizing
+            result["n_warnings"] = cast(int, result["n_warnings"]) + len(sizing)
+        checks_list.append(serving_check)
     if result["n_errors"]:
         return unplanned(result)
 
@@ -1025,13 +1033,53 @@ async def _run_dry_run(
     return result
 
 
-def _serving_json(group: _GroupLaunch) -> dict[str, object]:
+def _states_tp(model_config: Mapping[str, Any]) -> bool:
+    """Whether *model_config*'s ``infer.overrides`` sets tp, which sizing keeps."""
+    overrides = (model_config.get("infer") or {}).get("overrides") or {}
+    return any(key in TP_KEYS for key in merge_params(overrides))
+
+
+def _engine_fits(
+    plan: DeploymentPlan, gpu: GPUInfo | None
+) -> list[tuple[str, MemoryFit]] | None:
+    """Each role of *plan* on one of *gpu*'s GPUs, with the params it launches
+    with; ``None`` when the GPU memory or the checkpoint is unknown."""
+    if gpu is None:
+        return None
+    fits: list[tuple[str, MemoryFit]] = []
+    for assignment in plan.assignments:
+        fit = engine_fit(
+            checkpoint=plan.checkpoint,
+            backend=plan.backend,
+            tp=assignment.topology.tp,
+            params=dict(assignment.engine_params),
+            gpu_memory_mib=gpu.memory_mib,
+        )
+        if fit is None:
+            return None
+        fits.append((assignment.role, fit))
+    return fits
+
+
+def _serving_json(
+    group: _GroupLaunch,
+    config: Mapping[str, Any],
+    gpu: GPUInfo | None,
+    warnings: list[str],
+) -> dict[str, object]:
     """A serving group's entry in the dry-run report: the tasks it runs, each
-    one's served window, and the engines it launches (with any headroom)."""
+    one's served window, and the engines it launches (with any headroom).
+
+    Each engine's ``memory`` is how each role fits its GPUs, ``None`` when
+    unknown; a fit with little KV room appends the warning
+    :func:`~sieval.infer.topology.memory.size_tp` logs to *warnings*.
+    """
+    models = config.get("models") or {}
     engines: dict[str, dict[str, object]] = {}
     for name, (plan, commands) in group.prepared.items():
         if name not in group.own:
             continue
+        engine_name = group.names[name]
         engine: dict[str, object] = {
             "model": name,
             "window": served_window(plan, None),
@@ -1040,7 +1088,19 @@ def _serving_json(group: _GroupLaunch) -> dict[str, object]:
         headroom = group.group.headroom.get(name)
         if headroom is not None:
             engine["headroom"] = headroom.to_json()
-        engines[group.names[name]] = engine
+        fits = _engine_fits(plan, gpu)
+        source = "stated" if _states_tp(models.get(name) or {}) else "sized"
+        engine["memory"] = (
+            None
+            if fits is None
+            else [{"role": role, **fit.to_json(source)} for role, fit in fits]
+        )
+        for role, fit in fits or ():
+            warning = fit.low_room_warning()
+            if warning is not None:
+                where = engine_name if len(fits or ()) == 1 else f"{engine_name}.{role}"
+                warnings.append(f"engine {where}: {warning}")
+        engines[engine_name] = engine
     return {
         "tasks": list(group.group.tasks),
         "windows": {

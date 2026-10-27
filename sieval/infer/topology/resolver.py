@@ -1,13 +1,11 @@
 """
 Topology resolver: derive DeploymentPlan from model + hardware + user hints.
 
-Generalizes compute_tp() + merge_params() into a structured pipeline
-that outputs DeploymentPlan instead of a flat dict.
+Sizes tp from the declared engine memory (see ``memory.py``) and merges
+params into a DeploymentPlan.
 
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
-
-import math
 
 from loguru import logger
 
@@ -28,6 +26,12 @@ from sieval.infer.recipes import (
     resolve_capability_profile,
     resolve_hardware_profile,
 )
+from sieval.infer.topology.memory import (
+    MemoryDemand,
+    default_fraction,
+    memory_demand,
+    size_tp,
+)
 from sieval.infer.topology.models import (
     TOPO_KEYS,
     DeploymentPlan,
@@ -41,9 +45,6 @@ from sieval.infer.topology.models import (
     UserHints,
     WellKnownRole,
 )
-
-# Weight-to-GPU memory ratio (reserve 35% for KV cache + activations)
-_WEIGHT_RATIO = 0.65
 
 # Model families where DPA is auto-enabled (well-tested, officially recommended).
 # Currently only DeepSeek (V2/V3/R1) which use MLA attention.
@@ -90,13 +91,6 @@ def precision_key(identity: ModelIdentity) -> str:
     return dtype_map.get(identity.dtype, "bf16")
 
 
-def _next_power_of_2(n: int) -> int:
-    """Round up to next power of 2, minimum 1."""
-    if n <= 1:
-        return 1
-    return 1 << (n - 1).bit_length()
-
-
 def _largest_divisor(n: int, upper_bound: int) -> int:
     """Return the largest divisor of *n* that is ≤ *upper_bound*.
 
@@ -110,34 +104,19 @@ def _largest_divisor(n: int, upper_bound: int) -> int:
     return 1  # pragma: no cover — n >= 1 always has divisor 1
 
 
-def compute_tp(
-    param_billions: float,
-    bpp: float,
-    gpu_memory_mib: int,
-    weight_ratio: float = _WEIGHT_RATIO,
-) -> int:
-    """Derive tensor parallelism from model size and GPU memory.
-
-    Same formula as resolve.compute_tp, moved here as the canonical location.
-    """
-    if param_billions <= 0 or bpp <= 0:
-        return 1
-    weight_bytes = param_billions * 1e9 * bpp
-    budget_per_gpu = gpu_memory_mib * 1024 * 1024 * weight_ratio
-    raw_tp = math.ceil(weight_bytes / budget_per_gpu)
-    return _next_power_of_2(raw_tp)
-
-
 def _derive_topology(
     model: ModelProfile,
     hw: HardwareEnv,
     hints: UserHints | None,
     steps: list[ResolveStep],
     backend: str = "sglang",
+    demand: MemoryDemand | None = None,
 ) -> ParallelTopology:
     """Derive ParallelTopology for a single FULL role.
 
-    Priority: user hints > recipe profile > formula.
+    TP: the user's, else the smallest that fits *demand* (see
+    :func:`size_tp`). Without a *demand*, *model*'s weights at the engine's
+    default memory fraction.
 
     EP/DPA constraints are backend-specific:
       - **sglang**: EP ≤ TP, TP % EP == 0 (sglang computes tp_size // ep_size).
@@ -145,21 +124,31 @@ def _derive_topology(
       - **vllm**: EP is a boolean flag; vLLM auto-computes EP = TP × DP.
         num_experts % (TP × DP) == 0 required. DPA not supported.
     """
-    # 1. Formula TP
-    tp = compute_tp(model.param_billions, model.bytes_per_param, hw.gpu_memory_mib)
+    # 1. TP
+    if demand is None:
+        demand = MemoryDemand(
+            weight_bytes=model.param_billions * 1e9 * model.bytes_per_param,
+            fraction=default_fraction(backend),
+            fraction_declared=False,
+        )
+    stated_tp = hints.tp if hints else None
+    fit = size_tp(
+        demand,
+        gpu_count=hw.gpu_count,
+        gpu_memory_mib=hw.gpu_memory_mib,
+        stated_tp=stated_tp,
+    )
+    tp = fit.tp
     steps.append(
         ResolveStep(
             field="tp",
             value=tp,
-            reason=(
-                f"compute_tp({model.param_billions:.1f}B, "
-                f"{model.bytes_per_param}bpp, {hw.gpu_memory_mib}MiB)"
-            ),
-            source="auto",
+            reason=fit.describe(),
+            source="user_override" if stated_tp is not None else "auto",
         )
     )
 
-    # 2. Formula DP: fill remaining GPUs
+    # 2. DP: fill remaining GPUs
     dp = max(1, hw.gpu_count // tp)
     if dp > 1:
         steps.append(
@@ -171,42 +160,17 @@ def _derive_topology(
             )
         )
 
-    # 3. User hints override
-    if hints:
-        if hints.tp is not None:
-            tp = hints.tp
-            steps.append(
-                ResolveStep(
-                    field="tp",
-                    value=tp,
-                    reason="user override",
-                    source="user_override",
-                )
+    # 3. User DP override
+    if hints and hints.dp is not None:
+        dp = hints.dp
+        steps.append(
+            ResolveStep(
+                field="dp",
+                value=dp,
+                reason="user override",
+                source="user_override",
             )
-            # Re-derive DP from the overridden TP when user didn't set DP,
-            # so that tp*dp stays within available GPUs.
-            if hints.dp is None:
-                dp = max(1, hw.gpu_count // tp) if tp > 0 else 1
-                steps.append(
-                    ResolveStep(
-                        field="dp",
-                        value=dp,
-                        reason=(
-                            f"re-derived: gpu_count({hw.gpu_count}) // user_tp({tp})"
-                        ),
-                        source="auto",
-                    )
-                )
-        if hints.dp is not None:
-            dp = hints.dp
-            steps.append(
-                ResolveStep(
-                    field="dp",
-                    value=dp,
-                    reason="user override",
-                    source="user_override",
-                )
-            )
+        )
 
     pp = hints.pp if hints and hints.pp is not None else 1
     if hints and hints.pp is not None:
@@ -338,13 +302,14 @@ def resolve_simple(
     hw: HardwareEnv,
     hints: UserHints | None = None,
     recipe_params: dict[str, ParamValue] | None = None,
+    demand: MemoryDemand | None = None,
 ) -> ResolveResult:
     """Resolve a single-role (FULL) DeploymentPlan.
 
     This is the Phase 1 entry point. Multi-role (PD split) comes in Phase 2.
     """
     steps: list[ResolveStep] = []
-    topology = _derive_topology(model, hw, hints, steps, backend=backend)
+    topology = _derive_topology(model, hw, hints, steps, backend=backend, demand=demand)
 
     # Safety check
     needed = topology.gpu_count
@@ -458,7 +423,13 @@ async def auto_resolve_plan(
             else:
                 recipe_params = engine_overrides
 
-    # 5. Resolve
+    # 5. Resolve, sizing tp from the memory the params declare
+    demand = memory_demand(
+        checkpoint=checkpoint,
+        identity=identity,
+        backend=backend,
+        params=recipe_params or {},
+    )
     return resolve_simple(
         checkpoint=checkpoint,
         backend=backend,
@@ -466,6 +437,7 @@ async def auto_resolve_plan(
         hw=hw,
         hints=hints,
         recipe_params=recipe_params,
+        demand=demand,
     )
 
 

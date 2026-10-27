@@ -23,7 +23,6 @@ from sieval.infer.config import ParamValue
 from sieval.infer.introspect import (
     GPUInfo,
     ModelIdentity,
-    bytes_per_param,
     declared_target_gpu,
     detect_local_gpu,
     introspect_checkpoint_sync,
@@ -39,6 +38,7 @@ from sieval.infer.recipes import (
     resolve_capability_profile,
     resolve_hardware_profile,
 )
+from sieval.infer.topology.memory import memory_demand, size_tp
 from sieval.infer.topology.models import (
     CP_KEYS,
     DP_KEYS,
@@ -53,7 +53,7 @@ from sieval.infer.topology.models import (
     RoleAssignment,
     WellKnownRole,
 )
-from sieval.infer.topology.resolver import compute_tp, precision_key
+from sieval.infer.topology.resolver import precision_key
 
 
 class ResolvedInferConfig(NamedTuple):
@@ -251,6 +251,7 @@ _DP_KEYS: dict[str, str] = {
 
 
 async def _resolve_recipe_params(
+    checkpoint: str,
     identity: ModelIdentity,
     recipe: Recipe,
     backend_name: str,
@@ -259,8 +260,8 @@ async def _resolve_recipe_params(
 ) -> dict[str, ParamValue]:
     """Resolve engine params for a recipe.
 
-    Pipeline: formula TP/DP → hardware profile → capability profile →
-    overrides → safety check.
+    Pipeline: hardware profile → capability profile → overrides → tp/dp sized
+    from the memory those declare.
 
     Extracted from _resolve_with_recipe / _try_auto_resolve_recipe to
     eliminate duplication.
@@ -279,26 +280,14 @@ async def _resolve_recipe_params(
     # a node with that hardware would.
     gpu = declared_target_gpu() or await detect_local_gpu()
 
-    params: dict[str, ParamValue] = {}
-    if gpu:
-        bpp = bytes_per_param(identity)
-        tp = compute_tp(identity.param_billions, bpp, gpu.memory_mib)
-        tp_key = _TP_KEYS.get(backend_name)
-        if tp_key:
-            params[tp_key] = tp
-        dp_key = _DP_KEYS.get(backend_name)
-        if dp_key and tp > 0:
-            dp = gpu.count // tp
-            if dp > 1:
-                params[dp_key] = dp
-
-    # Recipe layers override the formula: hardware first, then the capability
-    # layer for this model type (a base checkpoint contributes nothing).
+    # Recipe layers: hardware first, then the capability layer for this model
+    # type (a base checkpoint contributes nothing).
     prec_key = precision_key(identity)
     gpu_model = gpu.model if gpu else None
     profile = resolve_hardware_profile(recipe, gpu_model, prec_key, backend_name)
     capabilities = resolve_capability_profile(recipe, capability, backend_name)
 
+    params: dict[str, ParamValue] = {}
     if profile is None and identity.dtype and "dtype" not in overrides:
         # No hardware profile → fall back to the model's intrinsic dtype
         # (unless the user overrode it).
@@ -306,10 +295,50 @@ async def _resolve_recipe_params(
 
     params = merge_params(params, profile or {}, capabilities, overrides)
 
-    # Safety check
     if gpu:
-        _check_tp_dp_safety(params, backend_name, gpu)
+        params = _size_parallelism(params, checkpoint, identity, backend_name, gpu)
 
+    return params
+
+
+def _size_parallelism(
+    params: dict[str, ParamValue],
+    checkpoint: str,
+    identity: ModelIdentity,
+    backend_name: str,
+    gpu: GPUInfo,
+) -> dict[str, ParamValue]:
+    """Add tp/dp to *params*, ahead of the rest (see :func:`size_tp`).
+
+    A stated tp is kept; dp fills the remaining GPUs unless stated.
+    """
+    stated_tp = next((params[k] for k in TP_KEYS if k in params), None)
+    demand = memory_demand(
+        checkpoint=checkpoint,
+        identity=identity,
+        backend=backend_name,
+        params=params,
+    )
+    fit = size_tp(
+        demand,
+        gpu_count=gpu.count,
+        gpu_memory_mib=gpu.memory_mib,
+        stated_tp=int(stated_tp) if stated_tp is not None else None,
+    )
+    logger.debug("Sized tp: {}", fit.describe())
+
+    sized: dict[str, ParamValue] = {}
+    tp_key = _TP_KEYS.get(backend_name)
+    if tp_key and stated_tp is None:
+        sized[tp_key] = fit.tp
+    dp_key = _DP_KEYS.get(backend_name)
+    if dp_key and not any(k in params for k in DP_KEYS):
+        dp = gpu.count // fit.tp
+        if dp > 1:
+            sized[dp_key] = dp
+    params = {**sized, **params}
+
+    _check_tp_dp_safety(fit.tp, params, gpu)
     return params
 
 
@@ -340,6 +369,7 @@ async def _resolve_with_recipe(
 
     if identity is not None:
         return await _resolve_recipe_params(
+            checkpoint,
             identity,
             recipe,
             backend_name,
@@ -351,31 +381,12 @@ async def _resolve_with_recipe(
         return dict(overrides) if overrides else None
 
 
-def _check_tp_dp_safety(
-    params: dict[str, ParamValue],
-    framework: str,
-    gpu: GPUInfo,
-) -> None:
+def _check_tp_dp_safety(tp: int, params: dict[str, ParamValue], gpu: GPUInfo) -> None:
     """Validate that tp × dp does not exceed GPU count."""
-    tp_key = _TP_KEYS.get(framework, "")
-    dp_key = _DP_KEYS.get(framework, "")
-    final_tp = params.get(tp_key)
-    final_dp = params.get(dp_key, 1)
-
-    if isinstance(final_tp, int) and final_tp > gpu.count:
+    final_dp = next((params[k] for k in DP_KEYS if k in params), 1)
+    if isinstance(final_dp, int) and tp * final_dp > gpu.count:
         raise RuntimeError(
-            f"Model requires tp={final_tp} but only {gpu.count} "
-            f"GPUs detected. "
-            f"The model is too large for the available hardware."
-        )
-    if (
-        isinstance(final_tp, int)
-        and isinstance(final_dp, int)
-        and final_tp * final_dp > gpu.count
-    ):
-        raise RuntimeError(
-            f"tp={final_tp} × dp={final_dp} = "
-            f"{final_tp * final_dp} GPUs "
+            f"tp={tp} × dp={final_dp} = {tp * final_dp} GPUs "
             f"required but only {gpu.count} available."
         )
 
@@ -424,6 +435,7 @@ async def _try_auto_resolve_recipe(
     if recipe is not None:
         # Matched — use shared merge logic
         params = await _resolve_recipe_params(
+            checkpoint,
             identity,
             recipe,
             backend_name,

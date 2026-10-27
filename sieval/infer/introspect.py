@@ -437,6 +437,78 @@ def logit_shape(checkpoint: str) -> tuple[int, float] | None:
     return vocab, _DTYPE_BYTES.get(dtype, 2.0)
 
 
+@dataclass(frozen=True, slots=True)
+class KvShape:
+    """Per-token KV cache of one layer: *heads* × *width* elements.
+
+    *width* counts K and V together. *sharded* is whether the heads split
+    across tp; an MLA latent is one replicated "head".
+    """
+
+    layers: int
+    heads: int
+    width: int
+    sharded: bool = True
+
+
+def kv_shape(checkpoint: str) -> KvShape | None:
+    """*checkpoint*'s KV cache shape, from ``config.json`` (or ``text_config``).
+
+    GQA/MHA: ``num_key_value_heads`` (else ``num_attention_heads``) heads of
+    K and V, each ``head_dim`` (else ``hidden_size // num_attention_heads``).
+    MLA: one latent of ``kv_lora_rank + qk_rope_head_dim``, replicated per GPU.
+    ``None`` when a dimension cannot be read.
+    """
+    layers = _positive_config_int(checkpoint, "num_hidden_layers")
+    if layers is None:
+        return None
+    lora_rank = _positive_config_int(checkpoint, "kv_lora_rank")
+    if lora_rank is not None:
+        rope = _positive_config_int(checkpoint, "qk_rope_head_dim")
+        if rope is None:
+            return None
+        return KvShape(layers, 1, lora_rank + rope, sharded=False)
+    heads = _positive_config_int(checkpoint, "num_attention_heads")
+    if heads is None:
+        return None
+    kv_heads = _positive_config_int(checkpoint, "num_key_value_heads") or heads
+    head_dim = _positive_config_int(checkpoint, "head_dim")
+    if head_dim is None:
+        hidden = _positive_config_int(checkpoint, "hidden_size")
+        if hidden is None:
+            return None
+        head_dim = hidden // heads
+    return KvShape(layers, kv_heads, 2 * head_dim)
+
+
+def checkpoint_weight_bytes(checkpoint: str) -> int | None:
+    """The bytes of *checkpoint*'s weights as stored, so mixed precision counts.
+
+    ``metadata.total_size`` of ``model.safetensors.index.json``, else the sum
+    of its ``*.safetensors`` files; ``None`` when neither can be read.
+    """
+    root = Path(checkpoint)
+    try:
+        index = orjson.loads((root / "model.safetensors.index.json").read_bytes())
+    except (OSError, orjson.JSONDecodeError):
+        index = None
+    if isinstance(index, dict):
+        metadata = index.get("metadata")
+        total = metadata.get("total_size") if isinstance(metadata, dict) else None
+        if isinstance(total, int) and not isinstance(total, bool) and total > 0:
+            return total
+    try:
+        total = sum(f.stat().st_size for f in root.glob("*.safetensors"))
+    except OSError:
+        return None
+    return total or None
+
+
+def dtype_bytes(dtype: str) -> float:
+    """Bytes of one element of a ``torch_dtype`` name; 2 when unknown."""
+    return _DTYPE_BYTES.get(dtype, 2.0)
+
+
 async def introspect_checkpoint(checkpoint: str) -> ModelIdentity:
     """Read config.json from a local checkpoint and return ModelIdentity.
 
