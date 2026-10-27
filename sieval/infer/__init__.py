@@ -41,7 +41,6 @@ from sieval.infer.topology import (
 )
 from sieval.infer.topology.resolver import (
     auto_resolve_plan,
-    compute_tp,
     precision_key,
     resolve_simple,
 )
@@ -87,7 +86,6 @@ __all__ = [
     "deployment_plan_projection",
     # Resolver
     "auto_resolve_plan",
-    "compute_tp",
     "precision_key",
     "resolve_simple",
 ]

@@ -437,6 +437,61 @@ def logit_shape(checkpoint: str) -> tuple[int, float] | None:
     return vocab, _DTYPE_BYTES.get(dtype, 2.0)
 
 
+def kv_shape(checkpoint: str) -> tuple[int, int, int] | None:
+    """*checkpoint*'s KV cache shape: ``(layers, kv_heads, head_dim)``.
+
+    From ``config.json`` (or its ``text_config``): ``num_hidden_layers``,
+    ``num_key_value_heads`` (``num_attention_heads`` when absent, i.e. no GQA)
+    and ``head_dim`` (``hidden_size // num_attention_heads`` when absent).
+    ``None`` when a dimension cannot be read, or for MLA attention
+    (``kv_lora_rank``), whose cache is not shaped per head.
+    """
+    if any("kv_lora_rank" in source for source in _text_configs(checkpoint)):
+        return None
+    layers = _positive_config_int(checkpoint, "num_hidden_layers")
+    heads = _positive_config_int(checkpoint, "num_attention_heads")
+    if layers is None or heads is None:
+        return None
+    kv_heads = _positive_config_int(checkpoint, "num_key_value_heads") or heads
+    head_dim = _positive_config_int(checkpoint, "head_dim")
+    if head_dim is None:
+        hidden = _positive_config_int(checkpoint, "hidden_size")
+        if hidden is None:
+            return None
+        head_dim = hidden // heads
+    return layers, kv_heads, head_dim
+
+
+def checkpoint_weight_bytes(checkpoint: str) -> int | None:
+    """The bytes of *checkpoint*'s weights, as stored.
+
+    ``metadata.total_size`` of ``model.safetensors.index.json``, else the sum
+    of its ``*.safetensors`` files. ``None`` when neither can be read. Stored
+    bytes beat ``param_billions × bytes_per_param`` for mixed-precision
+    checkpoints, e.g. MXFP4 experts beside bf16 attention.
+    """
+    root = Path(checkpoint)
+    try:
+        index = orjson.loads((root / "model.safetensors.index.json").read_bytes())
+    except (OSError, orjson.JSONDecodeError):
+        index = None
+    if isinstance(index, dict):
+        metadata = index.get("metadata")
+        total = metadata.get("total_size") if isinstance(metadata, dict) else None
+        if isinstance(total, int) and not isinstance(total, bool) and total > 0:
+            return total
+    try:
+        total = sum(f.stat().st_size for f in root.glob("*.safetensors"))
+    except OSError:
+        return None
+    return total or None
+
+
+def dtype_bytes(dtype: str) -> float:
+    """Bytes of one element of a ``torch_dtype`` name; 2 when unknown."""
+    return _DTYPE_BYTES.get(dtype, 2.0)
+
+
 async def introspect_checkpoint(checkpoint: str) -> ModelIdentity:
     """Read config.json from a local checkpoint and return ModelIdentity.
 

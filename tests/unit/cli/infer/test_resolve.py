@@ -655,6 +655,108 @@ class TestDeterministicPropagation:
 
 
 # ---------------------------------------------------------------------------
+# TP sized from the declared memory fraction and context (scitix/sieval#251)
+# ---------------------------------------------------------------------------
+
+
+def _write_qwen3_30b_a3b_checkpoint(model_dir: Path) -> None:
+    """A Qwen3-30B-A3B-like checkpoint: config.json plus a 61 GB weight index."""
+    config = {
+        "architectures": ["Qwen3MoeForCausalLM"],
+        "model_type": "qwen3_moe",
+        "vocab_size": 151936,
+        "hidden_size": 2048,
+        "num_hidden_layers": 48,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 4,
+        "head_dim": 128,
+        "num_experts": 128,
+        "max_position_embeddings": 40960,
+        "torch_dtype": "bfloat16",
+    }
+    model_dir.mkdir(exist_ok=True)
+    (model_dir / "config.json").write_text(json.dumps(config))
+    (model_dir / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {"total_size": 61_064_000_000}})
+    )
+
+
+class TestTpSizedFromDeclaredMemory:
+    def _config(self, tmp_path: Path, **overrides: object) -> Path:
+        model_dir = tmp_path / "Qwen3-30B-A3B"
+        _write_qwen3_30b_a3b_checkpoint(model_dir)
+        infer: dict = {
+            "backend": "sglang",
+            "recipe": "qwen3-30b-a3b",
+            "checkpoint": str(model_dir),
+        }
+        if overrides:
+            infer["overrides"] = overrides
+        return _write_yaml(tmp_path, {"m": {"infer": infer}})
+
+    @pytest.mark.anyio
+    async def test_recipe_fraction_fits_one_h100(self, tmp_path: Path) -> None:
+        """The recipe's 0.87 holds the 61 GB of weights: tp=1, with a warning.
+
+        A fixed 65% weight budget asked for tp=2 here and refused the plan.
+        """
+        messages: list[str] = []
+        sink = logger.add(lambda m: messages.append(m), level="WARNING")
+        try:
+            with patch(_GPU_PATCH, new_callable=AsyncMock, return_value=_MOCK_GPU):
+                _, plan, _ = await resolve_infer_config(self._config(tmp_path))
+        finally:
+            logger.remove(sink)
+        assert plan.assignments[0].topology.tp == 1
+        assert plan.assignments[0].engine_params["mem_fraction_static"] == 0.87
+        assert any("little KV room" in m for m in messages), messages
+
+    @pytest.mark.anyio
+    async def test_user_fraction_beats_recipe(self, tmp_path: Path) -> None:
+        """An override too small for the weights is what the plan is sized by."""
+        with (
+            patch(_GPU_PATCH, new_callable=AsyncMock, return_value=_MOCK_GPU),
+            pytest.raises(RuntimeError, match=r"requires tp=2 but only 1 GPUs"),
+        ):
+            await resolve_infer_config(self._config(tmp_path, mem_fraction_static=0.6))
+
+    @pytest.mark.anyio
+    async def test_user_context_beats_recipe(self, tmp_path: Path) -> None:
+        """A context whose one sequence of KV overflows the room is refused."""
+        with (
+            patch(_GPU_PATCH, new_callable=AsyncMock, return_value=_MOCK_GPU),
+            pytest.raises(RuntimeError, match=r"context 262144"),
+        ):
+            await resolve_infer_config(self._config(tmp_path, context_length=262144))
+
+    @pytest.mark.anyio
+    async def test_stated_tp_is_kept_and_dp_fills_the_rest(
+        self, tmp_path: Path
+    ) -> None:
+        gpu = GPUInfo(model="NVIDIA H100-SXM5-80GB", count=8, memory_mib=81920)
+        with patch(_GPU_PATCH, new_callable=AsyncMock, return_value=gpu):
+            _, plan, _ = await resolve_infer_config(self._config(tmp_path, tp_size=2))
+        topo = plan.assignments[0].topology
+        assert (topo.tp, topo.dp) == (2, 4)
+
+    @pytest.mark.anyio
+    async def test_sized_tp_fills_dp(self, tmp_path: Path) -> None:
+        gpu = GPUInfo(model="NVIDIA H100-SXM5-80GB", count=8, memory_mib=81920)
+        with patch(_GPU_PATCH, new_callable=AsyncMock, return_value=gpu):
+            _, plan, _ = await resolve_infer_config(self._config(tmp_path))
+        topo = plan.assignments[0].topology
+        assert (topo.tp, topo.dp) == (1, 8)
+
+    @pytest.mark.anyio
+    async def test_stated_dp_over_gpus_is_refused(self, tmp_path: Path) -> None:
+        with (
+            patch(_GPU_PATCH, new_callable=AsyncMock, return_value=_MOCK_GPU),
+            pytest.raises(RuntimeError, match=r"tp=1 × dp=2 = 2 GPUs"),
+        ):
+            await resolve_infer_config(self._config(tmp_path, dp_size=2))
+
+
+# ---------------------------------------------------------------------------
 # Key normalization in _resolve_recipe_params
 # ---------------------------------------------------------------------------
 
@@ -689,6 +791,7 @@ class TestResolveRecipeParamsKeyNormalization:
             ),
         ):
             result = await _resolve_recipe_params(
+                "/nonexistent",
                 identity,
                 recipe,
                 backend_name="vllm",
@@ -722,6 +825,7 @@ class TestResolveRecipeParamsKeyNormalization:
             ),
         ):
             result = await _resolve_recipe_params(
+                "/nonexistent",
                 identity,
                 recipe,
                 backend_name="vllm",
