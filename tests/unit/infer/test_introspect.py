@@ -23,6 +23,7 @@ from sieval.infer.introspect import (
     _refine_family_from_name,
     _resolve_param_billions,
     bytes_per_param,
+    checkpoint_numerics,
     checkpoint_weight_bytes,
     detect_local_gpu,
     dtype_bytes,
@@ -733,6 +734,33 @@ class TestNativeContextWindow:
         assert native_context_window(str(tmp_path)) is None
         (tmp_path / "config.json").write_text("{not json")
         assert native_context_window(str(tmp_path)) is None
+
+
+class TestCheckpointNumerics:
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [
+            ({"torch_dtype": "bfloat16"}, {"dtype": "bfloat16"}),
+            ({"dtype": "float16"}, {"dtype": "float16"}),
+            ({"text_config": {"torch_dtype": "bfloat16"}}, {"dtype": "bfloat16"}),
+            (
+                {
+                    "torch_dtype": "bfloat16",
+                    "quantization_config": {"quant_method": "fp8"},
+                },
+                {"dtype": "bfloat16", "quantization": "fp8"},
+            ),
+            ({}, {}),
+        ],
+    )
+    def test_reads_dtype_and_quantization(
+        self, tmp_path: Path, config: object, expected: dict[str, str]
+    ) -> None:
+        (tmp_path / "config.json").write_text(json.dumps(config))
+        assert checkpoint_numerics(str(tmp_path)) == expected
+
+    def test_missing_config_is_none(self, tmp_path: Path) -> None:
+        assert checkpoint_numerics(str(tmp_path)) is None
 
 
 class TestLogitShape:

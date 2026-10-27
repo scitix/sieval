@@ -25,7 +25,7 @@ Bump `RESULT_SCHEMA_VERSION` (`sieval/core/tasks/run_meta.py`) in the PR that ma
 - a change to a task result directory's layout (shards, `.idx`, `meta.json`, the `report.json` shape) that older directories cannot be read under;
 - a core change that alters results. The grading identities do not walk `sieval.core` or `sieval.datasets`, so nothing else catches it.
 
-`IDENTITY_SCHEMA` versions only the `identity` block. Bumping it does not refuse a resume, so a new schema must read the old one: schema 2 reads schema 1's `grader` through `legacy_grader_keys`, which keeps the old walks unchanged; schema 3 reads the rendered-prompt `preprocess` of schemas 1 and 2 by rendering the recorded samples once.
+`IDENTITY_SCHEMA` versions only the `identity` block. Bumping it does not refuse a resume, so a new schema must read the old one: schema 2 reads schema 1's `grader` through `legacy_grader_keys`, which keeps the old walks unchanged; schema 3 reads the rendered-prompt `preprocess` of schemas 1 and 2 by rendering the recorded samples once; schema 5 reads schema 4's missing `inference.numerics` from the plan in its `runs[].serving`.
 
 `Model.extra` is the capability contract between tasks and models (`sieval/core/models/extra.py`): a task reads a key in `preprocess`, an absent key changes nothing, and `core/` only checks the shape of documented keys.
 

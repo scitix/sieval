@@ -149,6 +149,7 @@ from sieval.core.utils.hf import maybe_resolve_hf_path
 from sieval.core.utils.paths import resolve_data_dir
 from sieval.datasets.downloaders.staged import probe_source, staged_dir
 from sieval.infer import deployment_plan_projection
+from sieval.infer.introspect import checkpoint_numerics
 from sieval.infer.params import merge_params
 from sieval.infer.topology.models import DETERMINISTIC_DEFAULT_SEED
 
@@ -4880,6 +4881,9 @@ class EvalSession:
                 }
                 or None,
                 stated_serving=self._stated_serving_for(candidate.config_name),
+                checkpoint_numerics=self._checkpoint_numerics_for(
+                    candidate.config_name
+                ),
                 resume_config_diff=list(self._resume_config_diff),
                 legacy_match=self._legacy_match_for(task_name, runner_config),
                 unserved_candidate=(
@@ -5086,6 +5090,20 @@ class EvalSession:
             if isinstance(weights, str) and weights:
                 out[role] = weights
         return out or None
+
+    def _checkpoint_numerics_for(self, model_name: str) -> dict[str, JSONValue] | None:
+        """The ``dtype`` and ``quantization`` of the checkpoint *model_name*'s
+        root launches, which its engine uses where the plan leaves them unset;
+        ``None`` for a model SiEval does not serve or an unreadable checkpoint.
+        """
+        plan = (self._infer_plans or {}).get(self._root_model(model_name))
+        if plan is None:
+            return None
+        checkpoint = plan.get("checkpoint")
+        if not isinstance(checkpoint, str):
+            return None
+        numerics = checkpoint_numerics(checkpoint)
+        return dict(numerics) if numerics is not None else None
 
     def _stated_serving_for(self, model_name: str) -> dict[str, JSONValue] | None:
         """The root model's ``serving``; ``None`` when absent or empty."""

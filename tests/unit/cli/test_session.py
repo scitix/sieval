@@ -8221,6 +8221,23 @@ class TestInferArgs:
         runner.config["models"] = cast(Any, {"m": {"api_base": "http://x/v1"}})
         assert runner._stated_serving_for("m") is None
 
+    def test_checkpoint_numerics_are_the_launched_checkpoints(self, tmp_path):
+        """Read from the root's plan checkpoint; none for an endpoint or an
+        unreadable checkpoint."""
+        (tmp_path / "config.json").write_text(
+            json.dumps({"torch_dtype": "bfloat16", "architectures": ["X"]})
+        )
+        runner = self._make_runner({}, models={"m": MockChatModel()})
+        runner.config["models"] = cast(
+            Any, {"base": {"path": str(tmp_path)}, "m": {"base": "base"}}
+        )
+        runner._infer_plans = {"base": {**self._plan(), "checkpoint": str(tmp_path)}}
+        assert runner._checkpoint_numerics_for("m") == {"dtype": "bfloat16"}
+        runner._infer_plans = {"base": {**self._plan(), "checkpoint": "/nowhere"}}
+        assert runner._checkpoint_numerics_for("m") is None
+        runner._infer_plans = None
+        assert runner._checkpoint_numerics_for("m") is None
+
     def test_weights_are_the_root_models(self):
         runner = self._make_runner({}, models={"m": MockChatModel()})
         runner.config["models"] = cast(

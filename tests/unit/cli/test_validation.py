@@ -311,6 +311,16 @@ class TestValidateModels:
             "engine_version must be" in e
             for e in errors({"name": "x", "serving": {"engine_version": 5}})
         )
+        numerics = {"dtype": "bfloat16", "kv_cache_dtype": "fp8_e5m2"}
+        assert errors({"name": "x", "serving": {"numerics": numerics}}) == []
+        assert any(
+            "numerics must be a mapping" in e
+            for e in errors({"name": "x", "serving": {"numerics": "bf16"}})
+        )
+        assert any(
+            "numerics has unknown key(s) tp" in e
+            for e in errors({"name": "x", "serving": {"numerics": {"tp": 2}}})
+        )
         # An engine the run launches records its own serving.
         assert any(
             "describes an external endpoint" in e

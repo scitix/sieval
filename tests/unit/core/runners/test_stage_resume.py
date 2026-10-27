@@ -1375,6 +1375,28 @@ def test_plan_resume_rolls_back_to_the_earliest_changed_stage():
     assert plan_resume(None, same)["identity_schema"] is None
 
 
+def test_plan_resume_refuses_other_served_numerics():
+    """Equal digests with another known numerics value refuse; a schema-4
+    directory's are read from its plan, resolved against this checkpoint."""
+    inference = {"digest": "sha256:i", "numerics": {"kv_cache_dtype": "auto"}}
+    recorded = {"identity": {"schema": IDENTITY_SCHEMA, "inference": inference}}
+    same = {"inference": inference}
+    fp8 = {"inference": {**inference, "numerics": {"kv_cache_dtype": "fp8_e4m3"}}}
+    assert plan_resume(recorded, same)["refused"] is None
+    assert plan_resume(recorded, fp8)["refused"] == "inference"
+
+    schema_4 = {
+        "identity": {"schema": 4, "inference": {"digest": "sha256:i"}},
+        "runs": [{"serving": {"recipe": {"assignments": [{"engine_params": {}}]}}}],
+    }
+    bf16 = {"inference": {"digest": "sha256:i", "numerics": {"dtype": "bfloat16"}}}
+    ckpt = {"dtype": "bfloat16"}
+    assert plan_resume(schema_4, bf16, checkpoint_numerics=ckpt)["refused"] is None
+    fp16 = {"dtype": "float16"}
+    refused = plan_resume(schema_4, bf16, checkpoint_numerics=fp16)["refused"]
+    assert refused == "inference"
+
+
 # ===================================================================
 # preprocess is code: a change restarts every sample, and a directory that
 # recorded rendered prompts (identity schema 1 or 2) is upgraded in place

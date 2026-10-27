@@ -138,6 +138,7 @@ class MultiTaskRunner:
         judge_weights: dict[str, str] | None = None,
         lifecycles: dict[str, dict[str, str]] | None = None,
         stated_serving: dict[str, JSONValue] | None = None,
+        checkpoint_numerics: dict[str, JSONValue] | None = None,
         resume_config_diff: list[str] | None = None,
         legacy_match: LegacyStageMatch | None = None,
         unserved_candidate: bool = False,
@@ -147,9 +148,9 @@ class MultiTaskRunner:
         """Register a task for parallel execution.
 
         *inference_recipe*, *context_limit*, *weights*, *judge_weights*,
-        *lifecycles*, *stated_serving*, *serving_group*, *resume_config_diff*,
-        *legacy_match*, *unserved_candidate* and *engine_guard* pass through to
-        :class:`TaskRunner`.
+        *lifecycles*, *stated_serving*, *checkpoint_numerics*, *serving_group*,
+        *resume_config_diff*, *legacy_match*, *unserved_candidate* and
+        *engine_guard* pass through to :class:`TaskRunner`.
 
         Auto-sets ``result_dir`` to ``<base_result_dir>/<task.name>`` when
         a base was provided and the task's config lacks its own.
@@ -193,6 +194,7 @@ class MultiTaskRunner:
             judge_weights=judge_weights,
             lifecycles=lifecycles,
             stated_serving=stated_serving,
+            checkpoint_numerics=checkpoint_numerics,
             resume_config_diff=resume_config_diff,
             legacy_match=legacy_match,
             unserved_candidate=unserved_candidate,

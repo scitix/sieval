@@ -32,6 +32,7 @@ from sieval.core.tasks.run_meta import (
     GRADING_STAGES,
     IDENTITY_SCHEMA,
     JUDGE_MODEL_REF_ENV,
+    NUMERICS_PARAMS,
     STAGES,
     JudgeIdentity,
     _file_key,
@@ -56,11 +57,15 @@ from sieval.core.tasks.run_meta import (
     legacy_inference_digest,
     model_request_args,
     new_run_record,
+    numerics_differences,
+    numerics_key,
     ordered_stages,
     prompt_of,
     read_identity,
+    read_recorded_numerics,
     request_definition,
     request_digest,
+    served_numerics,
     serving_fingerprint,
     stage_key,
     validate_judge_model_ref,
@@ -432,6 +437,200 @@ class TestInferenceMatches:
         assert inference_matches(block, "sha256:a") is None
         block = {"schema": IDENTITY_SCHEMA, "inference": {"digest": "sha256:a"}}
         assert inference_matches(block, None) is None
+
+
+def _plan(*roles: Mapping[str, Any]) -> dict[str, Any]:
+    return {"assignments": [{"role": "full", "engine_params": dict(r)} for r in roles]}
+
+
+BF16 = {"dtype": "bfloat16"}
+
+
+class TestServedNumerics:
+    def test_engine_params_split_into_numerics_and_serving(self):
+        """Only the computation keys count; tp, memory and the rest do not."""
+        params = {
+            "dtype": "bfloat16",
+            "quantization": "fp8",
+            "kv-cache-dtype": "fp8_e5m2",
+            "tensor_parallel_size": 4,
+            "mem_fraction_static": 0.8,
+            "enable_dp_attention": True,
+        }
+        assert served_numerics(_plan(params)) == {
+            "dtype": "bfloat16",
+            "quantization": "fp8",
+            "kv_cache_dtype": "fp8_e5m2",
+            "model_overrides": None,
+        }
+        moved = {**params, "tensor_parallel_size": 8, "mem_fraction_static": 0.9}
+        assert served_numerics(_plan(moved)) == served_numerics(_plan(params))
+
+    def test_every_numerics_param_maps_to_one_key(self):
+        assert {p: numerics_key(p) for p in ("dtype", "hf-overrides", "tp")} == {
+            "dtype": "dtype",
+            "hf-overrides": "model_overrides",
+            "tp": None,
+        }
+        for key, names in NUMERICS_PARAMS.items():
+            assert all(numerics_key(name) == key for name in names)
+
+    def test_a_stated_default_equals_an_unset_one(self):
+        unset = served_numerics(_plan({}), checkpoint=BF16)
+        stated = served_numerics(
+            _plan({"dtype": "auto", "kv_cache_dtype": "auto"}), checkpoint=BF16
+        )
+        aliased = served_numerics(_plan({"dtype": "bf16"}), checkpoint=BF16)
+        assert unset == stated == aliased
+        assert unset == {
+            "dtype": "bfloat16",
+            "kv_cache_dtype": "auto",
+            "model_overrides": None,
+        }
+
+    def test_quantization_unset_is_the_checkpoints(self):
+        checkpoint = {"dtype": "bfloat16", "quantization": "fp8"}
+        on_disk = served_numerics(_plan({}), checkpoint=checkpoint)
+        assert on_disk is not None and on_disk["quantization"] == "fp8"
+        runtime = served_numerics(_plan({"quantization": "awq"}), checkpoint=checkpoint)
+        assert runtime is not None and runtime["quantization"] == "awq"
+        # Unquantized checkpoint: no key, so unknown, not "none".
+        plain = served_numerics(_plan({}), checkpoint=BF16)
+        assert plain is not None and "quantization" not in plain
+
+    def test_an_unreadable_checkpoint_leaves_dtype_unknown(self):
+        numerics = served_numerics(_plan({}))
+        assert numerics is not None and "dtype" not in numerics
+
+    def test_model_overrides_compare_as_objects(self):
+        text = served_numerics(
+            _plan({"json_model_override_args": '{"b": 2, "a": 1}'}), checkpoint=BF16
+        )
+        obj = served_numerics(
+            _plan({"json_model_override_args": {"a": 1, "b": 2}}), checkpoint=BF16
+        )
+        assert text == obj
+        assert text is not None and text["model_overrides"] == {"a": 1, "b": 2}
+        empty = served_numerics(
+            _plan({"json_model_override_args": "{}"}), checkpoint=BF16
+        )
+        assert empty == served_numerics(_plan({}), checkpoint=BF16)
+        # Text that is not JSON is compared as given.
+        raw = served_numerics(_plan({"hf_overrides": "{bad"}), checkpoint=BF16)
+        assert raw is not None and raw["model_overrides"] == "{bad"
+
+    def test_a_plan_without_roles_is_unknown(self):
+        assert served_numerics({"assignments": []}) is None
+        assert served_numerics({}) is None
+
+    def test_roles_that_disagree_record_each_value(self):
+        numerics = served_numerics(
+            _plan({"kv_cache_dtype": "fp8_e5m2"}, {}), checkpoint=BF16
+        )
+        assert numerics is not None
+        assert numerics["kv_cache_dtype"] == ["auto", "fp8_e5m2"]
+        assert numerics["dtype"] == "bfloat16"
+
+    def test_an_endpoint_has_what_the_caller_states(self):
+        assert served_numerics(None) is None
+        assert served_numerics(None, {"hardware": "8x H200"}) is None
+        stated = {"numerics": {"dtype": "bf16", "kv_cache_dtype": "fp8"}}
+        assert served_numerics(None, stated) == {
+            "dtype": "bfloat16",
+            "kv_cache_dtype": "fp8_e4m3",
+        }
+
+
+class TestNumericsInTheInferenceIdentity:
+    KEYS = {"deterministic": False, "max_iterations": None, "max_retries": None}
+
+    def _identity(self, numerics):
+        return inference_identity(
+            model=MockChatModel(),
+            task_args={},
+            runner_keys=self.KEYS,
+            context_limit=None,
+            numerics=numerics,
+        )
+
+    def test_numerics_sit_beside_the_digest(self):
+        fp8 = self._identity({"kv_cache_dtype": "fp8_e5m2"})
+        auto = self._identity({"kv_cache_dtype": "auto"})
+        assert fp8["digest"] == auto["digest"]
+        assert fp8["numerics"] == {"kv_cache_dtype": "fp8_e5m2"}
+        assert "numerics" not in self._identity(None)
+
+    def test_a_known_difference_refuses(self):
+        block = {"schema": IDENTITY_SCHEMA, "inference": {"digest": "sha256:a"}}
+        bf16, fp8 = {"dtype": "bfloat16"}, {"dtype": "float16"}
+        assert inference_matches(
+            block, "sha256:a", numerics=bf16, recorded_numerics=bf16
+        )
+        assert (
+            inference_matches(block, "sha256:a", numerics=fp8, recorded_numerics=bf16)
+            is False
+        )
+
+    def test_a_key_unknown_on_either_side_is_no_difference(self):
+        block = {"schema": IDENTITY_SCHEMA, "inference": {"digest": "sha256:a"}}
+        stated = {"dtype": "bfloat16"}
+        launched = {"dtype": "bfloat16", "kv_cache_dtype": "auto"}
+        assert inference_matches(
+            block, "sha256:a", numerics=launched, recorded_numerics=stated
+        )
+        assert inference_matches(block, "sha256:a", numerics=launched)
+        assert numerics_differences(None, launched) == []
+        assert numerics_differences({"dtype": "float16"}, launched) == [
+            "dtype: 'float16' -> 'bfloat16'"
+        ]
+
+
+class TestReadRecordedNumerics:
+    def test_this_schema_reads_the_block(self):
+        meta = {
+            "identity": {
+                "schema": IDENTITY_SCHEMA,
+                "inference": {"digest": "x", "numerics": {"dtype": "float16"}},
+            }
+        }
+        assert read_recorded_numerics(meta) == {"dtype": "float16"}
+        meta["identity"]["inference"] = {"digest": "x"}
+        assert read_recorded_numerics(meta) is None
+
+    def test_schema_4_reads_its_latest_own_plan_as_effective(self):
+        old = _plan({"dtype": "float16"})
+        latest = _plan({"tensor_parallel_size": 2})
+        meta = {
+            "identity": {"schema": 4, "inference": {"digest": "x"}},
+            "runs": [
+                {"serving": {"recipe": old}},
+                {"serving": {"recipe": latest}},
+                # Another model's run regraded; it inferred nothing.
+                {"model": "other", "serving": {"recipe": _plan({"dtype": "x"})}},
+            ],
+        }
+        # Unset dtype resolves to this run's checkpoint: a bf16 run of it,
+        # recorded without numerics, equals a new bf16 run.
+        assert read_recorded_numerics(meta, BF16) == served_numerics(
+            _plan({}), checkpoint=BF16
+        )
+
+    def test_schema_4_endpoint_or_no_runs_is_unknown(self):
+        endpoint = {
+            "identity": {"schema": 4},
+            "runs": [{"serving": {"recipe": None, "stated": {"hardware": "x"}}}],
+        }
+        assert read_recorded_numerics(endpoint) is None
+        assert read_recorded_numerics({"identity": {"schema": 4}}) is None
+
+    @pytest.mark.parametrize("schema", [1, 2, 3, 99])
+    def test_other_schemas_record_none(self, schema):
+        meta = {
+            "identity": {"schema": schema},
+            "runs": [{"serving": {"recipe": _plan(BF16)}}],
+        }
+        assert read_recorded_numerics(meta) is None
+        assert read_recorded_numerics(None) is None
 
 
 class TestLifecycleAndJudgeWeights:
@@ -1339,7 +1538,7 @@ class TestDocument:
         read = read_identity(block)
         assert read is not None
         identity, legacy = read
-        assert identity["schema"] == IDENTITY_SCHEMA == 4
+        assert identity["schema"] == IDENTITY_SCHEMA == 5
         assert identity["data"] == data
         assert identity["preprocess"] == prompt
         assert identity["inference"] == {"digest": "sha256:i"}
@@ -1359,10 +1558,17 @@ class TestDocument:
         assert not is_code_identity(identity["preprocess"])
         assert legacy is None
 
+    def test_a_schema_4_block_is_read_as_written(self):
+        inference = {"digest": "sha256:i"}
+        read = read_identity({"schema": 4, "inference": inference})
+        assert read is not None
+        assert read[0]["schema"] == IDENTITY_SCHEMA
+        assert read[0]["inference"] == inference
+
     def test_another_schema_is_not_read(self):
-        assert read_identity({"schema": 5, "data": {"digest": "x"}}) is None
+        assert read_identity({"schema": 6, "data": {"digest": "x"}}) is None
         assert read_identity("nope") is None
-        assert carried_identity({"identity": {"schema": 5}}) == empty_identity()
+        assert carried_identity({"identity": {"schema": 6}}) == empty_identity()
 
     def test_carried_runs_tolerates_old_and_malformed(self):
         assert carried_runs(None) == []

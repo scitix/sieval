@@ -229,7 +229,7 @@ class TestResumeAcrossReleases:
         assert resumed["resume"]["repostprocessed"] == 0
         assert resumed["resume"]["restarted"] == 0
         identity = meta["identity"]
-        assert identity["schema"] == IDENTITY_SCHEMA == 4
+        assert identity["schema"] == IDENTITY_SCHEMA == 5
         assert "grader" not in identity and "prompt" not in identity
         old = recorded["identity"]
         assert identity["data"] == old["data"]

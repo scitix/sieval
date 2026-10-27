@@ -38,6 +38,15 @@ How the candidate is served is recorded per run in ``runs[].serving``
 compared apart from ``inference``: by ``weights`` when both runs state them,
 else by ``model``.
 
+What the served model computes with is not how it is served: ``inference``
+keeps ``numerics`` (:func:`served_numerics`), the effective ``dtype``,
+runtime ``quantization``, ``kv_cache_dtype`` and model overrides, by the
+engine parameters :data:`NUMERICS_PARAMS` lists. They sit beside the digest,
+not in it, because a key may be unknown: for an endpoint, one the caller does
+not state. A key known on both sides must be equal; one unknown on either
+side is no difference. A schema-4 block recorded none: its numerics are read
+from its plan in ``runs[].serving`` (:func:`read_recorded_numerics`).
+
 ``preprocess`` is code, not the prompts it renders: a prompt is code,
 arguments, data and the model's ``extra``, and ``extra`` reaches the request,
 which ``inference`` digests per sample. So a wrapping model and a plain one
@@ -95,8 +104,8 @@ RESULT_SCHEMA_VERSION = 1
 #: Version of the ``identity`` block's layout. A digest computed differently is
 #: not a layout change: it reruns one stage, a new schema would discard them all.
 #: Schema 1 is still read (:func:`read_identity`). Schema 4 took serving out of
-#: ``inference``.
-IDENTITY_SCHEMA = 4
+#: ``inference``; schema 5 put the served model's numerics back in.
+IDENTITY_SCHEMA = 5
 
 #: Identity schemas whose ``inference`` digest covers the engine and serving
 #: recipe (:func:`legacy_inference_digest`).
@@ -174,11 +183,19 @@ class DigestedStage(TypedDict):
     unknown: NotRequired[int]
 
 
+#: What the served model computes with, by ``inference.numerics`` key: one
+#: value each, keyed as :data:`NUMERICS_PARAMS` lists them.
+type Numerics = dict[str, JSONValue]
+
+
 class InferenceIdentity(TypedDict):
-    """``digest`` covers what is asked; ``requests`` what was sent."""
+    """``digest`` covers what is asked; ``requests`` what was sent;
+    ``numerics`` what the served model computes with (:func:`served_numerics`),
+    absent when none of it is known."""
 
     digest: str
     requests: NotRequired[DigestedStage]
+    numerics: NotRequired[Numerics]
 
 
 class ServingFingerprint(TypedDict):
@@ -202,7 +219,27 @@ class ServingFingerprint(TypedDict):
 
 
 #: What a caller may state about how an external endpoint serves the model.
-STATED_SERVING_KEYS: tuple[str, ...] = ("engine_version", "topology", "hardware")
+#: ``numerics`` alone is compared, as ``inference.numerics``.
+STATED_SERVING_KEYS: tuple[str, ...] = (
+    "engine_version",
+    "topology",
+    "hardware",
+    "numerics",
+)
+
+#: The engine parameters that change what the served model computes, by the
+#: ``inference.numerics`` key they set. Every other engine parameter is how
+#: the model is served (parallelism, replicas, disaggregation, memory,
+#: scheduling, ports): recorded in ``runs[].serving``, never compared. Names
+#: are in underscore form; :func:`numerics_key` reads either form.
+NUMERICS_PARAMS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "dtype": ("dtype",),
+        "quantization": ("quantization",),
+        "kv_cache_dtype": ("kv_cache_dtype",),
+        "model_overrides": ("json_model_override_args", "hf_overrides"),
+    }
+)
 
 
 class JudgeIdentity(TypedDict):
@@ -278,8 +315,10 @@ class RunIdentity(TypedDict):
 
     Two runs share a stage only when every digest in it matches: for
     ``inference`` that is ``digest`` *and* ``requests.digest``, and a ``None``
-    digest on either side matches nothing. A schema-1 or schema-2
-    ``preprocess`` is a :class:`DigestedStage` of rendered prompts.
+    digest on either side matches nothing. ``inference.numerics`` must not
+    differ on a key both sides know (:func:`numerics_differences`). A
+    schema-1 or schema-2 ``preprocess`` is a :class:`DigestedStage` of rendered
+    prompts.
     """
 
     schema: int
@@ -587,11 +626,14 @@ def inference_identity(
     task_args: Mapping[str, JSONValue],
     runner_keys: Mapping[str, JSONValue],
     context_limit: int | None,
+    numerics: Numerics | None = None,
 ) -> InferenceIdentity:
     """Digest what the candidate is asked, leaving out which model and how served.
 
     *context_limit* is its context window in tokens, ``None`` when unknown.
-    What was actually sent is folded per sample into ``requests`` at the end.
+    *numerics* is :func:`served_numerics`, kept beside the digest as values,
+    since a key may be unknown. What was actually sent is folded per sample
+    into ``requests`` at the end.
     """
     payload = {
         "model_args": model_request_args(model),
@@ -599,7 +641,10 @@ def inference_identity(
         "runner": {key: runner_keys.get(key) for key in INFERENCE_RUNNER_KEYS},
         "context_limit": context_limit,
     }
-    return {"digest": digest(payload)}
+    identity: InferenceIdentity = {"digest": digest(payload)}
+    if numerics:
+        identity["numerics"] = dict(numerics)
+    return identity
 
 
 def legacy_inference_digest(
@@ -627,12 +672,17 @@ def inference_matches(
     recorded: Mapping[str, Any] | None,
     current: str | None,
     legacy: str | None = None,
+    *,
+    numerics: Numerics | None = None,
+    recorded_numerics: Numerics | None = None,
 ) -> bool | None:
     """Whether a recorded ``identity`` block's ``inference`` is this run's.
 
     *legacy* is this run's :func:`legacy_inference_digest`, used for a block
-    of a :data:`LEGACY_INFERENCE_SCHEMAS` schema. ``None`` when either side is
-    unknown.
+    of a :data:`LEGACY_INFERENCE_SCHEMAS` schema. ``None`` when either digest
+    is unknown. Equal digests still differ when *numerics*, this run's
+    :func:`served_numerics`, and *recorded_numerics*
+    (:func:`read_recorded_numerics`) differ (:func:`numerics_differences`).
     """
     if not isinstance(recorded, Mapping):
         return None
@@ -641,7 +691,172 @@ def inference_matches(
     mine = legacy if recorded.get("schema") in LEGACY_INFERENCE_SCHEMAS else current
     if not isinstance(theirs, str) or mine is None:
         return None
-    return theirs == mine
+    return theirs == mine and not numerics_differences(recorded_numerics, numerics)
+
+
+def numerics_key(param: str) -> str | None:
+    """The ``inference.numerics`` key engine parameter *param* sets, in dash or
+    underscore form; ``None`` for a parameter that only says how the model is
+    served (:data:`NUMERICS_PARAMS`)."""
+    name = param.replace("-", "_")
+    return next((k for k, names in NUMERICS_PARAMS.items() if name in names), None)
+
+
+#: Spellings the engines accept for one ``dtype``.
+_DTYPE_ALIASES: Mapping[str, str] = MappingProxyType(
+    {
+        "bf16": "bfloat16",
+        "half": "float16",
+        "fp16": "float16",
+        "float": "float32",
+        "fp32": "float32",
+    }
+)
+
+#: Spellings the engines accept for one ``kv_cache_dtype``.
+_KV_CACHE_DTYPE_ALIASES: Mapping[str, str] = MappingProxyType({"fp8": "fp8_e4m3"})
+
+
+def _numerics_value(key: str, value: object) -> JSONValue:
+    """*value* of numerics *key*, spelled one way: an alias by its name, model
+    overrides as an object (an empty one is none)."""
+    if key == "dtype" and isinstance(value, str):
+        return _DTYPE_ALIASES.get(value, value)
+    if key == "kv_cache_dtype" and isinstance(value, str):
+        return _KV_CACHE_DTYPE_ALIASES.get(value, value)
+    if key == "model_overrides" and isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return value
+    if key == "model_overrides" and not value:
+        return None
+    return cast(JSONValue, value)
+
+
+def _role_numerics(
+    params: Mapping[str, Any], checkpoint: Mapping[str, JSONValue] | None
+) -> Numerics:
+    """One role's effective numerics: what its engine *params* state, else the
+    engine's default. An unset or ``auto`` ``dtype`` and an unset
+    ``quantization`` are the *checkpoint*'s, unknown without it."""
+    stated: dict[str, object] = {}
+    for param, value in params.items():
+        key = numerics_key(param)
+        if key is not None and value is not None and key not in stated:
+            stated[key] = value
+    out: Numerics = {}
+    dtype = stated.get("dtype")
+    if dtype is not None and dtype != "auto":
+        out["dtype"] = _numerics_value("dtype", dtype)
+    elif checkpoint is not None and "dtype" in checkpoint:
+        out["dtype"] = _numerics_value("dtype", checkpoint["dtype"])
+    if "quantization" in stated:
+        out["quantization"] = _numerics_value("quantization", stated["quantization"])
+    elif checkpoint is not None and "quantization" in checkpoint:
+        out["quantization"] = checkpoint["quantization"]
+    out["kv_cache_dtype"] = _numerics_value(
+        "kv_cache_dtype", stated.get("kv_cache_dtype", "auto")
+    )
+    out["model_overrides"] = _numerics_value(
+        "model_overrides", stated.get("model_overrides")
+    )
+    return out
+
+
+def served_numerics(
+    recipe: Mapping[str, Any] | None,
+    stated: Mapping[str, Any] | None = None,
+    checkpoint: Mapping[str, JSONValue] | None = None,
+) -> Numerics | None:
+    """What the served model computes with, keyed by :data:`NUMERICS_PARAMS`.
+
+    For an engine the run launched, the effective value of each key from the
+    ``engine_params`` of every role in *recipe*; *checkpoint* holds the
+    checkpoint's own ``dtype`` and ``quantization`` (``None`` when it has
+    none), which an unset one resolves to. Roles that disagree on a key give
+    their distinct values, sorted. For an endpoint (no *recipe*), the
+    ``numerics`` the caller *stated*, as given. A key left out is unknown, and
+    ``None`` is returned when every key is.
+    """
+    if recipe is None:
+        given = (stated or {}).get("numerics")
+        if not isinstance(given, Mapping) or not given:
+            return None
+        return {
+            key: _numerics_value(key, given[key])
+            for key in NUMERICS_PARAMS
+            if key in given and not (key == "dtype" and given[key] == "auto")
+        } or None
+    roles = [
+        _role_numerics(a.get("engine_params") or {}, checkpoint)
+        for a in recipe.get("assignments") or ()
+        if isinstance(a, Mapping)
+    ]
+    if not roles:
+        return None
+    out: Numerics = {}
+    for key in NUMERICS_PARAMS:
+        if not all(key in role for role in roles):
+            continue
+        values = {canonical_json(role[key]): role[key] for role in roles}
+        out[key] = (
+            next(iter(values.values()))
+            if len(values) == 1
+            else [values[text] for text in sorted(values)]
+        )
+    return out or None
+
+
+def read_recorded_numerics(
+    meta: Mapping[str, Any] | None,
+    checkpoint: Mapping[str, JSONValue] | None = None,
+) -> Numerics | None:
+    """The numerics a recorded ``meta.json``'s inference ran with, ``None``
+    when unknown.
+
+    This schema records them in ``inference.numerics``. Schema 4 recorded none:
+    they are read from the plan of its latest run with this model, in
+    ``runs[].serving``, as :func:`served_numerics` would have, its unset values
+    resolved against this run's *checkpoint*. Schemas 1 to 3 compare the plan
+    whole (:func:`legacy_inference_digest`), so they need none.
+    """
+    block = (meta or {}).get("identity")
+    if not isinstance(block, Mapping):
+        return None
+    schema = block.get("schema")
+    if schema == IDENTITY_SCHEMA:
+        stage = block.get("inference")
+        numerics = stage.get("numerics") if isinstance(stage, Mapping) else None
+        return dict(numerics) if isinstance(numerics, Mapping) else None
+    if schema != 4:
+        return None
+    runs = cast(Mapping[str, Any], meta).get("runs")
+    for run in reversed(runs if isinstance(runs, list) else []):
+        if not isinstance(run, Mapping) or "model" in run:
+            continue  # another model's run did not infer these samples
+        serving = run.get("serving")
+        if isinstance(serving, Mapping):
+            recipe = serving.get("recipe")
+            return served_numerics(
+                recipe if isinstance(recipe, Mapping) else None, None, checkpoint
+            )
+    return None
+
+
+def numerics_differences(
+    recorded: Mapping[str, Any] | None, current: Mapping[str, Any] | None
+) -> list[str]:
+    """Each numerics key known on both sides whose values differ, as
+    ``key: recorded -> current``. A key unknown on either side is no
+    difference."""
+    if recorded is None or current is None:
+        return []
+    return [
+        f"{key}: {recorded[key]!r} -> {current[key]!r}"
+        for key in NUMERICS_PARAMS
+        if key in recorded and key in current and recorded[key] != current[key]
+    ]
 
 
 def serving_fingerprint(
@@ -2402,7 +2617,7 @@ def read_identity(
 ) -> tuple[RunIdentity, Mapping[str, Any] | None] | None:
     """A recorded ``identity`` block as this schema, with a schema-1 ``grader``.
 
-    Schemas 2 to 4 are read as written; schema 2's ``preprocess`` is a digest
+    Schemas 2 to 5 are read as written; schema 2's ``preprocess`` is a digest
     of rendered prompts, which :func:`is_code_identity` tells apart. Schema 1
     maps ``data`` and ``inference`` across and ``prompt`` to ``preprocess``
     (:data:`SCHEMA_1_STAGES`); its ``grader`` cannot be split, so the grading
@@ -2415,7 +2630,7 @@ def read_identity(
     block = cast(Mapping[str, Any], block)
     out = empty_identity()
     schema = block.get("schema")
-    if schema in (2, 3, IDENTITY_SCHEMA):
+    if schema in (2, 3, 4, IDENTITY_SCHEMA):
         for stage in STAGES:
             if isinstance(block.get(stage), dict):
                 out[stage] = block[stage]  # type: ignore[literal-required]

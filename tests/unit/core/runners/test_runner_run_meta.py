@@ -337,14 +337,21 @@ class TestInferenceIdentityFromRunner:
 
     @pytest.mark.anyio
     async def test_the_recipe_is_recorded_not_digested(self, tmp_path):
-        """The serving recipe is the run's serving fingerprint, not identity."""
+        """The serving recipe is the run's serving fingerprint; only the
+        numerics it implies join the identity, beside the digest."""
         task = RecordTask(dataset=MockDataset(SAMPLES), model=MockChatModel(), name="t")
         recipe = {"backend": "vllm", "assignments": [{"role": "full"}]}
         runner = TaskRunner(task, make_config(tmp_path / "a"), inference_recipe=recipe)
         await runner.arun()
         meta = _meta(runner.root_dir)
         plain = _meta(await self._root(tmp_path / "b"))
-        assert meta["identity"]["inference"] == plain["identity"]["inference"]
+        inference = meta["identity"]["inference"]
+        assert inference.pop("numerics") == {
+            "kv_cache_dtype": "auto",
+            "model_overrides": None,
+        }
+        assert inference == plain["identity"]["inference"]
+        assert "numerics" not in plain["identity"]["inference"]
         assert meta["runs"][-1]["serving"]["recipe"] == recipe
 
     @pytest.mark.anyio
@@ -524,6 +531,151 @@ class TestServingIsNotIdentity:
             await runner.arun()
         assert model.call_count == 0
         assert (root / "meta.json").read_bytes() == before
+
+
+def _engine(**params) -> dict:
+    return {
+        "backend": "sglang",
+        "assignments": [{"role": "full", "engine_params": params}],
+    }
+
+
+class TestServedNumericsAreIdentity:
+    """What the served model computes with gates a resume; how it is served
+    does not (issue #258)."""
+
+    BF16 = {"dtype": "bfloat16"}
+
+    @pytest.mark.anyio
+    async def test_another_kv_cache_dtype_is_refused(self, tmp_path):
+        task, _ = _counting_task()
+        await TaskRunner(
+            task,
+            make_config(tmp_path),
+            inference_recipe=_engine(tp=1),
+            checkpoint_numerics=self.BF16,
+        ).arun()
+        root = tmp_path / "results"
+        _forget_last_sample(root)
+        before = (root / "meta.json").read_bytes()
+
+        task, model = _counting_task()
+        runner = TaskRunner(
+            task,
+            make_config(tmp_path, resume=True),
+            inference_recipe=_engine(tp=1, kv_cache_dtype="fp8_e5m2"),
+            checkpoint_numerics=self.BF16,
+        )
+        with pytest.raises(StageResumeError, match="kv_cache_dtype: 'auto'"):
+            await runner.arun()
+        assert model.call_count == 0
+        assert (root / "meta.json").read_bytes() == before
+
+    @pytest.mark.anyio
+    async def test_a_stated_default_and_another_layout_resume(self, tmp_path):
+        task, _ = _counting_task()
+        await TaskRunner(
+            task,
+            make_config(tmp_path),
+            inference_recipe=_engine(tp=1),
+            checkpoint_numerics=self.BF16,
+        ).arun()
+        root = tmp_path / "results"
+        _forget_last_sample(root)
+
+        task, model = _counting_task()
+        await TaskRunner(
+            task,
+            make_config(tmp_path, resume=True),
+            inference_recipe=_engine(tp=8, dtype="bf16", kv_cache_dtype="auto"),
+            checkpoint_numerics=self.BF16,
+        ).arun()
+        assert model.call_count == 1
+        inference = _meta(root)["identity"]["inference"]
+        assert inference["numerics"]["dtype"] == "bfloat16"
+        assert inference["requests"]["digest"] is not None
+
+    @pytest.mark.anyio
+    async def test_a_schema_4_directory_reads_its_plan_as_effective(self, tmp_path):
+        """Recorded before numerics counted: its plan in `runs[].serving` says
+        what it ran with, so a run with the same effective values resumes and
+        one with another dtype is refused."""
+        task, _ = _counting_task()
+        await TaskRunner(
+            task, make_config(tmp_path), inference_recipe=_engine(tp=1)
+        ).arun()
+        root = tmp_path / "results"
+        meta = _meta(root)
+        meta["identity"]["schema"] = 4
+        meta["identity"]["inference"].pop("numerics")
+        (root / "meta.json").write_bytes(orjson.dumps(meta))
+        _forget_last_sample(root)
+
+        task, model = _counting_task()
+        with pytest.raises(StageResumeError, match="dtype: 'bfloat16' -> 'float16'"):
+            await TaskRunner(
+                task,
+                make_config(tmp_path, resume=True),
+                inference_recipe=_engine(tp=2, dtype="float16"),
+                checkpoint_numerics=self.BF16,
+            ).arun()
+        assert model.call_count == 0
+
+        await TaskRunner(
+            task,
+            make_config(tmp_path, resume=True),
+            inference_recipe=_engine(tp=2, dtype="bfloat16"),
+            checkpoint_numerics=self.BF16,
+        ).arun()
+        assert model.call_count == 1
+        identity = _meta(root)["identity"]
+        assert identity["schema"] == IDENTITY_SCHEMA
+        assert identity["inference"]["numerics"]["dtype"] == "bfloat16"
+
+    @pytest.mark.anyio
+    async def test_an_endpoint_that_states_none_is_not_a_mismatch(self, tmp_path):
+        task, _ = _counting_task()
+        await TaskRunner(
+            task,
+            make_config(tmp_path),
+            inference_recipe=_engine(tp=1),
+            checkpoint_numerics=self.BF16,
+        ).arun()
+        root = tmp_path / "results"
+        _forget_last_sample(root)
+
+        task, model = _counting_task()
+        await TaskRunner(task, make_config(tmp_path, resume=True)).arun()
+        assert model.call_count == 1
+
+    @pytest.mark.anyio
+    async def test_an_endpoint_stating_other_numerics_is_refused(self, tmp_path):
+        task, _ = _counting_task()
+        await TaskRunner(
+            task,
+            make_config(tmp_path),
+            inference_recipe=_engine(tp=1),
+            checkpoint_numerics=self.BF16,
+        ).arun()
+        root = tmp_path / "results"
+        _forget_last_sample(root)
+
+        task, model = _counting_task()
+        with pytest.raises(StageResumeError, match="dtype: 'bfloat16' -> 'float16'"):
+            await TaskRunner(
+                task,
+                make_config(tmp_path, resume=True),
+                stated_serving={"numerics": {"dtype": "fp16"}},
+            ).arun()
+        assert model.call_count == 0
+        # The recorded run's quantization is unknown (an unquantized
+        # checkpoint), so stating one is not a difference.
+        await TaskRunner(
+            task,
+            make_config(tmp_path, resume=True),
+            stated_serving={"numerics": {"dtype": "bf16", "quantization": "fp8"}},
+        ).arun()
+        assert model.call_count == 1
 
 
 class TestUnavailableFingerprints:

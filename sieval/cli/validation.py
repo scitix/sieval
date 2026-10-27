@@ -56,7 +56,7 @@ from sieval.core.runners import TaskRunnerConfig
 from sieval.core.runners.barriers import check_barrier_stage
 from sieval.core.tasks.consts import TaskAction
 from sieval.core.tasks.python_requires import MissingPythonRequirementsError
-from sieval.core.tasks.run_meta import STATED_SERVING_KEYS
+from sieval.core.tasks.run_meta import NUMERICS_PARAMS, STATED_SERVING_KEYS
 
 # Known top-level keys from RootConfigDict
 _ROOT_KEYS: set[str] = set(RootConfigDict.__annotations__)
@@ -166,6 +166,16 @@ def _check_stated_serving(
     version = stated.get("engine_version")
     if version is not None and not _is_nonempty_str(version):
         result.errors.append(f"{where}.engine_version must be a non-empty string")
+    numerics = stated.get("numerics")
+    if numerics is not None and not isinstance(numerics, Mapping):
+        result.errors.append(f"{where}.numerics must be a mapping")
+    elif numerics is not None:
+        unknown = sorted(set(numerics) - set(NUMERICS_PARAMS))
+        if unknown:
+            result.errors.append(
+                f"{where}.numerics has unknown key(s) {', '.join(unknown)}; "
+                f"expected {', '.join(NUMERICS_PARAMS)}"
+            )
 
 
 def _validate_models(cfg: dict, result: ValidationResult) -> None:

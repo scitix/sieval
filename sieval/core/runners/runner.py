@@ -76,6 +76,7 @@ from sieval.core.tasks.run_meta import (
     GradingIdentity,
     InferenceIdentity,
     JudgeIdentity,
+    Numerics,
     PreprocessIdentity,
     ResumeOutcomes,
     RunFrom,
@@ -94,9 +95,12 @@ from sieval.core.tasks.run_meta import (
     judge_identities,
     legacy_grader_keys,
     legacy_inference_digest,
+    numerics_differences,
     preprocess_key,
     prompt_of,
+    read_recorded_numerics,
     request_digest,
+    served_numerics,
     serving_fingerprint,
     stage_code,
     stage_key,
@@ -522,6 +526,7 @@ class TaskRunner:
         judge_weights: dict[str, str] | None = None,
         lifecycles: dict[str, dict[str, str]] | None = None,
         stated_serving: dict[str, JSONValue] | None = None,
+        checkpoint_numerics: dict[str, JSONValue] | None = None,
         resume_config_diff: list[str] | None = None,
         legacy_match: LegacyStageMatch | None = None,
         unserved_candidate: bool = False,
@@ -544,7 +549,9 @@ class TaskRunner:
         that needs a lost engine (:mod:`.engine_loss`). *judge_weights* names,
         by judge role, the weights a launched judge serves, compared instead of
         its name. *lifecycles* are the launched models' lifecycles, recorded in
-        ``runs[].serving``.
+        ``runs[].serving``. *checkpoint_numerics* is the launched checkpoint's
+        own ``dtype`` and ``quantization``, which the inference identity's
+        ``numerics`` resolve unset engine params to (:func:`served_numerics`).
         """
         # A malformed judge reference would leave every grader identity
         # unknown; refuse it before any work.
@@ -557,6 +564,7 @@ class TaskRunner:
         self._judge_weights = dict(judge_weights or {})
         self._lifecycles = lifecycles
         self._stated_serving = stated_serving
+        self._checkpoint_numerics = checkpoint_numerics
         self._resume_config_diff = list(resume_config_diff or [])
         self._legacy_match = LegacyStageMatch(**(legacy_match or {}))
         self._unserved_candidate = unserved_candidate
@@ -2253,11 +2261,15 @@ class TaskRunner:
             if self._inference_matches(current):
                 return
             recorded = identity["inference"].get("digest")
-            reason = (
-                "this run's inference identity is unknown"
-                if current is None
-                else f"recorded {recorded}, now {current['digest']}"
+            numerics = numerics_differences(
+                self._recorded_numerics(), (current or {}).get("numerics")
             )
+            if current is None:
+                reason = "this run's inference identity is unknown"
+            elif recorded == current["digest"] and numerics:
+                reason = "the served model's numerics: " + "; ".join(numerics)
+            else:
+                reason = f"recorded {recorded}, now {current['digest']}"
         elif identity is None and (
             self._trusts_unrecorded() or self._legacy_match.get("inference") is True
         ):
@@ -2272,7 +2284,9 @@ class TaskRunner:
             f"  recorded: {self._recorded_dir()}\n"
             "  Inference is reused, never rerun, by a resume. Start fresh in a "
             "new result_dir, or match the model's request arguments, the "
-            "task's inference arguments and the context limit.",
+            "task's inference arguments, the context limit and the served "
+            "model's numerics (dtype, quantization, kv_cache_dtype, model "
+            "overrides).",
             task=self._task.name,
         )
 
@@ -2368,6 +2382,7 @@ class TaskRunner:
             current,
             self._legacy_grader_keys(),
             self._legacy_inference_digest(),
+            self._checkpoint_numerics,
         )
         if plan["legacy_preprocess"] and self._legacy_prompts_match is not None:
             plan["stages"]["preprocess"] = (
@@ -2832,6 +2847,11 @@ class TaskRunner:
                 task_args=self._task.inference_args(),
                 runner_keys=self._runner_keys(),
                 context_limit=self._context_limit,
+                numerics=served_numerics(
+                    self._inference_recipe,
+                    self._stated_serving,
+                    self._checkpoint_numerics,
+                ),
             )
         except (TypeError, ValueError, AttributeError) as exc:
             logger.warning("Inference identity unavailable: {}", exc)
@@ -2862,7 +2882,13 @@ class TaskRunner:
             (self._recorded or {}).get("identity"),
             current["digest"] if current is not None else None,
             self._legacy_inference_digest(),
+            numerics=current.get("numerics") if current is not None else None,
+            recorded_numerics=self._recorded_numerics(),
         )
+
+    def _recorded_numerics(self) -> Numerics | None:
+        """The recorded run's :func:`read_recorded_numerics`."""
+        return read_recorded_numerics(self._recorded, self._checkpoint_numerics)
 
     def _serving(self) -> ServingFingerprint | None:
         try:
@@ -3113,7 +3139,7 @@ class TaskRunner:
         if inference is not None:
             await self._saver.set_identity(
                 inference={
-                    "digest": inference["digest"],
+                    **inference,
                     "requests": self._requests_identity(),
                 }
             )
