@@ -1,20 +1,19 @@
-"""Shell tests: backend selector wiring for SglangGenModel.
+"""Tests for the ``SglangGenModel`` compatibility wrapper.
 
-RFC #25 moved the native /generate wire logic (URL derivation, sampling-param
-translation, triple parsing, ``_normalize_token_text``, the radix-cache guard)
-into ``SglangTransport``; the former ``_agenerate_impl`` / ``_alogprobs_impl``
-coverage moved with it to tests/unit/core/models/transports/test_sglang.py,
-and the request-builder validation (n/stream types, alogprobs n=1) lives on
-``Model`` in tests/unit/core/models/test_model.py. What remains here is the
-selector contract: SglangGenModel pairs the shared client (and its api_base)
-with that transport, which supplies the model's capabilities.
+The wrapper binds ``sglang_native`` over a private ``async_http_json`` pool,
+the same way ``GenModel`` binds ``openai_completions``.  The wire lowering and
+lifting are covered by ``tests/unit/core/models/dialects/test_sglang_native.py``;
+these tests cover the binding, the request gate it inherits from ``Model``, the
+pool lifecycle, and the legacy ``agenerate``/``alogprobs`` surface end to end
+over an ``httpx.MockTransport``.
 
-AI-Generated Code - Claude Fable 5 (Anthropic)
+AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
-from types import SimpleNamespace
+import json
+from collections.abc import Callable
 from typing import Any, cast
-from unittest.mock import ANY, AsyncMock, patch
+from unittest.mock import patch
 
 import anyio
 import httpx
@@ -32,229 +31,118 @@ from sieval.core.models import (
     Request,
     Response,
     RolloutLogprobs,
-    SamplingParams,
-    SchedulingParams,
-    ScoringParams,
     SessionParams,
     SglangGenModel,
     ToolParams,
 )
-from sieval.core.models._legacy_binding import build_legacy_openai_binding
-from sieval.core.models.dialect import RequestAuditError
-from sieval.core.models.reconcile import RuntimeBindingPlan
-from sieval.core.models.request_log import RecordingOpenAIClient
-from sieval.core.models.transports.sglang import SglangTransport
+from sieval.core.models.connection_factory import AsyncHTTPJSONConnection
+from sieval.core.models.dialect import DialectError, RequestAuditError
+from sieval.core.models.dialects.sglang_native import SglangNativeDialect
 from sieval.core.utils.serialization import dict_to_obj, obj_to_dict
 
+_BASE = "http://host:30000/v1"
 
-def _a_runtime_plan() -> RuntimeBindingPlan:
-    """Build a genuine plan without opening a client, for refusal tests."""
 
-    client = SimpleNamespace(base_url="https://legacy.example/v1/", close=AsyncMock())
+class _Server:
+    def __init__(self, *replies: object) -> None:
+        self.replies = list(replies)
+        self.requests: list[httpx.Request] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        return httpx.Response(200, json=self.replies.pop(0))
+
+    @property
+    def body(self) -> dict:
+        return json.loads(self.requests[-1].content)
+
+
+def _model(server: Callable[[httpx.Request], httpx.Response], **kwargs: Any):
+    """Build the wrapper with its HTTP client answered by *server*."""
+
+    mock = httpx.MockTransport(server)
     with patch(
-        "sieval.core.models._legacy_binding.AsyncOpenAI",
-        return_value=client,
+        "sieval.core.models.connection_factory.httpx.AsyncHTTPTransport",
+        return_value=mock,
     ):
-        return build_legacy_openai_binding(
-            dialect_id="openai_completions",
-            model="m",
-            api_base="https://legacy.example/v1",
-            api_key="sk-test",
-            max_retries=2,
-            concurrency_limit=None,
-            parent_limiter=None,
-        ).runtime_plan
+        return SglangGenModel(model="m", api_base=_BASE, api_key="local", **kwargs)
 
 
-class TestDefaultTransport:
-    def test_active_binder_can_replace_facade_without_editing_facade(self):
-        sentinel = object()
+def _meta(**overrides: Any) -> dict:
+    meta = {
+        "prompt_tokens": 1,
+        "completion_tokens": 1,
+        "cached_tokens": 0,
+        "finish_reason": {"type": "stop"},
+    }
+    meta.update(overrides)
+    return meta
 
-        with patch(
-            "sieval.core.models.sglang_gen_model.compatibility_factory_for",
-            return_value=lambda *args, **kwargs: sentinel,
-        ):
-            result = SglangGenModel(model="m", api_key="local")
 
-        assert result is sentinel
+class TestBinding:
+    def test_binds_sglang_native_with_a_real_runtime_plan(self):
+        model = SglangGenModel(model="m", api_base=_BASE, api_key="local")
 
-    def test_builds_sglang_transport(self):
-        m = SglangGenModel(model="m", api_base="http://host:8000/v1", api_key="local")
-        assert isinstance(m._transport, SglangTransport)
-        assert Capability.SampledLogprobsWithTokenIds in m.capabilities
+        assert model.dialect_id == "sglang_native"
+        assert model.runtime_plan is not None
+        assert model.runtime_plan.dialect_id == "sglang_native"
+        assert model.provenance_plan is not None
+        assert model.deployment.engine.engine_id == "sglang"
+        assert isinstance(model._dialect, SglangNativeDialect)
+        assert isinstance(model.pool.connection, AsyncHTTPJSONConnection)
+        assert model.pool.identity.connection_family == "async_http_json"
+        assert Capability.InputScoring in model.capabilities
 
-    def test_transport_bound_to_shared_client_model_and_api_base(self):
-        m = SglangGenModel(model="m", api_base="http://host:8000/v1", api_key="local")
-        assert isinstance(m._transport, SglangTransport)
-        assert m._transport._client is m._client
-        assert m._transport._model == "m"
-        assert m._transport._api_base == "http://host:8000/v1"
+    def test_persisted_provenance_is_stable_across_instances(self):
+        first = SglangGenModel(model="m", api_base=_BASE, api_key="first-secret")
+        second = SglangGenModel(model="m", api_base=_BASE, api_key="second-secret")
+
+        # Runtime pools never share quota; the persisted evidence is the same.
+        assert first.pool.identity != second.pool.identity
+        assert first.provenance_plan == second.provenance_plan
+        assert "first-secret" not in repr(first.pool.identity)
+        assert "first-secret" not in repr(first.provenance_plan)
+
+    @pytest.mark.parametrize("api_base", [None, "", "/"])
+    def test_requires_an_explicit_api_base(self, api_base):
+        with pytest.raises(ValueError, match="requires an explicit api_base"):
+            SglangGenModel(model="m", api_base=api_base)
 
     def test_client_declares_the_shared_request_timeout(self):
-        """The other bypass owes the same declared bound as the factory.
+        model = SglangGenModel(model="m", api_base=_BASE)
 
-        This facade sits outside canonical binding and builds its own client, so
-        a contract asserted against ``connection_factory`` never reaches it. The
-        SDK's default is the same value, which is why a drift would be silent.
-        """
-        client = SimpleNamespace(
-            base_url="http://host:8000/v1/",
-            close=AsyncMock(),
-        )
-        with patch(
-            "sieval.core.models.sglang_gen_model.AsyncOpenAI",
-            return_value=client,
-        ) as client_factory:
-            SglangGenModel(model="m", api_base="http://host:8000/v1", api_key="local")
-
-        client_factory.assert_called_once_with(
-            base_url="http://host:8000/v1",
-            api_key="local",
-            max_retries=3,
-            timeout=DEFAULT_REQUEST_TIMEOUT,
-            http_client=ANY,
-        )
-        recording = client_factory.call_args.kwargs["http_client"]
-        assert isinstance(recording, RecordingOpenAIClient)
-        assert recording.timeout == DEFAULT_REQUEST_TIMEOUT
+        connection = model.pool.connection
+        assert isinstance(connection, AsyncHTTPJSONConnection)
+        assert connection.client.timeout == DEFAULT_REQUEST_TIMEOUT
 
     def test_client_resolves_a_client_timeout_mapping(self):
-        client = SimpleNamespace(base_url="http://host:8000/v1/", close=AsyncMock())
-        with patch(
-            "sieval.core.models.sglang_gen_model.AsyncOpenAI",
-            return_value=client,
-        ) as client_factory:
-            SglangGenModel(
-                model="m",
-                api_base="http://host:8000/v1",
-                client_timeout=cast(Any, {"connect": 30}),
-            )
-
-        assert client_factory.call_args.kwargs["timeout"] == httpx.Timeout(
-            600.0, connect=30.0
+        model = SglangGenModel(
+            model="m", api_base=_BASE, client_timeout=cast(Any, {"connect": 30})
         )
 
-    def test_subclass_does_not_use_registered_compatibility_factory(self):
-        class DerivedSglangGenModel(SglangGenModel):
-            pass
+        connection = model.pool.connection
+        assert isinstance(connection, AsyncHTTPJSONConnection)
+        assert connection.client.timeout == httpx.Timeout(600.0, connect=30.0)
 
-        with patch(
-            "sieval.core.models.sglang_gen_model.compatibility_factory_for"
-        ) as factory:
-            model = DerivedSglangGenModel(model="m", api_key="local")
-
-        factory.assert_not_called()
-        assert type(model) is DerivedSglangGenModel
-
-    def test_legacy_identity_and_input_coercion_are_explicit(self):
-        model = SglangGenModel(model="m", api_key="local")
+    def test_input_coercion_is_completion_only(self):
+        model = SglangGenModel(model="m", api_base=_BASE)
         prompt = CompletionInput("prompt")
 
-        assert model.dialect_id == "sglang_legacy"
-        assert model.runtime_plan is None
         assert model._coerce_input(prompt) is prompt
         assert model._coerce_input("prompt") == prompt
         with pytest.raises(TypeError, match="text or CompletionInput"):
             model._coerce_input(3)
 
-    def test_private_pool_identity_is_unique_and_secret_free(self):
-        first = SglangGenModel(model="m", api_key="first-secret")
-        second = SglangGenModel(model="m", api_key="second-secret")
+    def test_transport_hook_still_overrides_the_dialect(self):
+        base = SglangGenModel(model="m", api_base=_BASE)
+        replacement = SglangNativeDialect(base.pool.connection, "m")
 
-        assert first.pool.identity != second.pool.identity
-        assert (
-            first.pool.identity.credential_scope
-            != second.pool.identity.credential_scope
-        )
-        assert first.pool.identity.quota_scope != second.pool.identity.quota_scope
-        assert "first-secret" not in repr(first.pool.identity)
-        assert "second-secret" not in repr(second.pool.identity)
+        model = SglangGenModel(model="m", api_base=_BASE, transport=replacement)
 
-    def test_legacy_facade_cannot_rebind_or_lose_its_owner(self):
-        model = SglangGenModel(model="m", api_key="local")
-        # A real plan, so the refusal is not an artifact of a bogus argument.
-        plan = _a_runtime_plan()
-
-        assert model.runtime_plan is None
-        assert model.provenance_plan is None
-        with pytest.raises(RuntimeError, match="cannot rebind"):
-            model.with_dialect("sglang_native", plan)
-        with pytest.raises(RuntimeError, match="no runtime plan for provenance"):
-            model.with_provenance_plan(plan)
-        model._lifecycle_owner = None
-        with pytest.raises(RuntimeError, match="no lifecycle owner"):
-            model._legacy_lifecycle_owner()
+        assert model._dialect is replacement
 
 
-class _StubTransport:
-    capabilities = frozenset()
-
-    def __init__(self) -> None:
-        self.calls = 0
-        self.entered = anyio.Event()
-        self.release = anyio.Event()
-
-    async def arun(self, req: Request) -> Response:
-        del req
-        self.calls += 1
-        self.entered.set()
-        await self.release.wait()
-        return Response(texts=("ok",))
-
-
-class _ImmediateTransport:
-    capabilities = frozenset()
-
-    def __init__(self) -> None:
-        self.requests: list[Request] = []
-
-    async def arun(self, req: Request) -> Response:
-        self.requests.append(req)
-        return Response(texts=("ok",))
-
-
-def _legacy_model(transport: object) -> tuple[SglangGenModel, AsyncMock]:
-    close = AsyncMock()
-    client = SimpleNamespace(base_url="http://host:8000/v1/", close=close)
-    with patch(
-        "sieval.core.models.sglang_gen_model.AsyncOpenAI",
-        return_value=client,
-    ):
-        model = SglangGenModel(
-            model="m",
-            api_key="local",
-            transport=cast(Any, transport),
-        )
-    return model, close
-
-
-class TestLegacyRequestGate:
-    @pytest.mark.anyio
-    async def test_legacy_builder_rejects_dropped_fields_before_pool_acquire(
-        self,
-    ) -> None:
-        transport = _ImmediateTransport()
-        model, _ = _legacy_model(transport)
-
-        with (
-            patch.object(model.pool, "acquire") as acquire,
-            pytest.raises(RequestAuditError) as exc_info,
-        ):
-            await model.agenerate(
-                "prompt",
-                reasoning_effort="high",
-                session_id="response-1",
-                suffix="tail",
-            )
-
-        detail = str(exc_info.value)
-        assert "input.completion.suffix" in detail
-        assert "reasoning.effort" in detail
-        assert "session.previous_response_id" in detail
-        acquire.assert_not_called()
-        assert transport.requests == []
-        await model.aclose()
-
+class TestRequestGate:
     @pytest.mark.anyio
     @pytest.mark.parametrize(
         ("req", "path"),
@@ -269,13 +157,6 @@ class TestLegacyRequestGate:
                     reasoning=ReasoningParams(effort="high"),
                 ),
                 "reasoning.effort",
-            ),
-            (
-                Request(
-                    input=CompletionInput("prompt"),
-                    reasoning=ReasoningParams(budget_tokens=32),
-                ),
-                "reasoning.budget_tokens",
             ),
             (
                 Request(
@@ -296,7 +177,7 @@ class TestLegacyRequestGate:
                     input=CompletionInput("prompt"),
                     session=SessionParams(
                         opaque_continuation=OpaqueContinuation(
-                            "sglang_legacy", "continuation"
+                            "sglang_native", "continuation"
                         )
                     ),
                 ),
@@ -304,29 +185,36 @@ class TestLegacyRequestGate:
             ),
         ],
     )
-    async def test_unsupported_leaf_is_rejected_before_transport(
-        self, req: Request, path: str
-    ) -> None:
-        transport = _ImmediateTransport()
-        model, close = _legacy_model(transport)
+    async def test_unsupported_leaf_is_refused_before_io(self, req, path):
+        server = _Server()
+        model = _model(server)
 
-        with pytest.raises(RequestAuditError, match=path):
+        with pytest.raises(DialectError, match=path):
             await model.arun(req)
 
-        assert transport.requests == []
+        assert server.requests == []
         await model.aclose()
-        close.assert_awaited_once()
 
     @pytest.mark.anyio
-    async def test_request_seed_is_an_explicit_engine_level_noop(self) -> None:
-        transport = _ImmediateTransport()
-        model, _ = _legacy_model(transport)
+    async def test_legacy_builder_refuses_dropped_fields_before_io(self):
+        server = _Server()
+        model = _model(server)
 
-        output = await model.agenerate("prompt", seed=7)
+        with pytest.raises(DialectError):
+            await model.agenerate("prompt", reasoning_effort="high")
+
+        assert server.requests == []
+        await model.aclose()
+
+    @pytest.mark.anyio
+    async def test_a_seed_is_kept_off_the_wire(self):
+        server = _Server({"text": "ok", "meta_info": _meta()})
+        model = _model(server)
+
+        output = await model.agenerate("prompt", seed=7, temperature=0.0)
 
         assert output.texts == ["ok"]
-        assert len(transport.requests) == 1
-        assert transport.requests[0].sampling.seed == 7
+        assert server.body["sampling_params"] == {"temperature": 0.0}
         await model.aclose()
 
     @pytest.mark.anyio
@@ -334,278 +222,166 @@ class TestLegacyRequestGate:
         ("options", "message"),
         [
             (DialectOptions("openai_chat", {"min_p": 0.1}), "target"),
+            (DialectOptions("sglang_native", {"unknown": True}), "unknown SGLang"),
+            (DialectOptions("sglang_native", {"prefill": "A:"}), "no prefill"),
             (
-                DialectOptions("sglang_legacy", {"unknown_option": True}),
-                "dialect_options.unknown_option",
-            ),
-            (
-                DialectOptions("sglang_legacy", {"min_p": None}),
-                "null values are not lowered",
+                DialectOptions("sglang_native", {"max_tokens": 3}),
+                r"sampling\.max_tokens",
             ),
         ],
     )
-    async def test_dialect_options_are_strict(
-        self, options: DialectOptions, message: str
-    ) -> None:
-        transport = _ImmediateTransport()
-        model, _ = _legacy_model(transport)
+    async def test_dialect_options_are_strict(self, options, message):
+        server = _Server()
+        model = _model(server)
         req = Request(input=CompletionInput("prompt"), dialect_options=options)
 
-        with pytest.raises(RequestAuditError, match=message):
+        with pytest.raises((DialectError, RequestAuditError), match=message):
             await model.arun(req)
 
-        assert transport.requests == []
+        assert server.requests == []
         await model.aclose()
 
     @pytest.mark.anyio
-    async def test_canonical_owned_dialect_option_is_always_rejected(self) -> None:
-        transport = _ImmediateTransport()
-        model, _ = _legacy_model(transport)
-        req = Request(
-            input=CompletionInput("prompt"),
-            dialect_options=DialectOptions("sglang_legacy", {"max_tokens": 3}),
-        )
+    async def test_a_sampling_option_is_forwarded(self):
+        server = _Server({"text": "ok", "meta_info": _meta()})
+        model = _model(server)
 
-        with pytest.raises(
-            RequestAuditError,
-            match=r"dialect_options\.max_tokens.*sampling\.max_tokens",
-        ):
-            await model.arun(req)
+        await model.agenerate("prompt", extra_body={"min_p": 0.05})
 
-        assert transport.requests == []
-        await model.aclose()
-
-    @pytest.mark.anyio
-    async def test_prefill_aliases_cannot_both_be_supplied(self) -> None:
-        transport = _ImmediateTransport()
-        model, _ = _legacy_model(transport)
-        req = Request(
-            input=CompletionInput("prompt"),
-            dialect_options=DialectOptions(
-                "sglang_legacy",
-                {"prefill": "first", "prefix": "second"},
-            ),
-        )
-
-        with pytest.raises(
-            RequestAuditError,
-            match=r"dialect_options\.prefix.*dialect_options\.prefill",
-        ):
-            await model.arun(req)
-
-        assert transport.requests == []
-        await model.aclose()
-
-    @pytest.mark.anyio
-    async def test_lowered_leaves_and_stream_noop_reach_transport(self) -> None:
-        transport = _ImmediateTransport()
-        model, _ = _legacy_model(transport)
-        req = Request(
-            input=CompletionInput("prompt"),
-            sampling=SamplingParams(
-                max_tokens=3,
-                temperature=0.2,
-                top_p=0.9,
-                top_k=8,
-                stop=("END",),
-                frequency_penalty=0.1,
-                presence_penalty=0.2,
-                n=2,
-            ),
-            scheduling=SchedulingParams(stream=True),
-            dialect_options=DialectOptions(
-                "sglang_legacy", {"min_p": 0.05, "prefill": "prefix"}
-            ),
-        )
-        scoring_req = Request(
-            input=CompletionInput("score"),
-            scoring=ScoringParams(sampled_logprobs=True, top_logprobs=2),
-        )
-
-        response = await model.arun(req)
-        await model.arun(scoring_req)
-
-        assert response.texts == ("ok",)
-        assert transport.requests == [req, scoring_req]
+        assert server.body["sampling_params"] == {"min_p": 0.05}
         await model.aclose()
 
 
-class TestLegacyLifecycle:
+class TestLifecycle:
     @pytest.mark.anyio
     async def test_context_manager_returns_self_and_closes_pool(self):
-        client = SimpleNamespace(
-            base_url="http://host:8000/v1/",
-            close=AsyncMock(),
-        )
-        with patch(
-            "sieval.core.models.sglang_gen_model.AsyncOpenAI",
-            return_value=client,
-        ):
-            model = SglangGenModel(model="m", api_key="local")
+        model = SglangGenModel(model="m", api_base=_BASE)
 
         async with model as entered:
             assert entered is model
 
         assert model.pool.is_closed
-        client.close.assert_awaited_once()
 
     @pytest.mark.anyio
-    async def test_close_via_child_invalidates_all_siblings_and_closes_once(self):
-        client = SimpleNamespace(
-            base_url="http://host:8000/v1/",
-            close=AsyncMock(),
-        )
-        with patch(
-            "sieval.core.models.sglang_gen_model.AsyncOpenAI",
-            return_value=client,
-        ):
-            root = SglangGenModel(model="m", api_key="local")
-            child = root.with_args(temperature=0.5)
-            sibling = root.with_args(top_p=0.9)
+    async def test_close_via_child_invalidates_every_sibling(self):
+        root = SglangGenModel(model="m", api_base=_BASE)
+        child = root.with_args(temperature=0.5)
+        sibling = root.with_args(top_p=0.9)
 
         async with anyio.create_task_group() as task_group:
             task_group.start_soon(child.aclose)
             task_group.start_soon(root.aclose)
             task_group.start_soon(sibling.aclose)
 
-        assert root.pool.is_closing is True
         assert root.pool.is_closed is True
-        client.close.assert_awaited_once()
-
         for model in (root, child, sibling):
-            with pytest.raises(RuntimeError, match="ConnectionPool is closing"):
-                await model.__aenter__()
             with pytest.raises(RuntimeError, match="ConnectionPool is closing"):
                 await model.arun(Request(input=CompletionInput("prompt")))
 
     @pytest.mark.anyio
-    async def test_close_drains_admitted_request_before_closing_client(self):
-        transport = _StubTransport()
-        client = SimpleNamespace(
-            base_url="http://host:8000/v1/",
-            close=AsyncMock(),
+    async def test_close_drains_an_admitted_request(self):
+        entered = anyio.Event()
+        release = anyio.Event()
+        calls = 0
+
+        class _Blocking(SglangNativeDialect):
+            async def execute(self, prepared: Any) -> Response:
+                nonlocal calls
+                calls += 1
+                entered.set()
+                await release.wait()
+                return Response(texts=("ok",))
+
+        base = SglangGenModel(model="m", api_base=_BASE)
+        root = SglangGenModel(
+            model="m",
+            api_base=_BASE,
+            transport=_Blocking(base.pool.connection, "m"),
         )
-        with patch(
-            "sieval.core.models.sglang_gen_model.AsyncOpenAI",
-            return_value=client,
-        ):
-            root = SglangGenModel(
-                model="m",
-                api_key="local",
-                transport=transport,  # type: ignore[arg-type]
-            )
         child = root.with_args(temperature=0.5)
 
-        async def close_and_observe() -> None:
-            await child.aclose()
-            client.close.assert_awaited_once()
-
         async with anyio.create_task_group() as task_group:
-            task_group.start_soon(
-                root.arun,
-                Request(input=CompletionInput("prompt")),
-            )
-            await transport.entered.wait()
-            task_group.start_soon(close_and_observe)
+            task_group.start_soon(root.arun, Request(input=CompletionInput("p")))
+            await entered.wait()
+            task_group.start_soon(child.aclose)
             while not root.pool.is_closing:
                 await cast(Any, anyio.lowlevel).checkpoint()
-
-            client.close.assert_not_awaited()
+            assert not root.pool.is_closed
             with pytest.raises(RuntimeError, match="ConnectionPool is closing"):
                 await child.arun(Request(input=CompletionInput("new")))
-            transport.release.set()
+            release.set()
 
-        assert transport.calls == 1
+        assert calls == 1
         assert root.pool.is_closed is True
+        await base.aclose()
 
 
-class TestInputTopLogprobs:
-    """``alogprobs(echo=True, logprobs=N)`` keeps the input's top-k."""
-
+class TestLegacySurface:
     @pytest.mark.anyio
     async def test_alogprobs_echo_returns_input_top_logprobs(self):
-        payload = {
-            "text": "",
-            "meta_info": {
-                "prompt_tokens": 2,
-                "completion_tokens": 1,
-                "cached_tokens": 0,
-                "finish_reason": {"type": "length"},
-                "input_token_logprobs": [[None, 1, "Hi"], [-0.4, 2, "Ġthere"]],
-                "input_top_logprobs": [
-                    None,
-                    [[-0.4, 2, "Ġthere"], [-1.1, 3, "Ġall"]],
-                ],
-                "output_token_logprobs": [[-0.2, 4, "!"]],
-                "output_top_logprobs": [[[-0.2, 4, "!"], [-2.5, 5, "."]]],
-            },
-        }
-        client = SimpleNamespace(
-            base_url="http://host:8000/v1/",
-            close=AsyncMock(),
-            post=AsyncMock(return_value=payload),
+        meta = _meta(
+            prompt_tokens=2,
+            finish_reason={"type": "length"},
+            input_token_logprobs=[[None, 1, "Hi"], [-0.4, 2, "Ġthere"]],
+            input_top_logprobs=[None, [[-0.4, 2, "Ġthere"], [-1.1, 3, "Ġall"]]],
+            output_token_logprobs=[[-0.2, 4, "!"]],
+            output_top_logprobs=[[[-0.2, 4, "!"], [-2.5, 5, "."]]],
         )
-        with patch(
-            "sieval.core.models.sglang_gen_model.AsyncOpenAI",
-            return_value=client,
-        ):
-            model = SglangGenModel(
-                model="m", api_base="http://host:8000/v1", api_key="local"
-            )
+        server = _Server({"text": "", "meta_info": meta})
+        model = _model(server)
 
         output = await model.alogprobs("Hi there", echo=True, logprobs=2)
 
-        body = client.post.await_args.kwargs["body"]
-        assert body["logprob_start_len"] == 0
-        assert body["top_logprobs_num"] == 2
+        assert str(server.requests[0].url) == "http://host:30000/generate"
+        assert server.body["logprob_start_len"] == 0
+        assert server.body["top_logprobs_num"] == 2
+        assert server.body["sampling_params"] == {
+            "max_new_tokens": 1,
+            "temperature": 0.0,
+        }
         # The input segment leads, as before; the generated token follows.
         assert output.logprobs_tokens == ["Hi", " there", "!"]
         assert output.input_top_logprobs == [{}, {" there": -0.4, " all": -1.1}]
-        # The generated token's top-k stays in its own field.
         assert output.top_logprobs == [{"!": -0.2, ".": -2.5}]
         await model.aclose()
 
+    @pytest.mark.anyio
+    async def test_alogprobs_echo_without_breadth_scores_the_input(self):
+        meta = _meta(
+            prompt_tokens=2,
+            input_token_logprobs=[[None, 1, "a"], [-0.5, 2, "Ġb"]],
+            output_token_logprobs=[[-0.1, 3, "c"]],
+        )
+        server = _Server({"text": "c", "meta_info": meta})
+        model = _model(server)
 
-class TestPerRolloutLogprobs:
-    """``infer_args: {return_logprobs, top_logprobs}`` at ``n > 1`` (issue #171)."""
+        output = await model.alogprobs("a b", echo=True)
+
+        assert output.logprobs_tokens == ["a", " b", "c"]
+        assert output.logprobs == [None, -0.5, -0.1]
+        await model.aclose()
 
     @pytest.mark.anyio
     async def test_agenerate_persists_one_logprob_sequence_per_rollout(self):
-        payload = [
+        replies = [
             {
                 "text": text,
-                "meta_info": {
-                    "prompt_tokens": 3,
-                    "completion_tokens": 1,
-                    "finish_reason": {"type": "stop"},
-                    "output_token_logprobs": [[logprob, index, text]],
-                    "output_top_logprobs": [[[logprob, index, text]]],
-                },
+                "meta_info": _meta(
+                    prompt_tokens=3,
+                    output_token_logprobs=[[logprob, index, text]],
+                    output_top_logprobs=[[[logprob, index, text]]],
+                ),
             }
             for index, (text, logprob) in enumerate([("a", -0.1), ("b", -0.7)])
         ]
-        client = SimpleNamespace(
-            base_url="http://host:8000/v1/",
-            close=AsyncMock(),
-            post=AsyncMock(return_value=payload),
-        )
-        with patch(
-            "sieval.core.models.sglang_gen_model.AsyncOpenAI",
-            return_value=client,
-        ):
-            base = SglangGenModel(
-                model="m", api_base="http://host:8000/v1", api_key="local"
-            )
+        server = _Server(replies)
         # The derivation a task's ``infer_args`` applies to the candidate.
-        model = base.with_args(return_logprobs=True, top_logprobs=20)
+        model = _model(server).with_args(return_logprobs=True, top_logprobs=20)
 
         output = await model.agenerate("prompt", n=2)
 
         assert output.texts == ["a", "b"]
-        # The single-sequence fields stay empty rather than holding rollout 0.
         assert output.logprobs is None
-        assert output.logprobs_tokens is None
-        assert output.top_logprobs is None
         assert output.choice_logprobs == [
             RolloutLogprobs(
                 logprobs_tokens=["a"], logprobs=[-0.1], top_logprobs=[{"a": -0.1}]
@@ -614,16 +390,26 @@ class TestPerRolloutLogprobs:
                 logprobs_tokens=["b"], logprobs=[-0.7], top_logprobs=[{"b": -0.7}]
             ),
         ]
-        await_args = client.post.await_args
-        assert await_args is not None
-        body = await_args.kwargs["body"]
-        assert body["top_logprobs_num"] == 20
-        assert body["sampling_params"]["n"] == 2
+        assert server.body["top_logprobs_num"] == 20
+        assert server.body["sampling_params"]["n"] == 2
+        assert output.model["model"] == "m"
 
-        # Shard records round-trip back to the typed rollout entries.
         restored = dict_to_obj(obj_to_dict(output, add_type=True), {})
         assert isinstance(restored, ModelOutput)
         assert restored.choice_logprobs == output.choice_logprobs
-        assert restored.choice_logprobs is not None
-        assert isinstance(restored.choice_logprobs[0], RolloutLogprobs)
+        await model.aclose()
+
+    @pytest.mark.anyio
+    async def test_provenance_records_the_native_dialect(self):
+        server = _Server({"text": "ok", "meta_info": _meta()})
+        model = _model(server)
+
+        output = await model.agenerate("prompt")
+
+        provenance = output.model.get("provenance")
+        assert provenance is not None
+        assert provenance.dialect_id == "sglang_native"
+        assert provenance.engine_id == "sglang"
+        # /generate reports no model id, and none is fabricated.
+        assert provenance.model_identity.provider_reported_model_id is None
         await model.aclose()

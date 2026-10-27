@@ -80,11 +80,13 @@ class _MockSglangGenModel(SglangGenModel):
     """Construction-only mock: Task validation never invokes the wire."""
 
     def __init__(self):
-        super().__init__(model="mock-sglang", api_key="fake")
+        super().__init__(
+            model="mock-sglang", api_base="http://mock:30000/v1", api_key="fake"
+        )
 
     @property
     def dialect_id(self) -> str:
-        return "sglang_legacy"
+        return "sglang_native"
 
     @property
     def runtime_plan(self):
@@ -207,7 +209,7 @@ class TestValidateModelType:
         _GenOnlyTask(_SimpleDataset(), _MockGenModel())
 
     def test_gen_task_with_sglang_gen_model_ok(self):
-        """The named SGLang legacy dialect still exposes completion input."""
+        """The SGLang native dialect accepts completion input."""
         _GenOnlyTask(_SimpleDataset(), _MockSglangGenModel())
 
     def test_chat_task_with_gen_model_raises(self):

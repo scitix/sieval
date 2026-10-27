@@ -252,7 +252,7 @@ can run as separate jobs into one `result_dir`. Each group writes
 `infer_plans[.<key>].yaml` and records its key in `meta.json`
 `runs[].serving.group`.
 
-A `gen` model served by SGLang with no `dialect:` gets `sglang_legacy` when a
+A `gen` model served by SGLang with no `dialect:` gets `sglang_native` when a
 task scores input: SGLang's `/v1/completions` cannot.
 
 ### Model lifecycles

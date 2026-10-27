@@ -279,11 +279,6 @@ def normalize_inline_model_binding(
             f"Task '{task_name}' inline {role} dialect must be a non-empty string"
         )
     dialect_id = cast(str, dialect) if dialect_declared else None
-    if dialect_id == "sglang_legacy":
-        raise ValueError(
-            f"Task '{task_name}' inline {role} cannot use the named-model-only "
-            "sglang_legacy bypass; configure a named model or use a bindable dialect"
-        )
     if "engine" in raw_config:
         validate_configured_engine_id(
             raw_config.get("engine"),
@@ -647,13 +642,7 @@ def validate_model_type_dialect(
         raise ValueError("dialect_id must be a non-empty string")
 
     expected_input = "chat" if model_type == "chat" else "completion"
-    # TODO(PR-5): remove this pseudo-spec branch when the registered
-    # sglang_native binder replaces the temporary legacy bypass.
-    accepted_inputs = (
-        ("completion",)
-        if dialect_id == "sglang_legacy"
-        else get_dialect_spec(dialect_id).input_kinds
-    )
+    accepted_inputs = get_dialect_spec(dialect_id).input_kinds
     if expected_input not in accepted_inputs:
         accepted = ", ".join(repr(item) for item in accepted_inputs)
         raise ValueError(
@@ -689,7 +678,7 @@ def validate_omitted_dialect_migration(
     raise ValueError(
         f"Model '{model_name}' declares engine: sglang with type: gen but omits "
         "dialect. Engine identity no longer selects a request protocol; set "
-        "dialect: sglang_legacy to preserve the native /generate path, or set "
+        "dialect: sglang_native to preserve the native /generate path, or set "
         "dialect: openai_completions to migrate explicitly."
     )
 
@@ -703,14 +692,14 @@ def default_dialect(
 
     ``openai_chat`` or ``openai_completions`` by model kind, except that a
     ``gen`` root served by SGLang whose tasks need ``input_scoring`` gets
-    ``sglang_legacy``: SGLang's ``/v1/completions`` rejects ``echo`` with
+    ``sglang_native``: SGLang's ``/v1/completions`` rejects ``echo`` with
     ``logprobs``, so only its native ``/generate`` path can score input.
     """
 
     if model_type == "chat":
         return "openai_chat"
     if engine_id == "sglang" and requirements.input_scoring:
-        return "sglang_legacy"
+        return "sglang_native"
     return "openai_completions"
 
 

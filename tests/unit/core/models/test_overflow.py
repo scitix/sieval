@@ -95,7 +95,11 @@ def wire(monkeypatch: pytest.MonkeyPatch) -> _Wire:
         return real(**kwargs)
 
     monkeypatch.setattr("sieval.core.models._legacy_binding.AsyncOpenAI", client)
-    monkeypatch.setattr("sieval.core.models.sglang_gen_model.AsyncOpenAI", client)
+    # `sglang_native` speaks plain HTTP through the async_http_json family.
+    monkeypatch.setattr(
+        "sieval.core.models.connection_factory.httpx.AsyncHTTPTransport",
+        lambda **_: httpx.MockTransport(handler),
+    )
     return handler
 
 
@@ -220,9 +224,9 @@ class TestOutsideAScope:
             await _chat().agenerate("hi")
 
     @pytest.mark.anyio
-    async def test_sglang_raises_the_sdk_error_unchanged(self, wire):
+    async def test_sglang_raises_the_status_error_unchanged(self, wire):
         wire.responses = [_error(400, SGLANG_INPUT)]
-        with pytest.raises(openai.BadRequestError):
+        with pytest.raises(httpx.HTTPStatusError, match="SGLang: The input"):
             await _sglang().agenerate("hi")
 
     @pytest.mark.anyio
@@ -247,7 +251,8 @@ class TestEachTransport:
         wire.responses = [_error(400, message)]
         model = build()
         scope = OverflowScope(model)
-        with overflow_scope(scope), pytest.raises(openai.BadRequestError) as caught:
+        refusal = httpx.HTTPStatusError if build is _sglang else openai.BadRequestError
+        with overflow_scope(scope), pytest.raises(refusal) as caught:
             await model.agenerate("hi")
         assert wire.requests[0].url.path == path
         escaped = scope.escaping(caught.value)
@@ -308,7 +313,7 @@ class TestOtherErrorsStillRaise:
         model = _sglang()
         with pytest.raises(ContextOverflowError) as caught:
             await model.alogprobs("hi")
-        assert isinstance(caught.value.__cause__, openai.BadRequestError)
+        assert isinstance(caught.value.__cause__, httpx.HTTPStatusError)
 
 
 async def _chat_answer(wire: _Wire, model: ChatModel, text: str) -> ModelOutput:
@@ -458,11 +463,10 @@ class TestRequestRecord:
         with stage_scope(scope):
             with overflow_scope(OverflowScope(model, convert=True)):
                 await model.agenerate("hi")
-            with pytest.raises(openai.InternalServerError):
+            with pytest.raises(httpx.HTTPStatusError):
                 await model.agenerate("hi")
         overflow, busy = lines
         assert overflow["status"] == 400
         assert overflow["outcome"] == CONTEXT_OVERFLOW
-        assert overflow["error"] == "exception::BadRequestError"
         assert busy["status"] == 503
         assert busy["outcome"] == "5xx"

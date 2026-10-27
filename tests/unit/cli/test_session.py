@@ -38,7 +38,6 @@ from sieval.cli.session import (
     DETERMINISTIC_DEFAULT_SEED,
     EvalSession,
     _apply_endpoint_injection,
-    _apply_request_seed_decision_to_args,
     _apply_request_seed_decision_to_model,
     _diff_lines,
     _format_comment_header,
@@ -3412,7 +3411,7 @@ tasks:
                 ValueError,
                 match=(
                     r"engine: sglang.*omits dialect.*"
-                    r"sglang_legacy.*openai_completions"
+                    r"sglang_native.*openai_completions"
                 ),
             ),
         ):
@@ -3449,7 +3448,6 @@ tasks:
         ):
             session.prepare_prelaunch()
 
-        assert not session._legacy_bypass_bindings
         assert session._normalized_model_bindings["model:m"].dialect_id == (
             "openai_completions"
         )
@@ -3489,7 +3487,7 @@ tasks:
                 ValueError,
                 match=(
                     r"engine 'sglang'.*openai_completions.*"
-                    r"rejects echo=True with logprobs.*dialect: sglang_legacy"
+                    r"rejects echo=True with logprobs.*dialect: sglang_native"
                 ),
             ),
         ):
@@ -3617,7 +3615,7 @@ models:
         assert result.is_valid
         assert result.binding_plans["model:m"].dialect_id == "openai_completions"
 
-    def test_managed_sglang_input_scoring_defaults_to_the_legacy_dialect(
+    def test_managed_sglang_input_scoring_defaults_to_the_native_dialect(
         self, tmp_path: Path
     ) -> None:
         # No dialect declared: the root's input_scoring need selects the one
@@ -3654,9 +3652,13 @@ tasks:
             session.prepare_prelaunch()
 
         assert session._normalized_model_bindings["model:m"].dialect_id == (
-            "sglang_legacy"
+            "sglang_native"
         )
-        assert session._legacy_bypass_bindings == {"model:m"}
+        result = session.prelaunch_reconcile_result
+        assert result is not None
+        assert "input_scoring" in (
+            result.binding_plans["model:m"].required_capabilities
+        )
 
     def test_managed_sglang_explicit_completions_still_rejects_input_scoring(
         self, tmp_path: Path
@@ -3732,7 +3734,7 @@ tasks:
             "openai_completions"
         )
 
-    @pytest.mark.parametrize("dialect", ["openai_completions", "sglang_legacy"])
+    @pytest.mark.parametrize("dialect", ["openai_completions", "sglang_native"])
     @pytest.mark.parametrize(
         ("endpoint_block", "named"),
         [
@@ -3873,7 +3875,7 @@ tasks:
 
         reconcile_call.assert_not_called()
 
-    def test_sglang_legacy_bypass_rejects_capability_declarations(
+    def test_sglang_native_reconciles_declared_capabilities(
         self, tmp_path: Path
     ) -> None:
         config_path = self._config(
@@ -3884,12 +3886,13 @@ models:
     name: org/model
     type: gen
     engine: sglang
-    dialect: sglang_legacy
+    dialect: sglang_native
+    api_base: http://127.0.0.1:30000/v1
     capabilities:
       input_scoring: true
 tasks:
   completion:
-    class: fake.CompletionTask
+    class: fake.CompletionScoringTask
     dataset:
       class: fake.Dataset
     model: m
@@ -3897,14 +3900,24 @@ tasks:
         )
         session = EvalSession(config_path)
 
-        with (
-            patch(
-                "sieval.cli.session.resolve_task_class",
-                return_value=self.CompletionTask,
-            ),
-            pytest.raises(ValueError, match="sglang_legacy bypass"),
+        with patch(
+            "sieval.cli.session.resolve_task_class",
+            return_value=self.CompletionScoringTask,
         ):
             session._setup_prelaunch_reconciliation()
+
+        result = session.prelaunch_reconcile_result
+        assert result is not None
+        plan = result.binding_plans["model:m"]
+        assert plan.dialect_id == "sglang_native"
+        assert "input_scoring" in plan.declared_capabilities
+        assert plan.required_capabilities == {
+            "input_scoring",
+            "sampled_logprobs",
+            "top_logprobs",
+        }
+        # Admitted behind the response guard, as on openai_completions.
+        assert plan.pending_capabilities == plan.required_capabilities
 
     def test_model_args_cannot_repeat_canonical_reasoning(self, tmp_path: Path) -> None:
         config_path = self._config(
@@ -4578,7 +4591,7 @@ tasks:
             session.prepare_prelaunch()
         client.assert_not_called()
 
-    @pytest.mark.parametrize("dialect", ["openai_chat", "sglang_legacy"])
+    @pytest.mark.parametrize("dialect", ["openai_chat", "sglang_native"])
     def test_unset_api_key_env_on_a_named_model_fails_at_prelaunch(
         self,
         tmp_path: Path,
@@ -5111,7 +5124,7 @@ tasks:
 
         client_factory.assert_not_called()
 
-    def test_inline_sglang_legacy_role_fails_during_prelaunch(
+    def test_inline_retired_sglang_legacy_fails_during_prelaunch(
         self, tmp_path: Path
     ) -> None:
         config_path = self._config(
@@ -5144,7 +5157,7 @@ tasks:
             ) as client_factory,
             pytest.raises(
                 ValueError,
-                match=r"inline grader.*sglang_legacy.*named model",
+                match=r"'sglang_legacy' was replaced by 'sglang_native'",
             ),
         ):
             session.prepare_prelaunch()
@@ -5419,7 +5432,7 @@ tasks:
             ("openai_completions", "gen"),
             ("openai_chat", "chat"),
             ("openai_responses", "chat"),
-            ("sglang_legacy", "gen"),
+            ("sglang_native", "gen"),
             ("anthropic_messages", "chat"),
         ],
     )
@@ -5441,7 +5454,6 @@ tasks:
         expected: str,
     ) -> None:
         """#188: built with the real clients, ``OPENAI_API_KEY`` unset."""
-        from sieval.core.models import SglangGenModel
         from sieval.core.models.connection_factory import AsyncHTTPJSONConnection
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -5456,28 +5468,21 @@ tasks:
             session._setup_models()
 
         try:
-            if dialect == "sglang_legacy":
-                model = session.models["m"]
-                assert isinstance(model, SglangGenModel)
-                assert model._client.api_key == expected
+            (pool,) = session._owned_pools.values()
+            connection = pool.connection
+            if isinstance(connection, AsyncHTTPJSONConnection):
+                # A dialect header; harmless to an unauthenticated engine.
+                assert connection.credential == expected
             else:
-                (pool,) = session._owned_pools.values()
-                connection = pool.connection
-                if isinstance(connection, AsyncHTTPJSONConnection):
-                    # Sent as ``x-api-key``; harmless to an unauthenticated engine.
-                    assert connection.credential == expected
-                else:
-                    assert connection.api_key == expected
+                assert connection.api_key == expected
         finally:
             await session._close_owned_model_resources()
 
     @pytest.mark.parametrize("realized", [False, True], ids=["configured", "unplanned"])
-    @pytest.mark.parametrize("dialect", ["openai_completions", "sglang_legacy"])
     def test_external_engine_without_a_key_still_defers_to_the_sdk_env(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
-        dialect: str,
         realized: bool,
     ) -> None:
         """An endpoint this run did not launch gets no placeholder."""
@@ -5488,13 +5493,13 @@ tasks:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         config_path = self._config(
             tmp_path,
-            f"""
+            """
 models:
   m:
     name: org/model
     type: gen
     engine: sglang
-    dialect: {dialect}
+    dialect: openai_completions
     api_base: https://remote.example/v1
 tasks:
   completion:
@@ -5529,6 +5534,48 @@ tasks:
             session._setup_prelaunch_reconciliation()
             session._setup_postlaunch_reconciliation()
             session._setup_models()
+
+    @pytest.mark.anyio
+    async def test_external_sglang_native_without_a_key_sends_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """SGLang is unauthenticated by default; no OpenAI env fallback applies."""
+        from sieval.core.models.connection_factory import AsyncHTTPJSONConnection
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: org/model
+    type: gen
+    engine: sglang
+    dialect: sglang_native
+    api_base: https://remote.example/v1
+tasks:
+  completion:
+    class: fake.CompletionTask
+    dataset:
+      class: fake.Dataset
+    model: m
+""",
+        )
+        session = EvalSession(config_path)
+        with patch(
+            "sieval.cli.session.resolve_task_class",
+            return_value=self.CompletionTask,
+        ):
+            session._setup_prelaunch_reconciliation()
+            session._setup_postlaunch_reconciliation()
+            session._setup_models()
+
+        try:
+            (pool,) = session._owned_pools.values()
+            assert isinstance(pool.connection, AsyncHTTPJSONConnection)
+            assert pool.connection.credential is None
+        finally:
+            await session._close_owned_model_resources()
 
     @pytest.mark.parametrize(
         ("field", "value"),
@@ -7125,10 +7172,10 @@ tasks:
             await external.aclose()
 
     @pytest.mark.anyio
-    async def test_sglang_legacy_remains_outside_runtime_plans(
+    async def test_sglang_native_binds_through_a_runtime_plan(
         self, tmp_path: Path
     ) -> None:
-        from sieval.core.models import SglangGenModel
+        from sieval.core.models.connection_factory import AsyncHTTPJSONConnection
 
         config_path = self._config(
             tmp_path,
@@ -7138,7 +7185,7 @@ models:
     name: org/model
     type: gen
     engine: sglang
-    dialect: sglang_legacy
+    dialect: sglang_native
     api_base: https://sglang.example/v1
     api_key: local
 tasks:
@@ -7150,46 +7197,33 @@ tasks:
 """,
         )
         session = EvalSession(config_path)
-        close = AsyncMock()
-        connection = types.SimpleNamespace(
-            close=close,
-            base_url="https://sglang.example/v1",
-        )
 
-        with (
-            patch(
-                "sieval.cli.session.resolve_task_class",
-                return_value=self.CompletionTask,
-            ),
-            patch(
-                "sieval.core.models.sglang_gen_model.AsyncOpenAI",
-                return_value=connection,
-            ),
+        with patch(
+            "sieval.cli.session.resolve_task_class",
+            return_value=self.CompletionTask,
         ):
             session._setup_prelaunch_reconciliation()
             session._setup_postlaunch_reconciliation()
             session._setup_models()
 
-        assert session.postlaunch_reconcile_result is not None
-        assert not session.postlaunch_reconcile_result.runtime_plans
-        assert isinstance(session.models["m"], SglangGenModel)
-        assert not session._owned_pools
-        assert set(session._owned_legacy_models) == {"model:m"}
-
-        await session._close_owned_model_resources()
-        close.assert_awaited_once()
+        try:
+            result = session.postlaunch_reconcile_result
+            assert result is not None
+            assert result.runtime_plans["model:m"].dialect_id == "sglang_native"
+            assert session.models["m"].dialect_id == "sglang_native"
+            (pool,) = session._owned_pools.values()
+            assert isinstance(pool.connection, AsyncHTTPJSONConnection)
+            assert pool.connection.credential == "local"
+        finally:
+            await session._close_owned_model_resources()
+        assert pool.is_closed
 
     @pytest.mark.anyio
-    @pytest.mark.parametrize("dialect", ["sglang_legacy", "openai_completions"])
+    @pytest.mark.parametrize("dialect", ["sglang_native", "openai_completions"])
     async def test_launched_endpoint_is_used_for_every_dialect(
         self, tmp_path: Path, dialect: str
     ) -> None:
-        from sieval.core.models import (
-            Deployment,
-            Engine,
-            ServingFacts,
-            SglangGenModel,
-        )
+        from sieval.core.models import Deployment, Engine, ServingFacts
         from sieval.infer import deployment_plan_projection
 
         config_path = self._config(
@@ -7211,13 +7245,14 @@ tasks:
 """,
         )
         raw_plan = {"backend": "sglang", "checkpoint": "/models/m", "assignments": []}
+        launched = "http://127.0.0.1:30000/v1"
         realized = Deployment(
             deployment_id="served-m",
             plan=deployment_plan_projection(raw_plan),
             engine=Engine("sglang"),
             engine_source="deployment",
-            api_base="http://127.0.0.1:30000/v1",
-            endpoints={"full": "http://127.0.0.1:30000/v1"},
+            api_base=launched,
+            endpoints={"full": launched},
             topology=None,
             metrics_url=None,
             facts=ServingFacts(),
@@ -7228,51 +7263,51 @@ tasks:
             realized_deployments={"m": realized},
         )
 
-        def client(**kwargs: Any) -> types.SimpleNamespace:
-            base_url = kwargs["base_url"] or "https://api.openai.com/v1"
-            return types.SimpleNamespace(close=AsyncMock(), base_url=base_url)
-
-        with (
-            patch(
-                "sieval.cli.session.resolve_task_class",
-                return_value=self.CompletionTask,
-            ),
-            patch(
-                "sieval.core.models.sglang_gen_model.AsyncOpenAI",
-                side_effect=client,
-            ) as legacy_client,
-            patch(
-                "sieval.core.models.connection_factory.AsyncOpenAI",
-                side_effect=client,
-            ) as canonical_client,
+        with patch(
+            "sieval.cli.session.resolve_task_class",
+            return_value=self.CompletionTask,
         ):
             session._setup_prelaunch_reconciliation()
             session._setup_postlaunch_reconciliation()
             session._setup_models()
 
-        launched = "http://127.0.0.1:30000/v1"
-        calls = [*legacy_client.call_args_list, *canonical_client.call_args_list]
-        assert [call.kwargs["base_url"] for call in calls] == [launched]
-        model = session.models["m"]
-        assert model.deployment.api_base == launched
-        if dialect == "sglang_legacy":
-            assert isinstance(model, SglangGenModel)
-            generate_url = model._legacy_transport._generate_url()
-            assert generate_url == "http://127.0.0.1:30000/generate"
+        try:
+            model = session.models["m"]
+            assert model.deployment.api_base == launched
+            (pool,) = session._owned_pools.values()
+            assert pool.identity.endpoint == launched
+            if dialect == "sglang_native":
+                dialect_url = cast(Any, model)._dialect._url
+                assert str(dialect_url) == "http://127.0.0.1:30000/generate"
+        finally:
+            await session._close_owned_model_resources()
 
-        await session._close_owned_model_resources()
+    @staticmethod
+    def _recording_dialect(model: Any) -> list[Any]:
+        """Answer every call without I/O and keep the bodies the dialect sent."""
+
+        from sieval.core.models import Response, TokenLogprob, TopKEntry
+
+        sent: list[Any] = []
+
+        async def execute(prepared: Any) -> Response:
+            body = prepared.thaw_body()
+            sent.append(body)
+            top_k = body.get("top_logprobs_num", 0)
+            return Response(
+                texts=("ok",),
+                finish_reasons=("stop",),
+                logprobs=(TokenLogprob("ok", -0.1),),
+                top_logprobs=((TopKEntry("ok", -0.1),),) if top_k else None,
+            )
+
+        model._dialect.execute = execute
+        return sent
 
     @pytest.mark.anyio
-    async def test_deterministic_sglang_legacy_does_not_auto_inject_request_seed(
+    async def test_deterministic_sglang_native_does_not_auto_inject_request_seed(
         self, tmp_path: Path
     ) -> None:
-        from sieval.core.models import (
-            Request,
-            Response,
-            SglangGenModel,
-            TokenLogprob,
-        )
-
         config_path = self._config(
             tmp_path,
             """
@@ -7282,40 +7317,23 @@ models:
     name: org/model
     type: gen
     engine: sglang
-    dialect: sglang_legacy
+    dialect: sglang_native
     api_base: https://sglang.example/v1
     api_key: local
 tasks:
   completion:
-    class: fake.CompletionTask
+    class: fake.CompletionScoringTask
     dataset:
       class: fake.Dataset
     model: m
 """,
         )
         session = EvalSession(config_path)
-        close = AsyncMock()
-        connection = types.SimpleNamespace(
-            close=close,
-            base_url="https://sglang.example/v1",
-        )
-        transport_arun = AsyncMock(
-            return_value=Response(
-                texts=("ok",),
-                logprobs=(TokenLogprob("ok", -0.1),),
-            )
-        )
 
         try:
-            with (
-                patch(
-                    "sieval.cli.session.resolve_task_class",
-                    return_value=self.CompletionTask,
-                ),
-                patch(
-                    "sieval.core.models.sglang_gen_model.AsyncOpenAI",
-                    return_value=connection,
-                ),
+            with patch(
+                "sieval.cli.session.resolve_task_class",
+                return_value=self.CompletionScoringTask,
             ):
                 session._setup_prelaunch_reconciliation()
                 session._setup_postlaunch_reconciliation()
@@ -7323,37 +7341,30 @@ tasks:
                 session._stamp_deterministic_seed_contract()
 
             model = session.models["m"]
-            assert isinstance(model, SglangGenModel)
             assert "seed" not in model._kwargs
             contract = session._reified_config[_DETERMINISTIC_SEED_CONTRACT_KEY]
             binding = contract["bindings"]["model:m"]
+            assert binding["dialect_id"] == "sglang_native"
             assert binding["request_seed_support"] == "unsupported"
             assert binding["seed_scope"] == "engine_level_only"
             assert binding["seed_present"] is False
             assert binding["seed"] is None
             assert binding["seed_provenance"] == "none"
-            with patch.object(model._legacy_transport, "arun", transport_arun):
-                generated = await model.agenerate("prompt")
-                scored = await model.alogprobs("prompt", echo=False)
+            sent = self._recording_dialect(model)
+            generated = await model.agenerate("prompt")
+            scored = await model.alogprobs("prompt", echo=False, logprobs=7)
 
             assert generated.texts == ["ok"]
             assert scored.texts == ["ok"]
-            requests = [
-                cast(Request, call.args[0]) for call in transport_arun.await_args_list
-            ]
-            assert len(requests) == 2
-            assert all(request.sampling.seed is None for request in requests)
+            assert len(sent) == 2
+            assert all("seed" not in body["sampling_params"] for body in sent)
         finally:
             await session._close_owned_model_resources()
 
-        close.assert_awaited_once()
-
     @pytest.mark.anyio
-    async def test_explicit_sglang_legacy_seed_remains_engine_level_noop(
+    async def test_explicit_sglang_native_seed_stays_off_the_wire(
         self, tmp_path: Path
     ) -> None:
-        from sieval.core.models import Request, Response, SglangGenModel
-
         config_path = self._config(
             tmp_path,
             """
@@ -7363,7 +7374,7 @@ models:
     name: org/model
     type: gen
     engine: sglang
-    dialect: sglang_legacy
+    dialect: sglang_native
     api_base: https://sglang.example/v1
     api_key: local
     args:
@@ -7377,59 +7388,36 @@ tasks:
 """,
         )
         session = EvalSession(config_path)
-        close = AsyncMock()
-        connection = types.SimpleNamespace(
-            close=close,
-            base_url="https://sglang.example/v1",
-        )
-        transport_arun = AsyncMock(return_value=Response(texts=("ok",)))
 
         try:
-            with (
-                patch(
-                    "sieval.cli.session.resolve_task_class",
-                    return_value=self.CompletionTask,
-                ),
-                patch(
-                    "sieval.core.models.sglang_gen_model.AsyncOpenAI",
-                    return_value=connection,
-                ),
+            with patch(
+                "sieval.cli.session.resolve_task_class",
+                return_value=self.CompletionTask,
             ):
                 session._setup_prelaunch_reconciliation()
                 session._setup_postlaunch_reconciliation()
                 session._setup_models()
 
             model = session.models["m"]
-            assert isinstance(model, SglangGenModel)
             assert model._kwargs["seed"] == 7
-            with patch.object(model._legacy_transport, "arun", transport_arun):
-                output = await model.agenerate("prompt")
+            sent = self._recording_dialect(model)
+            output = await model.agenerate("prompt")
 
             assert output.texts == ["ok"]
-            call = transport_arun.await_args
-            assert call is not None
-            request = cast(Request, call.args[0])
-            assert request.sampling.seed == 7
+            # The configured seed stays in the model's defaults, off the wire.
+            assert model.meta()["default_params"]["seed"] == 7
+            assert sent == [{"text": "prompt", "sampling_params": {}}]
         finally:
             await session._close_owned_model_resources()
 
-        close.assert_awaited_once()
-
     @pytest.mark.anyio
-    async def test_deterministic_legacy_candidate_survives_task_setup(
+    async def test_deterministic_sglang_native_candidate_survives_task_setup(
         self, tmp_path: Path
     ) -> None:
-        """`_setup_tasks` applies the frozen decision to a `SglangGenModel`.
-
-        The legacy facade is the one candidate that reaches
-        `_apply_request_seed_decision_to_model` as a `Model` *subclass* whose
-        `with_dialect` raises, so the helper's dialect guard has to be
-        satisfied by `SglangGenModel.dialect_id` rather than a runtime plan.
-        """
-        from sieval.core.models import SglangGenModel
+        """`_setup_tasks` applies the frozen decision to the bound candidate."""
         from tests.unit.core.runners.test_runner import MockTask
 
-        class LegacyGenTask(MockTask):
+        class NativeGenTask(MockTask):
             model_type = "gen"
 
         config_path = self._config(
@@ -7441,7 +7429,7 @@ models:
     name: org/model
     type: gen
     engine: sglang
-    dialect: sglang_legacy
+    dialect: sglang_native
     api_base: https://sglang.example/v1
     api_key: local
 datasets:
@@ -7449,28 +7437,17 @@ datasets:
     class: fake.Dataset
 tasks:
   completion:
-    class: fake.LegacyGenTask
+    class: fake.NativeGenTask
     dataset: ds
     model: m
 """,
         )
         session = EvalSession(config_path)
-        close = AsyncMock()
-        connection = types.SimpleNamespace(
-            close=close,
-            base_url="https://sglang.example/v1",
-        )
 
         try:
-            with (
-                patch(
-                    "sieval.cli.session.resolve_task_class",
-                    return_value=LegacyGenTask,
-                ),
-                patch(
-                    "sieval.core.models.sglang_gen_model.AsyncOpenAI",
-                    return_value=connection,
-                ),
+            with patch(
+                "sieval.cli.session.resolve_task_class",
+                return_value=NativeGenTask,
             ):
                 session._setup_prelaunch_reconciliation()
                 session._setup_postlaunch_reconciliation()
@@ -7481,13 +7458,8 @@ tasks:
 
             assert session.runner is not None
             task_model = session.runner._runners[0]._task.model
-            assert isinstance(task_model, SglangGenModel)
-            assert task_model.dialect_id == "sglang_legacy"
+            assert task_model.dialect_id == "sglang_native"
             assert "seed" not in task_model._kwargs
-            # The helper derives rather than mutates, so a distinct object is
-            # the evidence that it ran against the legacy facade at all.
-            assert task_model is not session.models["m"]
-            assert "seed" not in session.models["m"]._kwargs
         finally:
             await session._close_owned_model_resources()
 
@@ -7498,7 +7470,7 @@ _RNA_WRAPPERS: dict[str, JSONValue] = {"rna": "<rna>{seq}</rna>"}
 
 class TestModelExtraPlacement:
     """A model's ``extra`` binds the same from its top level or from ``args``,
-    on the canonical and legacy paths, and both at once are refused."""
+    over either connection family, and both at once are refused."""
 
     class ChatTask:
         model_type = "chat"
@@ -7548,7 +7520,7 @@ class TestModelExtraPlacement:
         return session
 
     _ROOT = "  root:\n    name: org/m\n    api_base: http://x/v1\n    api_key: k\n"
-    _LEGACY = "    type: gen\n    engine: sglang\n    dialect: sglang_legacy\n"
+    _NATIVE = "    type: gen\n    engine: sglang\n    dialect: sglang_native\n"
 
     @pytest.mark.parametrize(
         "placement",
@@ -7559,17 +7531,17 @@ class TestModelExtraPlacement:
         ],
         ids=["top-level", "args"],
     )
-    @pytest.mark.parametrize("legacy", [False, True], ids=["canonical", "legacy"])
+    @pytest.mark.parametrize("native", [False, True], ids=["openai", "sglang-native"])
     def test_top_level_and_args_bind_the_same_extra(
-        self, tmp_path: Path, placement: str, legacy: bool
+        self, tmp_path: Path, placement: str, native: bool
     ) -> None:
         from sieval.core.tasks.run_meta import model_request_args
 
-        root = self._ROOT.replace("root", "m") + (self._LEGACY if legacy else "")
+        root = self._ROOT.replace("root", "m") + (self._NATIVE if native else "")
         session = self._bound(
             tmp_path,
             root + placement,
-            self.GenTask if legacy else self.ChatTask,
+            self.GenTask if native else self.ChatTask,
         )
         model = session.models["m"]
         assert model.extra == {"sequence_wrappers": _WRAPPERS}
@@ -7577,35 +7549,35 @@ class TestModelExtraPlacement:
         assert model_request_args(model)["extra"] == {"sequence_wrappers": _WRAPPERS}
         assert "extra" not in model._kwargs
 
-    @pytest.mark.parametrize("legacy", [False, True], ids=["canonical", "legacy"])
+    @pytest.mark.parametrize("native", [False, True], ids=["openai", "sglang-native"])
     def test_derived_model_inherits_top_level_extra(
-        self, tmp_path: Path, legacy: bool
+        self, tmp_path: Path, native: bool
     ) -> None:
         models = (
             self._ROOT
-            + (self._LEGACY if legacy else "")
+            + (self._NATIVE if native else "")
             + "    extra:\n      sequence_wrappers: {dna: '<dna>{seq}</dna>'}\n"
             + "  m:\n    base: root\n    args:\n      temperature: 0.5\n"
         )
         session = self._bound(
-            tmp_path, models, self.GenTask if legacy else self.ChatTask
+            tmp_path, models, self.GenTask if native else self.ChatTask
         )
         assert session.models["m"].extra == {"sequence_wrappers": _WRAPPERS}
         assert session.models["m"]._kwargs["temperature"] == 0.5
 
-    @pytest.mark.parametrize("legacy", [False, True], ids=["canonical", "legacy"])
+    @pytest.mark.parametrize("native", [False, True], ids=["openai", "sglang-native"])
     def test_derived_top_level_extra_replaces_the_base(
-        self, tmp_path: Path, legacy: bool
+        self, tmp_path: Path, native: bool
     ) -> None:
         models = (
             self._ROOT
-            + (self._LEGACY if legacy else "")
+            + (self._NATIVE if native else "")
             + "    extra:\n      sequence_wrappers: {dna: '<dna>{seq}</dna>'}\n"
             + "  m:\n    base: root\n"
             + "    extra:\n      sequence_wrappers: {rna: '<rna>{seq}</rna>'}\n"
         )
         session = self._bound(
-            tmp_path, models, self.GenTask if legacy else self.ChatTask
+            tmp_path, models, self.GenTask if native else self.ChatTask
         )
         assert session.models["m"].extra == {"sequence_wrappers": _RNA_WRAPPERS}
         assert session.models["root"].extra == {"sequence_wrappers": _WRAPPERS}
@@ -7931,7 +7903,6 @@ class TestEvalSessionWrappers:
         )
         pool = types.SimpleNamespace(aclose=AsyncMock())
         runner._owned_pools = {"model:m": pool}
-        runner._owned_legacy_models = {}
         runner._required_services = set()
 
         with (
@@ -7955,7 +7926,6 @@ class TestEvalSessionWrappers:
         runner = object.__new__(EvalSession)
         pool = types.SimpleNamespace(aclose=AsyncMock())
         runner._owned_pools = {"model:a": pool, "model:b": pool}
-        runner._owned_legacy_models = {}
 
         await runner._close_owned_model_resources()
 
@@ -7969,20 +7939,19 @@ class TestEvalSessionWrappers:
             aclose=AsyncMock(side_effect=RuntimeError("first close failed"))
         )
         second = types.SimpleNamespace(aclose=AsyncMock())
-        legacy = types.SimpleNamespace(aclose=AsyncMock())
-        runner._owned_pools = {"model:a": first, "model:b": second}
-        runner._owned_legacy_models = {"model:legacy": legacy}
+        third = types.SimpleNamespace(aclose=AsyncMock())
+        runner._owned_pools = {"model:a": first, "model:b": second, "model:c": third}
 
         with pytest.raises(RuntimeError, match="first close failed"):
             await runner._close_owned_model_resources()
 
         first.aclose.assert_awaited_once()
         second.aclose.assert_awaited_once()
-        legacy.aclose.assert_awaited_once()
+        third.aclose.assert_awaited_once()
         await runner._close_owned_model_resources()
         first.aclose.assert_awaited_once()
         second.aclose.assert_awaited_once()
-        legacy.aclose.assert_awaited_once()
+        third.aclose.assert_awaited_once()
 
 
 # ===================================================================
@@ -8588,35 +8557,6 @@ class TestDeterministicRequestSeedPolicy:
             assert "seed" not in model.meta()["default_params"]
         finally:
             await source.aclose()
-
-    def test_absent_decision_removes_existing_argument_seed(self):
-        with patch(
-            "sieval.cli.session.get_dialect_spec",
-            return_value=types.SimpleNamespace(
-                request_seed_support=RequestSeedSupport.UNSUPPORTED
-            ),
-        ):
-            decision = _resolve_deterministic_request_seed(
-                dialect_id="future_seedless",
-                explicit_seed_present=False,
-            )
-
-        args = {"seed": 7, "temperature": 0.5}
-        _apply_request_seed_decision_to_args(args, decision)
-
-        assert args == {"temperature": 0.5}
-
-    def test_present_decision_replaces_existing_argument_seed(self):
-        decision = _resolve_deterministic_request_seed(
-            dialect_id="openai_chat",
-            explicit_seed_present=True,
-            explicit_seed=0,
-        )
-        args = {"seed": 9, "temperature": 0.5}
-
-        _apply_request_seed_decision_to_args(args, decision)
-
-        assert args == {"seed": 0, "temperature": 0.5}
 
     def test_anthropic_automatic_request_seed_is_explicitly_unsupported(self):
         decision = _resolve_deterministic_request_seed(

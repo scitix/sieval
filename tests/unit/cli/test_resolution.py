@@ -319,7 +319,7 @@ class TestValidateModelTypeDialect:
             ("chat", "openai_chat"),
             ("chat", "openai_responses"),
             ("gen", "openai_completions"),
-            ("gen", "sglang_legacy"),
+            ("gen", "sglang_native"),
         ],
     )
     def test_matching_input_contract_is_accepted(self, model_type, dialect_id):
@@ -330,6 +330,7 @@ class TestValidateModelTypeDialect:
         [
             ("gen", "openai_responses", "completion input"),
             ("chat", "openai_completions", "chat input"),
+            ("chat", "sglang_native", "chat input"),
         ],
     )
     def test_conflicting_input_contract_fails_loudly(
@@ -350,7 +351,7 @@ class TestDefaultDialect:
         [
             ("chat", "sglang", SCORING, "openai_chat"),
             ("gen", "sglang", AggregatedTaskRequirements(), "openai_completions"),
-            ("gen", "sglang", SCORING, "sglang_legacy"),
+            ("gen", "sglang", SCORING, "sglang_native"),
             ("gen", "vllm", SCORING, "openai_completions"),
             ("gen", None, SCORING, "openai_completions"),
         ],
@@ -363,7 +364,7 @@ class TestDefaultDialect:
 
 class TestValidateOmittedDialectMigration:
     def test_sglang_gen_without_dialect_is_refused(self):
-        with pytest.raises(ValueError, match="dialect: sglang_legacy"):
+        with pytest.raises(ValueError, match="dialect: sglang_native"):
             validate_omitted_dialect_migration(
                 "m", "gen", "sglang", dialect_declared=False
             )
@@ -606,7 +607,7 @@ class TestResolveConfigModelTypes:
         ):
             resolve_config_model_types(config)
 
-    def test_inline_sglang_legacy_role_is_rejected_during_resolution(self):
+    def test_inline_retired_sglang_legacy_names_its_replacement(self):
         config = {
             "models": {"m": {"name": "org/candidate"}},
             "tasks": {
@@ -629,7 +630,7 @@ class TestResolveConfigModelTypes:
             ),
             pytest.raises(
                 ValueError,
-                match=r"inline extractor.*sglang_legacy.*named model",
+                match=r"'sglang_legacy' was replaced by 'sglang_native'",
             ),
         ):
             resolve_config_model_types(config)
@@ -1143,11 +1144,12 @@ class TestNormalizeInlineModelBinding:
         with pytest.raises(ValueError, match="dialect must be a non-empty string"):
             normalize_inline_model_binding("t", "grader", self._config(dialect=dialect))
 
-    def test_sglang_legacy_bypass_is_rejected(self):
-        with pytest.raises(ValueError, match="sglang_legacy"):
-            normalize_inline_model_binding(
-                "t", "grader", self._config(dialect="sglang_legacy")
-            )
+    def test_sglang_native_is_an_ordinary_inline_dialect(self):
+        binding = normalize_inline_model_binding(
+            "t", "grader", self._config(dialect="sglang_native")
+        )
+
+        assert binding.dialect_id == "sglang_native"
 
     @pytest.mark.parametrize("engine", [None, "", 7])
     def test_invalid_engine_is_rejected(self, engine):

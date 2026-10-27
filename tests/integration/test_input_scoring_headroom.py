@@ -19,14 +19,11 @@ import httpx
 import orjson
 import pytest
 import yaml
-from openai import AsyncOpenAI
 from typer.testing import CliRunner
 
 import sieval.cli.serving
 from sieval.cli.main import app
 from sieval.cli.run import _run_all
-from sieval.core.models import sglang_gen_model
-from sieval.core.models.request_log import RecordingOpenAIClient
 from sieval.core.models.requirements import TaskRequirements
 from sieval.core.tasks import Task
 from sieval.core.tasks.report_metrics import report_metrics
@@ -103,16 +100,11 @@ class Engine:
 @pytest.fixture
 def engine(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Engine]:
     stub = Engine()
-    real_openai = AsyncOpenAI
-
-    def openai_client(**kwargs: Any) -> AsyncOpenAI:
-        kwargs["http_client"] = RecordingOpenAIClient(
-            timeout=kwargs["timeout"], transport=httpx.MockTransport(stub)
-        )
-        return real_openai(**kwargs)
-
-    # `sglang_legacy` serves through SglangGenModel, which builds its own.
-    monkeypatch.setattr(sglang_gen_model, "AsyncOpenAI", openai_client)
+    # `sglang_native` speaks plain HTTP through the async_http_json family.
+    monkeypatch.setattr(
+        "sieval.core.models.connection_factory.httpx.AsyncHTTPTransport",
+        lambda **_: httpx.MockTransport(stub),
+    )
     monkeypatch.setattr("sieval.cli.infer.lifecycle.HANDLE_DIR", tmp_path / "handles")
     monkeypatch.setenv("SIEVAL_TARGET_GPU", H100_TEXT)
     gpu = AsyncMock(return_value=H100)

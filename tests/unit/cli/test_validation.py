@@ -625,41 +625,45 @@ class TestValidateModelCapabilities:
         assert not result.ok
         assert any("unknown dialect 'chat'" in error for error in result.errors)
 
-    def test_explicit_sglang_legacy_bypass_is_accepted(self):
+    def test_explicit_sglang_native_is_accepted(self):
+        result = validate_eval_config(
+            self._config(type="gen", engine="sglang", dialect="sglang_native")
+        )
+
+        assert result.ok, result.errors
+
+    def test_sglang_native_accepts_its_scoring_declarations(self):
         result = validate_eval_config(
             self._config(
                 type="gen",
                 engine="sglang",
-                dialect="sglang_legacy",
+                dialect="sglang_native",
+                capabilities={"input_scoring": True, "top_logprobs": {}},
             )
         )
 
         assert result.ok, result.errors
 
-    @pytest.mark.parametrize("declaration", [True, False])
-    def test_sglang_legacy_bypass_rejects_capability_declarations(
-        self, declaration: bool
-    ):
+    def test_sglang_native_rejects_an_unsupported_declaration(self):
         result = validate_eval_config(
-            self._config(
-                type="gen",
-                engine="sglang",
-                dialect="sglang_legacy",
-                capabilities={"input_scoring": declaration},
-            )
+            self._config(dialect="sglang_native", capabilities={"prefill": True})
         )
 
         assert not result.ok
+        assert any("prefill" in error for error in result.errors)
+
+    def test_retired_sglang_legacy_names_its_replacement(self):
+        result = validate_eval_config(self._config(dialect="sglang_legacy"))
+
+        assert not result.ok
         assert any(
-            "sglang_legacy bypass" in error
-            and "cannot declare canonical capabilities" in error
+            "'sglang_legacy' was replaced by 'sglang_native'" in error
             for error in result.errors
         )
 
     @pytest.mark.parametrize(
         ("dialect", "message"),
         [
-            ("sglang_native", "no executable binder"),
             ("vllm_native", "no executable binder"),
         ],
     )
@@ -1947,17 +1951,17 @@ class TestRunDryRun:
             assert "name" in check
             assert "ok" in check
 
-    def test_explicit_sglang_legacy_bypass_reaches_prelaunch(self, tmp_path):
+    def test_explicit_sglang_native_reaches_prelaunch(self, tmp_path):
         from sieval.cli.validation import run_dry_run
 
-        config = tmp_path / "sglang-legacy.yaml"
+        config = tmp_path / "sglang-native.yaml"
         config.write_text(
             "models:\n"
             "  m:\n"
             "    name: org/model\n"
             "    type: gen\n"
             "    engine: sglang\n"
-            "    dialect: sglang_legacy\n"
+            "    dialect: sglang_native\n"
             "    api_base: http://127.0.0.1:30000\n"
             "datasets:\n"
             "  d:\n"

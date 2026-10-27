@@ -20,7 +20,6 @@ from sieval.core.datasets import (
 )
 from sieval.core.models import Model
 from sieval.core.models.requirements import (
-    InputKind,
     RequirementContext,
     TaskModelRequirement,
     TaskRequirements,
@@ -42,17 +41,7 @@ class _RuntimeModelView(Protocol):
     runtime_plan: _RuntimeBindingView | None
 
 
-_SGLANG_LEGACY_CAPABILITIES = frozenset(
-    {"input_scoring", "sampled_logprobs", "top_logprobs"}
-)
-
-
 def _dialect_input_shape(dialect_id: str) -> tuple[frozenset[str], frozenset[str]]:
-    # TODO(PR-5): remove this pseudo-spec branch when the registered
-    # sglang_native binder replaces the temporary legacy bypass.
-    if dialect_id == "sglang_legacy":
-        return frozenset({InputKind.COMPLETION.value}), frozenset({"text"})
-
     from sieval.core.models.dialect_registry import get_dialect_spec
 
     spec = get_dialect_spec(dialect_id)
@@ -93,20 +82,13 @@ def _validate_descriptor_capabilities(
     required = _required_capabilities(requires)
     if not required:
         return
-    # TODO(PR-5): remove this pseudo-spec branch when the registered
-    # sglang_native binder replaces the temporary legacy bypass.
-    if dialect_id == "sglang_legacy":
-        available = _SGLANG_LEGACY_CAPABILITIES
-    else:
-        from sieval.core.models.capabilities import Supported
-        from sieval.core.models.dialect_registry import capability_decisions_for
+    from sieval.core.models.capabilities import Supported
+    from sieval.core.models.dialect_registry import capability_decisions_for
 
-        decisions = capability_decisions_for(dialect_id)
-        available = frozenset(
-            key
-            for key, decision in decisions.items()
-            if isinstance(decision, Supported)
-        )
+    decisions = capability_decisions_for(dialect_id)
+    available = frozenset(
+        key for key, decision in decisions.items() if isinstance(decision, Supported)
+    )
     missing = required - available
     if missing:
         raise ValueError(

@@ -53,7 +53,7 @@ Deviations from lm-eval-harness:
 Repro decoding: deterministic log-prob scoring — ``alogprobs`` uses
 ``temperature=0`` and ``echo=True``; no sampling params apply.
 
-When served by SGLang, configure the model with ``dialect: sglang_legacy`` and
+When served by SGLang, configure the model with ``dialect: sglang_native`` and
 launch it with ``--disable-radix-cache``. SGLang's OpenAI Completions endpoint
 rejects the ``echo=True`` plus ``logprobs`` request required by this task.
 
@@ -170,7 +170,7 @@ def _argmax(values: list[float]) -> int:
             "blank lines per lm-eval; n_shot=0 is 0-shot. Continuation log-probs read "
             "via echoed alogprobs; context/continuation split by char offset "
             "(no tokenizer at this layer). With SGLang, configure the model with "
-            "dialect: sglang_legacy because its OpenAI Completions endpoint rejects "
+            "dialect: sglang_native because its OpenAI Completions endpoint rejects "
             "echo plus logprobs. Echo scoring reads the prompt's input logprobs, "
             "so the serving backend's prefix caching must also be disabled (cached "
             "positions are not recomputed -> truncated logprobs); the backend layer "

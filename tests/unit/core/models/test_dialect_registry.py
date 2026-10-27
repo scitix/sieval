@@ -135,7 +135,7 @@ class TestDialectDescriptors:
             "openai_responses": RequestSeedSupport.UNSUPPORTED,
             "anthropic_messages": RequestSeedSupport.UNSUPPORTED,
             "google_genai": RequestSeedSupport.SUPPORTED,
-            "sglang_native": RequestSeedSupport.RESERVED,
+            "sglang_native": RequestSeedSupport.UNSUPPORTED,
             "vllm_native": RequestSeedSupport.RESERVED,
         }
 
@@ -167,6 +167,7 @@ class TestDialectDescriptors:
             "openai_responses",
             "anthropic_messages",
             "google_genai",
+            "sglang_native",
         }
         assert set(DIALECT_BINDERS) == active
         assert all(inspect.isfunction(binder) for binder in DIALECT_BINDERS.values())
@@ -174,6 +175,12 @@ class TestDialectDescriptors:
     def test_unknown_identifier_is_not_inferred(self) -> None:
         with pytest.raises(UnknownDialect, match="unknown dialect"):
             get_dialect_spec("chat")
+
+    def test_retired_identifier_names_its_replacement(self) -> None:
+        with pytest.raises(
+            UnknownDialect, match="'sglang_legacy' was replaced by 'sglang_native'"
+        ):
+            get_dialect_spec("sglang_legacy")
 
     @pytest.mark.parametrize(
         ("changes", "message"),
@@ -224,8 +231,10 @@ class TestDialectDescriptors:
     ) -> None:
         assert dialect_is_bindable("openai_chat") is True
         assert compatibility_factory_for("openai_chat") is None
-        assert dialect_is_bindable("sglang_native") is False
+        assert dialect_is_bindable("sglang_native") is True
         assert compatibility_factory_for("sglang_native") is None
+        assert dialect_is_bindable("vllm_native") is False
+        assert compatibility_factory_for("vllm_native") is None
 
     def test_binding_key_must_match_decision_key(self) -> None:
         decisions = dict(DIALECT_BINDERS["openai_chat"].capability_decisions)
@@ -298,7 +307,6 @@ class TestDialectBinders:
         ("dialect_id", "message"),
         [
             ("vllm_native", "no executable binder"),
-            ("sglang_native", "sglang_legacy.*bypass"),
         ],
     )
     def test_reserved_dialects_fail_with_named_error(

@@ -50,6 +50,10 @@ from .dialects.openai_responses import (
     CAPABILITY_DECISIONS as OPENAI_RESPONSES_CAPABILITY_DECISIONS,
 )
 from .dialects.openai_responses import OpenAIResponsesDialect
+from .dialects.sglang_native import (
+    CAPABILITY_DECISIONS as SGLANG_NATIVE_CAPABILITY_DECISIONS,
+)
+from .dialects.sglang_native import SglangNativeDialect
 from .ir import (
     ChatInput,
     ChatMessage,
@@ -358,6 +362,10 @@ def _bind_google_genai(connection: Any, requested_model_id: str) -> Dialect:
     return GoogleGenAIDialect(connection, requested_model_id)
 
 
+def _bind_sglang_native(connection: Any, requested_model_id: str) -> Dialect:
+    return SglangNativeDialect(connection, requested_model_id)
+
+
 def _binder(
     function: Callable[[Any, str], Dialect],
     decisions: Mapping[str, DialectCapabilityDecision],
@@ -404,6 +412,13 @@ DIALECT_BINDERS: Mapping[str, DialectBinder] = MappingProxyType(
             cast(
                 Mapping[str, DialectCapabilityDecision],
                 GOOGLE_GENAI_CAPABILITY_DECISIONS,
+            ),
+        ),
+        "sglang_native": _binder(
+            _bind_sglang_native,
+            cast(
+                Mapping[str, DialectCapabilityDecision],
+                SGLANG_NATIVE_CAPABILITY_DECISIONS,
             ),
         ),
     }
@@ -467,7 +482,9 @@ DIALECT_SPECS: Mapping[str, DialectSpec] = MappingProxyType(
         "sglang_native": _spec(
             "sglang_native",
             "async_http_json",
-            request_seed_support=RequestSeedSupport.RESERVED,
+            decisions=_registered_decisions("sglang_native"),
+            # /generate has no per-request seed; a managed engine pins one.
+            request_seed_support=RequestSeedSupport.UNSUPPORTED,
             input_kinds=("completion",),
             input_modalities=("text",),
         ),
@@ -482,12 +499,24 @@ DIALECT_SPECS: Mapping[str, DialectSpec] = MappingProxyType(
 )
 
 
+#: Retired dialect ids and the id that took over their wire protocol.
+_REPLACED_DIALECTS: Mapping[str, str] = MappingProxyType(
+    {"sglang_legacy": "sglang_native"}
+)
+
+
 def get_dialect_spec(dialect_id: str) -> DialectSpec:
     """Resolve one descriptor without falling back to a similar protocol."""
 
     try:
         return DIALECT_SPECS[dialect_id]
     except KeyError as exc:
+        replacement = _REPLACED_DIALECTS.get(dialect_id)
+        if replacement is not None:
+            raise UnknownDialect(
+                f"dialect {dialect_id!r} was replaced by {replacement!r}; "
+                f"set dialect: {replacement}"
+            ) from exc
         known = ", ".join(DIALECT_SPECS)
         raise UnknownDialect(
             f"unknown dialect {dialect_id!r}; expected one of: {known}"
@@ -586,11 +615,6 @@ def bind_dialect(
 
 
 def _not_implemented_message(dialect_id: str) -> str:
-    if dialect_id == "sglang_native":
-        return (
-            "dialect 'sglang_native' has no executable binder; use the explicit "
-            "'sglang_legacy' compatibility bypass"
-        )
     if dialect_id == "vllm_native":
         return "dialect 'vllm_native' is reserved and has no executable binder"
     return f"dialect {dialect_id!r} is reserved and has no executable binder"

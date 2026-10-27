@@ -176,7 +176,7 @@ one entry per rollout, in `texts` order, with the same three fields.
 
 | Dialect | `n: 1` | `n > 1` |
 | --- | --- | --- |
-| `sglang_legacy`, `openai_completions`, `openai_chat` | yes | yes |
+| `sglang_native`, `openai_completions`, `openai_chat` | yes | yes |
 | `google_genai` | yes | refused |
 | `openai_responses` | yes | refused (no `n`) |
 | `anthropic_messages` | refused | refused |
@@ -188,7 +188,7 @@ so changing them on a resume reruns inference.
 With `echo` (`alogprobs(text, echo=True, logprobs=N)` or `infer_args: {echo:
 true, top_logprobs: N}`), each input token's top-N lands in
 `ModelOutput.input_top_logprobs` (`{}` for the first); `top_logprobs` keeps
-the generated tokens'. Served by `sglang_legacy` and `openai_completions`.
+the generated tokens'. Served by `sglang_native` and `openai_completions`.
 The reply grows by N entries per input token.
 
 ## Model Capabilities (`extra`)

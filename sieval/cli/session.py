@@ -63,7 +63,7 @@ from sieval.cli.services import RESERVED_LOG_DIR, vendored_services_for
 from sieval.cli.serving import SessionServing, check_context_fits, plan_window
 from sieval.core.datasets import Dataset, TFilterKey
 from sieval.core.datasets.meta import get_dataset_meta
-from sieval.core.models import ChatModel, GenModel, Model, SglangGenModel
+from sieval.core.models import ChatModel, GenModel, Model
 from sieval.core.models.capabilities import (
     CAPABILITY_KEYS,
     CapabilityIntent,
@@ -220,14 +220,13 @@ def _resolve_deterministic_request_seed(
 ) -> _RequestSeedDecision:
     """Resolve one immutable decision for execution and persistence."""
 
-    if dialect_id == "sglang_legacy":
-        # TODO(PR-5): delete this compatibility policy when the legacy SGLang
-        # path becomes a registered ``sglang_native`` DialectSpec/binder.
-        support = RequestSeedSupport.UNSUPPORTED
-        scope = _RequestSeedScope.ENGINE_LEVEL_ONLY
-    else:
-        support = get_dialect_spec(dialect_id).request_seed_support
-        scope = _RequestSeedScope.PER_REQUEST
+    support = get_dialect_spec(dialect_id).request_seed_support
+    # Only SGLang's /generate pins its seed at engine startup, not per request.
+    scope = (
+        _RequestSeedScope.ENGINE_LEVEL_ONLY
+        if dialect_id == "sglang_native"
+        else _RequestSeedScope.PER_REQUEST
+    )
 
     if support is RequestSeedSupport.RESERVED:
         raise ValueError(
@@ -290,16 +289,6 @@ def _with_task_infer_seed(
         seed=seed,
         provenance=_RequestSeedProvenance.TASK_INFER_ARGS,
     )
-
-
-def _apply_request_seed_decision_to_args(
-    args: dict[str, Any], decision: _RequestSeedDecision
-) -> None:
-    """Make an argument mapping match a previously frozen seed decision."""
-
-    args.pop("seed", None)
-    if decision.seed_present:
-        args["seed"] = decision.seed
 
 
 def _apply_request_seed_decision_to_model(
@@ -1846,13 +1835,11 @@ class EvalSession:
         self._aggregated_requirements: dict[str, AggregatedTaskRequirements] = {}
         self._model_types_by_root: dict[str, Literal["chat", "gen"]] = {}
         self._model_types_by_binding: dict[str, Literal["chat", "gen"]] = {}
-        self._legacy_bypass_bindings: frozenset[str] = frozenset()
         self._prelaunch_binding_inputs: tuple[BindingReconcileInput, ...] = ()
         self._prelaunch_deployment_inputs: dict[str, DeploymentReconcileInput] = {}
         self._realized_deployments_by_root: dict[str, Deployment] = {}
         self._owned_pools: dict[str, ConnectionPool[Any]] = {}
         self._root_shared_limiters: dict[str, anyio.CapacityLimiter | None] = {}
-        self._owned_legacy_models: dict[str, SglangGenModel] = {}
         self._warned_best_effort_role_bindings: set[str] = set()
         # Runtime-only sources for the post-launch ``models_by_role`` binding
         # seam.  They are never serialized or fingerprinted by reconciliation.
@@ -3220,8 +3207,6 @@ class EvalSession:
             or (input_scoring_intent is not None and input_scoring_intent.required)
             or declares_input_scoring
         )
-        # TODO(PR-5): replace this deployment-specific guard with the
-        # registered sglang_native binder's capability contract.
         if (
             engine_id != "sglang"
             or binding.dialect_id != "openai_completions"
@@ -3240,9 +3225,8 @@ class EvalSession:
             f"Model binding '{binding.binding_id}' requires input_scoring"
             f"{source_detail}, but deployment engine 'sglang' with dialect "
             "'openai_completions' cannot serve input_scoring: SGLang's "
-            "/v1/completions endpoint rejects echo=True with logprobs. Use a "
-            "named model binding with dialect: sglang_legacy until the "
-            "sglang_native binder replaces the compatibility bypass."
+            "/v1/completions endpoint rejects echo=True with logprobs. Use "
+            "dialect: sglang_native, which scores input through /generate."
         )
 
     def _setup_prelaunch_reconciliation(self) -> None:
@@ -3458,21 +3442,10 @@ class EvalSession:
         self._model_types_by_root = model_types_by_root
         self._model_types_by_binding = model_types_by_binding
 
-        legacy_bypass: set[str] = set()
         binding_inputs: list[BindingReconcileInput] = []
         deployment_inputs: dict[str, DeploymentReconcileInput] = {}
         for binding_id, binding in self._normalized_model_bindings.items():
             requirements = aggregated[binding_id]
-            if binding.dialect_id == "sglang_legacy":
-                declarations = self._declarations_for_binding(binding, models_cfg)
-                if declarations:
-                    raise ValueError(
-                        f"Model binding '{binding_id}' uses the temporary "
-                        "sglang_legacy bypass and cannot declare canonical "
-                        "capabilities while sglang_native has no executable binder"
-                    )
-                legacy_bypass.add(binding_id)
-                continue
             if binding.dialect_id is None:
                 raise ValueError(f"Model binding '{binding_id}' has no dialect")
 
@@ -3526,7 +3499,6 @@ class EvalSession:
 
         self._task_model_requirements = tuple(records)
         self._aggregated_requirements = aggregated
-        self._legacy_bypass_bindings = frozenset(legacy_bypass)
         self._prelaunch_binding_inputs = tuple(binding_inputs)
         self._prelaunch_deployment_inputs = dict(deployment_inputs)
         self._freeze_deterministic_request_seed_decisions()
@@ -3732,10 +3704,10 @@ class EvalSession:
         here invalidates every in-flight deterministic result dir. Two fields
         are deliberately kept despite being derivable from their siblings:
 
-        * ``seed_scope`` — implied by ``dialect_id`` only while
-          ``sglang_legacy`` is the one engine-scoped dialect; a registered
-          ``sglang_native`` binder decouples the two, and rotating the
-          contract then would be more expensive than carrying it now.
+        * ``seed_scope`` — implied by ``dialect_id`` while ``sglang_native``
+          is the one engine-scoped dialect; a later engine-scoped dialect
+          would decouple the two, and rotating the contract then would be
+          more expensive than carrying it now.
         * ``explicit_seed_present`` — implied by ``seed_provenance``, and kept
           so an audit can answer "did a human choose this seed?" without
           knowing which provenance values count as explicit.
@@ -3981,8 +3953,6 @@ class EvalSession:
             binding.binding_id: binding for binding in self._prelaunch_binding_inputs
         }
         for binding in self._normalized_model_bindings.values():
-            if binding.binding_id in self._legacy_bypass_bindings:
-                continue
             template = self._prelaunch_deployment_inputs[binding.root_deployment_key]
             deployment = self._configured_deployment_for(binding, template, models_cfg)
             prelaunch_binding = prelaunch_bindings[binding.binding_id]
@@ -4051,11 +4021,7 @@ class EvalSession:
                 "post-launch verification changed pre-launch binding plan(s): "
                 + ", ".join(drifted_bindings)
             )
-        expected = {
-            binding.binding_id
-            for binding in self._normalized_model_bindings.values()
-            if binding.binding_id not in self._legacy_bypass_bindings
-        }
+        expected = set(self._normalized_model_bindings)
         missing = expected - set(result.runtime_plans)
         if missing:
             raise RuntimeError(
@@ -4243,78 +4209,12 @@ class EvalSession:
             )
         models_cfg = self._get_named_config_map("models")
 
-        by_root: dict[str, list[NormalizedModelBinding]] = {}
-        for binding in self._normalized_model_bindings.values():
-            by_root.setdefault(binding.root_deployment_key, []).append(binding)
-        for root_key, bindings in by_root.items():
-            has_legacy = any(
-                binding.binding_id in self._legacy_bypass_bindings
-                for binding in bindings
-            )
-            has_canonical = any(
-                binding.binding_id not in self._legacy_bypass_bindings
-                for binding in bindings
-            )
-            if has_legacy and has_canonical:
-                raise ValueError(
-                    f"deployment root '{root_key}' mixes sglang_legacy and canonical "
-                    "dialects; split them into separate root model configs"
-                )
-
         bound_by_binding: dict[str, Model] = {}
         pending_named = {
             binding.config_name: binding
             for binding in self._normalized_model_bindings.values()
             if isinstance(binding, NamedModelBinding)
         }
-
-        # Legacy SGLang stays on its explicit bypass until the PR-5 binder.
-        for name, binding in tuple(pending_named.items()):
-            if binding.binding_id not in self._legacy_bypass_bindings:
-                continue
-            chain = self._model_config_chain(name, models_cfg)
-            if len(chain) != 1:
-                continue
-            cfg = chain[0][1]
-            args = self._normalize_dict(cfg.get("args"), f"Model '{name}' args")
-            args.pop("extra", None)
-            extra = model_config_extra(cfg, f"Model '{name}'")
-            if extra is not None:
-                args["extra"] = extra
-            if self.deterministic:
-                _apply_request_seed_decision_to_args(
-                    args,
-                    self._request_seed_decisions_by_binding[binding.binding_id],
-                )
-            realized = self._realized_deployments.get(name)
-            credential = _client_credential(
-                _configured_credential(cfg, args, f"Model '{name}'", os.environ),
-                realized,
-            )
-            for key in _CREDENTIAL_KEYS:
-                args.pop(key, None)
-            if credential is not None:
-                args["api_key"] = credential
-            realized = self._realized_deployments.get(name)
-            # A conflicting configured api_base was refused at construction.
-            if realized is not None:
-                args["api_base"] = realized.api_base
-            elif "api_base" in cfg:
-                args["api_base"] = cfg["api_base"]
-            timeout = _configured_client_timeout(
-                cfg,
-                args,
-                _default_client_timeout(realized),
-                f"Model '{name}'",
-            )
-            args.pop("client_timeout", None)
-            legacy_model = SglangGenModel(
-                model=binding.requested_model_id, client_timeout=timeout, **args
-            )
-            self.models[name] = legacy_model
-            bound_by_binding[binding.binding_id] = legacy_model
-            self._owned_legacy_models[binding.root_deployment_key] = legacy_model
-            del pending_named[name]
 
         while pending_named:
             resolved_any = False
@@ -4325,80 +4225,65 @@ class EvalSession:
                 if not is_root and base_name not in self.models:
                     continue
 
-                if binding.binding_id in self._legacy_bypass_bindings:
+                runtime_plan = result.runtime_plans[binding.binding_id]
+                deployment = self._realized_deployments_by_root[
+                    binding.root_deployment_key
+                ]
+                chain = self._model_config_chain(name, models_cfg)
+                root_config = chain[0][1]
+                pool = self._create_owned_pool(
+                    binding.root_deployment_key,
+                    deployment,
+                    runtime_plan,
+                    root_config,
+                    nested_args=True,
+                )
+                if is_root:
+                    model = Model.bind(deployment, pool, runtime_plan)
+                else:
                     assert isinstance(base_name, str)
-                    model = self.models[base_name]
-                    args = self._normalize_dict(cfg.get("args"), f"Model '{name}' args")
-                    concurrency_limit = args.pop("concurrency_limit", None)
-                    args.pop("extra", None)
+                    base_model = self.models[base_name]
+                    if base_model.pool.identity == runtime_plan.connection_identity:
+                        model = base_model.with_dialect(
+                            runtime_plan.dialect_id, runtime_plan
+                        )
+                    else:
+                        inherited_local_limiter = (
+                            base_model._limiter
+                            if base_model._parent_limiter is not None
+                            else None
+                        )
+                        model = Model.bind(
+                            deployment,
+                            pool,
+                            runtime_plan,
+                            local_limiter=inherited_local_limiter,
+                        )
+                        if base_model._kwargs or base_model.extra:
+                            inherited_defaults = cast(
+                                dict[str, Any], base_model._kwargs
+                            )
+                            model = model.with_args(
+                                extra=base_model.extra or None,
+                                **inherited_defaults,
+                            )
+
+                args, extra = self._request_builder_args(cfg, f"Model '{name}'")
+                concurrency_limit = None
+                if not is_root:
+                    raw_args = cfg.get("args", {})
+                    assert isinstance(raw_args, Mapping)
+                    concurrency_limit = raw_args.get("concurrency_limit")
+                if args or extra is not None or concurrency_limit is not None:
                     model = model.with_args(
-                        concurrency_limit=concurrency_limit,
-                        extra=cast(
-                            dict[str, JSONValue] | None,
-                            model_config_extra(cfg, f"Model '{name}'"),
-                        ),
+                        concurrency_limit=cast(int | None, concurrency_limit),
+                        extra=cast(dict[str, JSONValue] | None, extra),
                         **args,
                     )
-                else:
-                    runtime_plan = result.runtime_plans[binding.binding_id]
-                    deployment = self._realized_deployments_by_root[
-                        binding.root_deployment_key
-                    ]
-                    chain = self._model_config_chain(name, models_cfg)
-                    root_config = chain[0][1]
-                    pool = self._create_owned_pool(
-                        binding.root_deployment_key,
-                        deployment,
-                        runtime_plan,
-                        root_config,
-                        nested_args=True,
-                    )
-                    if is_root:
-                        model = Model.bind(deployment, pool, runtime_plan)
-                    else:
-                        assert isinstance(base_name, str)
-                        base_model = self.models[base_name]
-                        if base_model.pool.identity == runtime_plan.connection_identity:
-                            model = base_model.with_dialect(
-                                runtime_plan.dialect_id, runtime_plan
-                            )
-                        else:
-                            inherited_local_limiter = (
-                                base_model._limiter
-                                if base_model._parent_limiter is not None
-                                else None
-                            )
-                            model = Model.bind(
-                                deployment,
-                                pool,
-                                runtime_plan,
-                                local_limiter=inherited_local_limiter,
-                            )
-                            if base_model._kwargs or base_model.extra:
-                                inherited_defaults = cast(
-                                    dict[str, Any], base_model._kwargs
-                                )
-                                model = model.with_args(
-                                    extra=base_model.extra or None,
-                                    **inherited_defaults,
-                                )
-
-                    args, extra = self._request_builder_args(cfg, f"Model '{name}'")
-                    concurrency_limit = None
-                    if not is_root:
-                        raw_args = cfg.get("args", {})
-                        assert isinstance(raw_args, Mapping)
-                        concurrency_limit = raw_args.get("concurrency_limit")
-                    if args or extra is not None or concurrency_limit is not None:
-                        model = model.with_args(
-                            concurrency_limit=cast(int | None, concurrency_limit),
-                            extra=cast(dict[str, JSONValue] | None, extra),
-                            **args,
-                        )
-                    model = self._as_legacy_wrapper(
-                        model,
-                        self._model_types_by_binding[binding.binding_id],
-                    )
+                model = self._as_legacy_wrapper(
+                    model,
+                    self._model_types_by_binding[binding.binding_id],
+                )
 
                 if self.deterministic:
                     model = _apply_request_seed_decision_to_model(
@@ -5567,25 +5452,14 @@ class EvalSession:
         """Drain and close every session-owned root once; never close externals."""
 
         owned_pools = getattr(self, "_owned_pools", {})
-        owned_legacy_models = getattr(self, "_owned_legacy_models", {})
         root_shared_limiters = getattr(self, "_root_shared_limiters", {})
         pools = tuple({id(pool): pool for pool in owned_pools.values()}.values())
-        legacy_models = tuple(
-            {id(model): model for model in owned_legacy_models.values()}.values()
-        )
         owned_pools.clear()
-        owned_legacy_models.clear()
         root_shared_limiters.clear()
         first_error: BaseException | None = None
         for pool in pools:
             try:
                 await pool.aclose()
-            except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
-        for model in legacy_models:
-            try:
-                await model.aclose()
             except BaseException as exc:
                 if first_error is None:
                     first_error = exc
