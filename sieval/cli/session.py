@@ -28,6 +28,7 @@ from loguru import logger
 
 from sieval import __version__
 from sieval.cli._cli_model import CliModel, apply_cli_model
+from sieval.cli._config_yaml import load_eval_config
 from sieval.cli._filter_spec import (
     VALUES_DIGEST_KEY,
     check_arg_names,
@@ -1753,12 +1754,12 @@ class EvalSession:
             invocation if invocation is not None else shlex.join(sys.argv)
         )
 
-        with open(self.config_path, encoding="utf-8") as f:
-            loaded_config: RootConfigDict | None = yaml.safe_load(f)
-            if loaded_config is None:
-                loaded_config = {}
-            if not isinstance(loaded_config, dict):
-                raise ValueError("Top-level YAML config must be a dictionary")
+        parsed = load_eval_config(self.config_path)
+        if parsed is None:
+            parsed = {}
+        if not isinstance(parsed, dict):
+            raise ValueError("Top-level YAML config must be a dictionary")
+        loaded_config = cast(RootConfigDict, parsed)
         if "alignment" in loaded_config:
             logger.warning(
                 "{}: the `alignment:` block was removed in 0.11 and is ignored; "

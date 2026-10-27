@@ -11,7 +11,7 @@ Provides four validation layers:
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict, cast
@@ -19,6 +19,7 @@ from typing import Any, NotRequired, TypedDict, cast
 import yaml
 
 from sieval.cli._cli_model import CliModel, apply_cli_model
+from sieval.cli._config_yaml import DuplicateKeyError, load_eval_config
 from sieval.cli._filter_spec import (
     check_arg_names,
     check_by,
@@ -97,42 +98,6 @@ class ValidationResult:
         """Merge another result into this one."""
         self.errors.extend(other.errors)
         self.warnings.extend(other.warnings)
-
-
-def _make_duplicate_key_checker(warnings: list[str]) -> Callable[..., dict]:
-    """Create a construct_mapping override that records duplicate keys."""
-
-    original = yaml.SafeLoader.construct_mapping
-
-    def construct_mapping(loader, node, deep=False):
-        loader.flatten_mapping(node)
-        seen: set[str] = set()
-        for key_node, _value_node in node.value:
-            key = loader.construct_object(key_node, deep=False)
-            if isinstance(key, str) and key in seen:
-                mark = key_node.start_mark
-                warnings.append(f"Duplicate key '{key}' at line {mark.line + 1}")
-            if isinstance(key, str):
-                seen.add(key)
-        return original(loader, node, deep=deep)
-
-    return construct_mapping
-
-
-def load_yaml_with_duplicate_check(content: str) -> tuple[dict, list[str]]:
-    """Parse YAML content, returning (parsed_dict, duplicate_key_warnings).
-
-    Preserves last-wins behavior (consistent with ``yaml.safe_load``).
-    """
-    warnings: list[str] = []
-    checker = _make_duplicate_key_checker(warnings)
-    # Per-call subclass to avoid shared class-level state (thread-safe)
-    loader_cls = type("_DuplicateKeyLoader", (yaml.SafeLoader,), {})
-    cast(Any, loader_cls).construct_mapping = checker
-    data = yaml.load(content, Loader=loader_cls)
-    if data is None:
-        data = {}
-    return data, warnings
 
 
 def _validate_structure(cfg: dict, result: ValidationResult) -> bool:
@@ -1084,29 +1049,24 @@ def run_dry_run(
 
     checks.append({"name": "file_exists", "ok": True})
 
-    # 2. YAML parse + duplicate key check
-    content = config.read_text(encoding="utf-8")
+    # 2. YAML parse; a repeated key is refused, as on every entry point
     try:
-        cfg, dup_warnings = load_yaml_with_duplicate_check(content)
-    except yaml.YAMLError as exc:
+        parsed = load_eval_config(config)
+    except (yaml.YAMLError, DuplicateKeyError) as exc:
+        detail = (
+            str(exc)
+            if isinstance(exc, DuplicateKeyError)
+            else f"YAML syntax error: {exc}"
+        )
         checks.append(
-            {
-                "name": "yaml_syntax",
-                "ok": False,
-                "detail": f"YAML syntax error: {exc}",
-                "warnings": [],
-            }
+            {"name": "yaml_syntax", "ok": False, "detail": detail, "warnings": []}
         )
         n_err = sum(1 for c in checks if not c["ok"])
         return {"checks": checks, "n_errors": n_err, "n_warnings": 0}
+    # A non-mapping is refused by the cli_model and schema checks below.
+    cfg = {} if parsed is None else cast(dict, parsed)
 
-    checks.append(
-        {
-            "name": "yaml_syntax",
-            "ok": True,
-            "warnings": list(dup_warnings),
-        }
-    )
+    checks.append({"name": "yaml_syntax", "ok": True, "warnings": []})
 
     # 2b. The models: entry --checkpoint/--api-base becomes
     if cli_model is not None:
@@ -1116,7 +1076,7 @@ def run_dry_run(
             apply_cli_model(cfg, cli_model, model_override)
         except ValueError as exc:
             checks.append({"name": "cli_model", "ok": False, "detail": str(exc)})
-            return {"checks": checks, "n_errors": 1, "n_warnings": len(dup_warnings)}
+            return {"checks": checks, "n_errors": 1, "n_warnings": 0}
         checks.append(
             {"name": "cli_model", "ok": True, "plan": {"models": cfg["models"]}}
         )
@@ -1191,7 +1151,6 @@ def run_dry_run(
         checks.append(schema_check)
 
     n_err = sum(1 for c in checks if not c["ok"])
-    all_warnings = list(dup_warnings) + list(result.warnings)
-    n_warn = len(all_warnings)
+    n_warn = len(result.warnings)
 
     return {"checks": checks, "n_errors": n_err, "n_warnings": n_warn}

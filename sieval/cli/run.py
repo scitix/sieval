@@ -25,6 +25,7 @@ from sieval.cli._cli_model import (
     CliModel,
     apply_cli_model,
 )
+from sieval.cli._config_yaml import DuplicateKeyError, load_eval_config
 from sieval.cli._resume_option import (
     ResumeCommand,
     ResumeOption,
@@ -833,10 +834,13 @@ async def _run_dry_run(
     if not config_path.exists():
         return unplanned(checks())
 
-    with open(config_path) as stream:
-        loaded = yaml.safe_load(stream)
-    if not isinstance(loaded, dict):
+    try:
+        parsed = load_eval_config(config_path)
+    except (yaml.YAMLError, DuplicateKeyError):
+        return unplanned(checks())  # reported as the failed yaml_syntax check
+    if not isinstance(parsed, dict):
         raise ValueError("evaluation config must be a mapping")
+    loaded = cast(dict, parsed)
     try:
         apply_cli_model(loaded, cli_model, model)
     except ValueError:
@@ -1148,10 +1152,10 @@ async def _run_all(
     """
     configure_logging(verbose)
 
-    with open(config_path) as f:
-        config = yaml.safe_load(f)
-    if not isinstance(config, dict):
+    parsed = load_eval_config(config_path)
+    if not isinstance(parsed, dict):
         raise ValueError("evaluation config must be a mapping")
+    config = cast(dict, parsed)
     apply_cli_model(config, cli_model, model)
 
     # Path-only models skip resolve_infer_config (which reads YAML

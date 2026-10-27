@@ -15,7 +15,6 @@ from sieval.cli.main import app
 from sieval.cli.validation import (
     ValidationResult,
     _is_builtin_class_spec,
-    load_yaml_with_duplicate_check,
     validate_eval_config,
     validate_eval_config_imports,
 )
@@ -43,56 +42,6 @@ class TestValidationResult:
         a.merge(b)
         assert a.errors == ["e1", "e2"]
         assert a.warnings == ["w1", "w2"]
-
-
-# ---------------------------------------------------------------------------
-# YAML duplicate-key checking
-# ---------------------------------------------------------------------------
-
-
-class TestLoadYamlWithDuplicateCheck:
-    def test_valid_yaml_no_duplicates(self):
-        content = "models:\n  a:\n    name: foo\n  b:\n    name: bar\n"
-        data, warnings = load_yaml_with_duplicate_check(content)
-        assert data == {"models": {"a": {"name": "foo"}, "b": {"name": "bar"}}}
-        assert warnings == []
-
-    def test_duplicate_top_level_key(self):
-        content = "models:\n  a:\n    name: foo\nmodels:\n  b:\n    name: bar\n"
-        data, warnings = load_yaml_with_duplicate_check(content)
-        assert data == {"models": {"b": {"name": "bar"}}}
-        assert len(warnings) == 1
-        assert "models" in warnings[0]
-
-    def test_duplicate_nested_key(self):
-        content = "models:\n  a:\n    name: foo\n  a:\n    name: bar\n"
-        data, warnings = load_yaml_with_duplicate_check(content)
-        assert data == {"models": {"a": {"name": "bar"}}}
-        assert len(warnings) == 1
-        assert "'a'" in warnings[0]
-
-    def test_empty_yaml(self):
-        data, warnings = load_yaml_with_duplicate_check("")
-        assert data == {}
-        assert warnings == []
-
-    def test_invalid_yaml_raises(self):
-        with pytest.raises(yaml.YAMLError):
-            load_yaml_with_duplicate_check("models:\n  - [invalid\n")
-
-    def test_sequential_calls_produce_independent_warnings(self):
-        dup_content = "a: 1\na: 2\n"
-        clean_content = "b: 1\nc: 2\n"
-
-        _, w1 = load_yaml_with_duplicate_check(dup_content)
-        _, w2 = load_yaml_with_duplicate_check(clean_content)
-        _, w3 = load_yaml_with_duplicate_check(dup_content)
-
-        assert len(w1) == 1
-        assert w2 == []
-        assert len(w3) == 1
-        # Warnings must not leak between calls
-        assert w1 is not w3
 
 
 # ---------------------------------------------------------------------------
@@ -2316,8 +2265,8 @@ class TestRunDryRun:
         assert any("foobar" in w for w in schema_check.get("warnings", []))
         assert result["n_warnings"] >= 1
 
-    def test_duplicate_key_warnings(self, tmp_path):
-        """Config with duplicate keys returns warnings."""
+    def test_duplicate_key_is_an_error(self, tmp_path):
+        """A repeated key fails the yaml_syntax check and stops the dry-run."""
         from sieval.cli.validation import run_dry_run
 
         config = tmp_path / "dup.yaml"
@@ -2327,10 +2276,14 @@ class TestRunDryRun:
             "datasets: {}\ntasks: {}\n"
         )
         result = run_dry_run(config)
-        yaml_check = next(c for c in result["checks"] if c["name"] == "yaml_syntax")
-        assert yaml_check["ok"] is True
-        assert len(yaml_check.get("warnings", [])) > 0
-        assert result["n_warnings"] > 0
+        assert result["checks"][-1] == {
+            "name": "yaml_syntax",
+            "ok": False,
+            "detail": f"{config}: duplicate key 'models' at line 4 (first at line 1)",
+            "warnings": [],
+        }
+        assert result["n_errors"] == 1
+        assert result["n_warnings"] == 0
 
     def test_schema_ok_no_detail_when_sections_not_dicts(self, tmp_path):
         """Schema check omits detail when models/datasets/tasks aren't all dicts."""
