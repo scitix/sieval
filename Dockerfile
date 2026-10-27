@@ -15,8 +15,8 @@ RUN python3 -m nltk.downloader \
 
 WORKDIR /app
 
-COPY ./dist/sieval-0.14.0-py3-none-any.whl /tmp/
-RUN pip install /tmp/sieval-0.14.0-py3-none-any.whl && rm /tmp/sieval-0.14.0-py3-none-any.whl
+COPY ./dist/sieval-0.15.0-py3-none-any.whl /tmp/
+RUN pip install /tmp/sieval-0.15.0-py3-none-any.whl && rm /tmp/sieval-0.15.0-py3-none-any.whl
 
 COPY vendor /app/vendor
 # The wheel carries no vendor/; this is the code-evaluator SiEval starts.

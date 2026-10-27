@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.15.0] - 2026-10-28
+
+A minor bump with breaking changes: `dialect: sglang_legacy` is replaced by
+`sglang_native`, a repeated key in the eval config is refused, tp is sized from
+the declared memory fraction and context, and several Python symbols are
+removed. On disk, the `meta.json` `identity` moves from schema 4 to schema 5:
+the `inference` identity now records the served model's numerics (`dtype`,
+`quantization`, `kv_cache_dtype`, model overrides), and a resume that changes
+them is refused. `RESULT_SCHEMA_VERSION` stays 1. Schema-4 result directories
+still read and resume, with their numerics taken from the plan recorded in
+`runs[].serving`.
+
+### Migrating from 0.14.x
+
+- **`dialect: sglang_legacy` is refused** (#250). Use `dialect: sglang_native`; the `/generate` request body is byte-identical. A result directory recorded under `sglang_legacy` cannot be resumed, because the inference identity now records a dialect where the legacy path recorded none: start it fresh.
+- **An explicit `seed` on `sglang_native` is refused** before any request (#250). `/generate` has no per-request seed, and the legacy path dropped it silently. Remove `seed` and pin the seed on the engine (`--random-seed`); an engine `sieval run` starts deterministically already does.
+- **No `OPENAI_API_KEY` fallback for SGLang** (#250). An external SGLang server started with `--api-key` needs `api_key` or `api_key_env: OPENAI_API_KEY` on the model. Engines started by `sieval run` are unaffected.
+- **SGLang HTTP errors are `httpx.HTTPStatusError`** (#250), not `openai.APIStatusError`; a caller catching the latter must catch the former. A malformed token count in `meta_info` now fails the sample with `OutputContractError`.
+- **A repeated key in the eval config is refused** (#257) by `sieval run`, `sieval eval`, both `--dry-run`s and `EvalSession(...)`, with the line of each repeat. Delete the repeat and keep the last value, which is the one 0.14 used. Under `-o json` `--dry-run`, a repeat is a failed `yaml_syntax` check (exit 1) and `yaml_syntax.warnings` is always empty.
+- **A resume that changes the served model's numerics is refused** (#259): effective `dtype`, runtime `quantization`, `kv_cache_dtype`, or `json_model_override_args` / `hf_overrides`. Start fresh, or match the recorded values. Stating a default (`dtype: auto`, `kv_cache_dtype: auto`) is no change; tp, dp, memory fraction and other serving params are still never compared. An `api_base` model may state `serving.numerics`; a key it does not state is unknown and never refuses.
+- **tp may change for a fresh run** (#252). Without a stated `tensor_parallel_size`, tp is the smallest power of two whose GPU share of the weights plus one full-context sequence of KV fits the memory fraction. A model that was refused for too few GPUs may now fit, and some large models size smaller. A resume reuses its recorded plan and is unaffected. To keep the old tp, state it.
+- **Removed Python symbols:** `sieval.infer.compute_tp` (#252; state tp, or use `sieval.infer.topology.memory.size_tp`), `sieval.core.models.transports` and `EvalSession._apply_request_seed_decision_to_args` (#250), and `sieval.cli.validation.load_yaml_with_duplicate_check` (#257; use `sieval.cli._config_yaml.load_eval_config`).
+
+### Added
+
+- **`sglang_native` dialect** for SGLang's native `POST /generate`, with input scoring, sampled logprobs and top logprobs. Every request field is sent, treated as a no-op, or refused before I/O; only `min_p` and `repetition_penalty` pass through as native extras. Token ids are kept, byte-level tokens are normalized, and the radix-cache guard still fails loud on truncated echoed logprobs. `DialectSpec.engine_level_seed` records that its seed is engine-level only (#250, closes #25).
+- **Numerics in the inference identity.** `IDENTITY_SCHEMA` 5 records the effective `dtype`, `quantization`, `kv_cache_dtype` and model overrides, resolving unset values against the checkpoint's `config.json` and normalizing aliases. Roles that disagree record each value. A refusal names each key that changed, e.g. `kv_cache_dtype: 'auto' -> 'fp8_e5m2'`. `sieval.core.tasks.run_meta.NUMERICS_PARAMS` maps each key to the engine params that set it, and `numerics_key(param)` tells an orchestrator whether an override changes the identity (#259, closes #258).
+- **`--dry-run` reports memory fit.** Each `serving.<group>.engines.<engine>` entry gains `memory`: per role, `tp` and `tp_source` (`stated` / `sized`), `fraction`, `context`, `kv_capacity_tokens`, `full_context_sequences`, `fits`, `low_room` and `detail`, computed from the params the engine launches with; `null` when the GPUs or `config.json` are unknown. A role with room for fewer than 8 full-context sequences adds a `serving` warning, counted in `n_warnings` (#254, closes #253).
+
+### Fixed
+
+- **tp is sized from the declared memory, not a fixed ratio.** Sizing used to budget the weights at 65% of one GPU and ignore the memory fraction and context, so a model whose declared fraction held its weights on one GPU was refused for needing two. Sizing now counts the weights from the checkpoint, the KV per token (GQA sharded across tp, MLA replicated, fp8 KV at one byte) at the resolved context, and the resolved `mem_fraction_static` / `gpu_memory_utilization` or the engine's default. A stated tp is kept and refused when it does not fit; a plan with room for fewer than 8 full-context sequences warns (#252, closes #251).
+- **A repeated eval-config key no longer loses a value silently.** `run`, `eval` and `EvalSession` kept the last value without a word, and only `--dry-run` warned. All entry points now share one loader that refuses repeats; keys a YAML merge (`<<: *anchor`) brings in may still be overridden (#257, closes #255).
+- **A seed sent to SGLang `/generate` is no longer dropped silently** (#250).
+- **A resume no longer mixes numerics.** A run of the same weights at another dtype, quantization or KV dtype used to resume into the old directory and compare equal to it (#259).
+
+### Changed
+
+- An SGLang `gen` model with no `dialect` whose tasks score input now defaults to `sglang_native` (was `sglang_legacy`); the wire is unchanged (#250).
+- `SglangGenModel` is a thin wrapper over the shared HTTP client and requires `api_base`. Without a key, its connection identity records `no-credential` (#250).
+- The `ppl` tasks (`arc_easy_kshot_ppl`, `arc_challenge_kshot_ppl`, `hellaswag_kshot_ppl`) document `dialect: sglang_native` (#250).
+
 ## [0.14.0] - 2026-10-27
 
 A minor bump: new config keys `runner_config.stop_after` and a model's
@@ -581,6 +623,7 @@ Mainstream benchmarks registered in `sieval/meta/index.json`:
 - Project-wide preflight (`scripts/check_preflight.py`): links, deps, tasks, datasets, imports, examples, meta-index sync, version.
 - Tooling: `ruff`, `ty`, `mypy strict`, `pytest`.
 
+[0.15.0]: https://github.com/scitix/sieval/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/scitix/sieval/compare/v0.13.2...v0.14.0
 [0.13.2]: https://github.com/scitix/sieval/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/scitix/sieval/compare/v0.13.0...v0.13.1
