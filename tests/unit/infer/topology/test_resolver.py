@@ -6,6 +6,7 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 
 import pytest
 
+from sieval.infer.introspect import KvShape
 from sieval.infer.topology.memory import MemoryDemand
 from sieval.infer.topology.models import (
     HardwareEnv,
@@ -45,9 +46,7 @@ class TestDeriveTopology:
             weight_bytes=145.4e9,
             fraction=0.85,
             context=32768,
-            kv_layers=80,
-            kv_heads=8,
-            kv_head_dim=128,
+            kv=KvShape(80, 8, 2 * 128),
         )
         steps: list[ResolveStep] = []
         topo = _derive_topology(model, self._hw(), None, steps, demand=demand)
@@ -383,7 +382,7 @@ class TestResolveSimple:
         assert result.plan.assignments[0].engine_params == {}
 
     def test_with_user_hints(self):
-        model = ModelProfile(param_billions=72.0, num_layers=80)
+        model = ModelProfile(param_billions=32.0, num_layers=64)
         hints = UserHints(tp=2, dp=1)
         result = resolve_simple(
             checkpoint="/models/Qwen3-72B",
@@ -526,7 +525,7 @@ class TestDpRederivation:
 
     def test_tp_override_recomputes_dp(self):
         """Setting tp=2 on 8 GPUs should give dp=4 (not stale dp from formula)."""
-        model = ModelProfile(param_billions=72.0, num_layers=80)
+        model = ModelProfile(param_billions=32.0, num_layers=64)
         hints = UserHints(tp=2)
         steps: list[ResolveStep] = []
         topo = _derive_topology(model, self._hw(), hints, steps)
@@ -536,7 +535,7 @@ class TestDpRederivation:
 
     def test_tp_override_with_dp_override_no_rederive(self):
         """When user sets both tp and dp, dp should not be re-derived."""
-        model = ModelProfile(param_billions=72.0, num_layers=80)
+        model = ModelProfile(param_billions=32.0, num_layers=64)
         hints = UserHints(tp=2, dp=1)
         steps: list[ResolveStep] = []
         topo = _derive_topology(model, self._hw(), hints, steps)

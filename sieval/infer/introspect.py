@@ -437,20 +437,39 @@ def logit_shape(checkpoint: str) -> tuple[int, float] | None:
     return vocab, _DTYPE_BYTES.get(dtype, 2.0)
 
 
-def kv_shape(checkpoint: str) -> tuple[int, int, int] | None:
-    """*checkpoint*'s KV cache shape: ``(layers, kv_heads, head_dim)``.
+@dataclass(frozen=True, slots=True)
+class KvShape:
+    """Per-token KV cache of one layer: *heads* × *width* elements.
 
-    From ``config.json`` (or its ``text_config``): ``num_hidden_layers``,
-    ``num_key_value_heads`` (``num_attention_heads`` when absent, i.e. no GQA)
-    and ``head_dim`` (``hidden_size // num_attention_heads`` when absent).
-    ``None`` when a dimension cannot be read, or for MLA attention
-    (``kv_lora_rank``), whose cache is not shaped per head.
+    *width* counts K and V together. *sharded* is whether the heads split
+    across tp; an MLA latent is one replicated "head".
     """
-    if any("kv_lora_rank" in source for source in _text_configs(checkpoint)):
-        return None
+
+    layers: int
+    heads: int
+    width: int
+    sharded: bool = True
+
+
+def kv_shape(checkpoint: str) -> KvShape | None:
+    """*checkpoint*'s KV cache shape, from ``config.json`` (or ``text_config``).
+
+    GQA/MHA: ``num_key_value_heads`` (else ``num_attention_heads``) heads of
+    K and V, each ``head_dim`` (else ``hidden_size // num_attention_heads``).
+    MLA: one latent of ``kv_lora_rank + qk_rope_head_dim``, replicated per GPU.
+    ``None`` when a dimension cannot be read.
+    """
     layers = _positive_config_int(checkpoint, "num_hidden_layers")
+    if layers is None:
+        return None
+    lora_rank = _positive_config_int(checkpoint, "kv_lora_rank")
+    if lora_rank is not None:
+        rope = _positive_config_int(checkpoint, "qk_rope_head_dim")
+        if rope is None:
+            return None
+        return KvShape(layers, 1, lora_rank + rope, sharded=False)
     heads = _positive_config_int(checkpoint, "num_attention_heads")
-    if layers is None or heads is None:
+    if heads is None:
         return None
     kv_heads = _positive_config_int(checkpoint, "num_key_value_heads") or heads
     head_dim = _positive_config_int(checkpoint, "head_dim")
@@ -459,16 +478,14 @@ def kv_shape(checkpoint: str) -> tuple[int, int, int] | None:
         if hidden is None:
             return None
         head_dim = hidden // heads
-    return layers, kv_heads, head_dim
+    return KvShape(layers, kv_heads, 2 * head_dim)
 
 
 def checkpoint_weight_bytes(checkpoint: str) -> int | None:
-    """The bytes of *checkpoint*'s weights, as stored.
+    """The bytes of *checkpoint*'s weights as stored, so mixed precision counts.
 
     ``metadata.total_size`` of ``model.safetensors.index.json``, else the sum
-    of its ``*.safetensors`` files. ``None`` when neither can be read. Stored
-    bytes beat ``param_billions × bytes_per_param`` for mixed-precision
-    checkpoints, e.g. MXFP4 experts beside bf16 attention.
+    of its ``*.safetensors`` files; ``None`` when neither can be read.
     """
     root = Path(checkpoint)
     try:

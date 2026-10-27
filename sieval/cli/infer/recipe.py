@@ -261,8 +261,7 @@ async def _resolve_recipe_params(
     """Resolve engine params for a recipe.
 
     Pipeline: hardware profile → capability profile → overrides → tp/dp sized
-    from the memory fraction and context those declare (see
-    :func:`sieval.infer.topology.memory.size_tp`).
+    from the memory those declare.
 
     Extracted from _resolve_with_recipe / _try_auto_resolve_recipe to
     eliminate duplication.
@@ -309,11 +308,9 @@ def _size_parallelism(
     backend_name: str,
     gpu: GPUInfo,
 ) -> dict[str, ParamValue]:
-    """Add tp/dp to *params*, sized from the memory and context they declare.
+    """Add tp/dp to *params*, ahead of the rest (see :func:`size_tp`).
 
-    A stated tp is kept and checked; otherwise the smallest tp that fits is
-    added, ahead of the other params. DP fills the remaining GPUs unless
-    stated. Raises when the plan cannot start on *gpu*.
+    A stated tp is kept; dp fills the remaining GPUs unless stated.
     """
     stated_tp = next((params[k] for k in TP_KEYS if k in params), None)
     demand = memory_demand(

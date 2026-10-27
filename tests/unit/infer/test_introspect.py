@@ -13,6 +13,7 @@ import anyio
 import pytest
 
 from sieval.infer.introspect import (
+    KvShape,
     ModelIdentity,
     QuantizationInfo,
     _estimate_params_billions,
@@ -774,7 +775,7 @@ class TestKvShape:
                     "head_dim": 128,
                     "hidden_size": 2048,
                 },
-                (48, 4, 128),
+                KvShape(48, 4, 256),
             ),
             # head_dim derived from hidden_size; no GQA → kv heads = heads
             (
@@ -783,7 +784,7 @@ class TestKvShape:
                     "num_attention_heads": 32,
                     "hidden_size": 4096,
                 },
-                (32, 32, 128),
+                KvShape(32, 32, 256),
             ),
             (
                 {
@@ -794,24 +795,26 @@ class TestKvShape:
                         "head_dim": 64,
                     }
                 },
-                (4, 2, 64),
+                KvShape(4, 2, 128),
             ),
-            # MLA caches a latent, not per-head K/V
+            # MLA: one latent of kv_lora_rank + qk_rope_head_dim, not sharded
             (
                 {
                     "num_hidden_layers": 61,
                     "num_attention_heads": 128,
                     "head_dim": 128,
                     "kv_lora_rank": 512,
+                    "qk_rope_head_dim": 64,
                 },
-                None,
+                KvShape(61, 1, 576, sharded=False),
             ),
+            ({"num_hidden_layers": 61, "kv_lora_rank": 512}, None),
             ({"num_hidden_layers": 32, "num_attention_heads": 32}, None),
             ({"num_attention_heads": 32, "head_dim": 128}, None),
         ],
     )
     def test_reads_layers_kv_heads_and_head_dim(
-        self, tmp_path: Path, config: dict, expected: tuple[int, int, int] | None
+        self, tmp_path: Path, config: dict, expected: KvShape | None
     ) -> None:
         (tmp_path / "config.json").write_text(json.dumps(config))
         assert kv_shape(str(tmp_path)) == expected

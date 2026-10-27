@@ -11,9 +11,10 @@ from pathlib import Path
 import pytest
 from loguru import logger
 
-from sieval.infer.introspect import ModelIdentity
+from sieval.infer.introspect import KvShape, ModelIdentity
 from sieval.infer.topology.memory import (
     MemoryDemand,
+    default_fraction,
     memory_demand,
     memory_fit,
     size_tp,
@@ -27,9 +28,7 @@ _QWEN3_30B_A3B = MemoryDemand(
     weight_bytes=61.06e9,
     fraction=0.87,
     context=32768,
-    kv_layers=48,
-    kv_heads=4,
-    kv_head_dim=128,
+    kv=KvShape(48, 4, 2 * 128),
 )
 
 
@@ -50,8 +49,22 @@ class TestMemoryFit:
         # tp=8 > 4 KV heads: each GPU still holds one head
         assert _QWEN3_30B_A3B.kv_bytes_per_token(8) == 24 * 1024
 
+    def test_uneven_kv_heads_round_up(self) -> None:
+        """6 heads at tp=4: some GPU holds 2, so 2 is what must fit."""
+        demand = MemoryDemand(weight_bytes=1e9, fraction=0.9, kv=KvShape(1, 6, 1))
+        assert demand.kv_bytes_per_token(4) == 2 * 2.0
+
+    def test_mla_latent_is_not_sharded(self) -> None:
+        # DeepSeek-V3: 61 layers × (512 + 64) latent, bf16
+        demand = MemoryDemand(
+            weight_bytes=1e9, fraction=0.9, kv=KvShape(61, 1, 576, sharded=False)
+        )
+        assert demand.kv_bytes_per_token(1) == demand.kv_bytes_per_token(8)
+        assert demand.kv_bytes_per_token(8) == 61 * 576 * 2
+
     def test_kv_unknown_without_shape(self) -> None:
-        assert MemoryDemand(weight_bytes=1e9).kv_bytes_per_token(1) is None
+        demand = MemoryDemand(weight_bytes=1e9, fraction=0.9)
+        assert demand.kv_bytes_per_token(1) is None
 
     def test_qwen3_30b_a3b_fits_one_h100(self) -> None:
         fit = memory_fit(_QWEN3_30B_A3B, 1, _H100_MIB)
@@ -71,20 +84,17 @@ class TestMemoryFit:
             weight_bytes=70e9,
             fraction=0.87,
             context=131072,
-            kv_layers=64,
-            kv_heads=8,
-            kv_head_dim=128,
+            kv=KvShape(64, 8, 2 * 128),
         )
         fit = memory_fit(demand, 1, _H100_MIB)
         assert fit.weight_bytes_per_gpu < fit.budget_bytes
         assert not fit.fits
 
-    def test_no_fraction_means_whole_gpu(self) -> None:
-        fit = memory_fit(MemoryDemand(weight_bytes=80e9), 1, _H100_MIB)
-        assert fit.budget_bytes == _H100_MIB * 1024 * 1024
-        assert fit.fits
-        assert not fit.low_room  # no declared fraction, no room judgement
-        assert "no memory fraction declared" in fit.describe()
+    def test_default_fraction_is_named(self) -> None:
+        demand = MemoryDemand(weight_bytes=1e9, fraction=0.9, fraction_declared=False)
+        assert (
+            "0.9 (engine default) × GPU" in memory_fit(demand, 1, _H100_MIB).describe()
+        )
 
     def test_describe_states_kv_room(self) -> None:
         text = memory_fit(_QWEN3_30B_A3B, 1, _H100_MIB).describe()
@@ -110,14 +120,22 @@ class TestSizeTp:
         # 200 GB over 77.3 GB budgets → 3 GPUs, rounded up to 4
         assert size_tp(demand, gpu_count=8, gpu_memory_mib=_H100_MIB).tp == 4
 
+    @pytest.mark.parametrize("backend", ["vllm", "sglang"])
+    def test_undeclared_fraction_sizes_at_engine_default(self, backend: str) -> None:
+        """78 GB fits a whole 80 GiB GPU but not the engine's default share."""
+        demand = MemoryDemand(
+            weight_bytes=78e9,
+            fraction=default_fraction(backend),
+            fraction_declared=False,
+        )
+        assert size_tp(demand, gpu_count=8, gpu_memory_mib=_H100_MIB).tp == 2
+
     def test_roomy_fit_does_not_warn(self, warnings: list[str]) -> None:
         demand = MemoryDemand(
             weight_bytes=16e9,
             fraction=0.87,
             context=32768,
-            kv_layers=36,
-            kv_heads=8,
-            kv_head_dim=128,
+            kv=KvShape(36, 8, 2 * 128),
         )
         assert size_tp(demand, gpu_count=1, gpu_memory_mib=_H100_MIB).tp == 1
         assert warnings == []
@@ -127,6 +145,11 @@ class TestSizeTp:
             _QWEN3_30B_A3B, gpu_count=8, gpu_memory_mib=_H100_MIB, stated_tp=4
         )
         assert fit.tp == 4
+
+    @pytest.mark.parametrize("tp", [0, -1])
+    def test_stated_tp_below_one_is_refused(self, tp: int) -> None:
+        with pytest.raises(RuntimeError, match=r"tp must be at least 1"):
+            size_tp(_QWEN3_30B_A3B, gpu_count=8, gpu_memory_mib=_H100_MIB, stated_tp=tp)
 
     def test_stated_tp_that_does_not_fit_is_refused(self) -> None:
         demand = MemoryDemand(weight_bytes=145e9, fraction=0.85)
@@ -144,9 +167,7 @@ class TestSizeTp:
             weight_bytes=1e9,
             fraction=0.5,
             context=10**9,
-            kv_layers=1,
-            kv_heads=1,
-            kv_head_dim=128,
+            kv=KvShape(1, 1, 2 * 128),
         )
         with pytest.raises(RuntimeError, match="at any tp"):
             size_tp(demand, gpu_count=8, gpu_memory_mib=_H100_MIB)
@@ -188,9 +209,7 @@ class TestMemoryDemand:
             weight_bytes=61_064_000_000,
             fraction=0.87,
             context=32768,
-            kv_layers=48,
-            kv_heads=4,
-            kv_head_dim=128,
+            kv=KvShape(48, 4, 2 * 128),
             kv_dtype_bytes=2.0,
         )
 
@@ -208,16 +227,22 @@ class TestMemoryDemand:
         )
         assert (demand.fraction, demand.context) == (0.95, 16384)
 
-    def test_undeclared_fraction_and_context(self, tmp_path: Path) -> None:
-        """No fraction is invented; the context is the checkpoint's native one."""
+    @pytest.mark.parametrize(("backend", "fraction"), [("vllm", 0.9), ("sglang", 0.8)])
+    def test_undeclared_fraction_and_context(
+        self, tmp_path: Path, backend: str, fraction: float
+    ) -> None:
+        """The engine's defaults: its fraction, the checkpoint's native context."""
         demand = memory_demand(
             checkpoint=self._checkpoint(tmp_path),
             identity=self._identity(),
-            backend="sglang",
+            backend=backend,
             params={},
         )
-        assert demand.fraction is None
+        assert (demand.fraction, demand.fraction_declared) == (fraction, False)
         assert demand.context == 40960
+
+    def test_unknown_backend_gets_the_lowest_default(self) -> None:
+        assert default_fraction("other") == 0.8
 
     def test_fp8_kv_cache_halves_kv(self, tmp_path: Path) -> None:
         demand = memory_demand(
@@ -237,4 +262,4 @@ class TestMemoryDemand:
             params={},
         )
         assert demand.weight_bytes == 60e9
-        assert demand.kv_layers is None
+        assert demand.kv is None
