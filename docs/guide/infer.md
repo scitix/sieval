@@ -445,6 +445,63 @@ Accounting:
   `output_tokens` is `candidatesTokenCount + thoughtsTokenCount`, so
   `reasoning_tokens` stays a breakdown of `output_tokens`.
 
+### Google Interactions
+
+`dialect: google_interactions` calls Gemini's
+[Interactions API](https://ai.google.dev/gemini-api/docs/interactions)
+(`POST /{version}/interactions`), which Google recommends for new work. It
+sits beside `google_genai` rather than replacing it. Endpoint, model name,
+version selection and the `x-goog-api-key` header work as above:
+
+```yaml
+models:
+  gemini:
+    name: gemini-3.8-flash
+    type: chat
+    dialect: google_interactions
+    api_base: https://generativelanguage.googleapis.com
+    api_key_env: GEMINI_API_KEY
+```
+
+Every request sends `store: false`. Google otherwise keeps the prompt and the
+reply server-side (55 days on the paid tier), and eval prompts must not be
+retained. The flag is checked again on the final HTTP body and recorded in
+`request_params`. Without stored interactions there is no
+`previous_interaction_id`, so multi-turn input is stateless: the whole history
+is resent as steps. A signed thought step round-trips through opaque
+continuation and is resent verbatim.
+
+Supported: text and image input, function tools, JSON output (`json_object`,
+`json_schema`), `thinking_level` (`minimal`/`low`/`medium`/`high`),
+`thinking_summaries` (`none`/`auto`), `temperature`, `top_p`, `max_tokens`,
+`stop`, `seed`, and streaming.
+
+Rejected before any network I/O, because the Interactions API has no such
+field. Use `google_genai` for these:
+
+- `n > 1`, `top_k`, frequency and presence penalties;
+- logprobs (sampled, top-k) and input scoring;
+- a thinking `budget_tokens` (only a level exists);
+- hosted tools, `previous_response_id`, assistant prefill, per-image `detail`,
+  and `developer` messages.
+
+Provider-only root controls (`service_tier`, `safety_settings`, `labels`)
+go through `dialect_options`. They cannot override `model`, `input`,
+`generation_config`, `tools`, `response_format`, `store`, `stream`,
+`background`, or `previous_interaction_id`. As with `google_genai`, per-model
+limits are left to Google's 400.
+
+Accounting:
+
+- There is no per-candidate finish reason, only the interaction `status`,
+  recorded verbatim. `incomplete` keeps the partial text and counts toward
+  `n_truncated`. It covers a hit token budget and other early stops alike,
+  and the record cannot tell them apart. `requires_action` is a function
+  call. `failed` fails the sample with Google's error message.
+- `input_tokens` is `total_input_tokens + total_tool_use_tokens` and
+  `output_tokens` is `total_output_tokens + total_thought_tokens`, the same
+  split as `google_genai`.
+
 ## Environment Variables
 
 Custom environment variables can be passed through the YAML config's `infer.env` section. Values are injected into the inference engine process.

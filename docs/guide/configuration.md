@@ -179,7 +179,7 @@ one entry per rollout, in `texts` order, with the same three fields.
 | `sglang_legacy`, `openai_completions`, `openai_chat` | yes | yes |
 | `google_genai` | yes | refused |
 | `openai_responses` | yes | refused (no `n`) |
-| `anthropic_messages` | refused | refused |
+| `anthropic_messages`, `google_interactions` | refused | refused |
 
 A refused request fails before any network I/O; a reply missing a rollout's
 logprobs fails that sample. `infer_args` are part of the inference identity,

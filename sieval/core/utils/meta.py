@@ -43,6 +43,8 @@ _TRUNCATION_FINISH_REASONS = (
             "model_context_window_exceeded",
             "MAX_TOKENS",
             "CONTINUATION",
+            # Gemini Interactions status: a budget and a policy stop alike.
+            "incomplete",
             "content_filter",
             "refusal",
         }

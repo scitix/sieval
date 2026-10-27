@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`dialect: google_interactions`** — Gemini's Interactions API (`POST /{v1,v1beta}/interactions`), beside `google_genai`: text and image input, function tools, JSON output, `thinking_level` and `thinking_summaries`, `temperature`/`top_p`/`max_tokens`/`stop`/`seed`, streaming, and stateless multi-turn with signed thought steps round-tripped through opaque continuation. Every request sends `store: false`, checked on the final body and recorded in `request_params`, so Google retains no eval prompt. `n > 1`, `top_k`, penalties, logprobs, thinking budgets and hosted tools are refused before any I/O (the API has no such field); use `google_genai` for them. The interaction `status` is the finish reason, and `incomplete` counts toward `n_truncated`. No identity or on-disk format change (#152).
+
 ## [0.14.0] - 2026-10-27
 
 A minor bump: new config keys `runner_config.stop_after` and a model's

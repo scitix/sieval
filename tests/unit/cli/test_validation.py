@@ -2123,9 +2123,10 @@ class TestRunDryRun:
             "anthropic_messages"
         )
 
+    @pytest.mark.parametrize("dialect", ["google_genai", "google_interactions"])
     @pytest.mark.parametrize("version_path", ["", "/v1", "/v1beta"])
     def test_active_google_dialect_reconciles_to_its_runtime_plan(
-        self, tmp_path, version_path
+        self, tmp_path, version_path, dialect
     ):
         """Static validation and dry-run carry Google through reconciliation."""
         from sieval.cli.validation import run_dry_run
@@ -2136,7 +2137,7 @@ class TestRunDryRun:
             "  m:\n"
             "    name: gemini-2.5-flash\n"
             "    type: chat\n"
-            "    dialect: google_genai\n"
+            f"    dialect: {dialect}\n"
             f"    api_base: https://generativelanguage.googleapis.com{version_path}\n"
             "    api_key: test-key\n"
             "datasets:\n"
@@ -2163,7 +2164,7 @@ class TestRunDryRun:
         assert checks["capability_reconcile"]["ok"] is True
         binding_plans = checks["capability_reconcile"]["plan"]["binding_plans"]
         assert len(binding_plans) == 1
-        assert next(iter(binding_plans.values()))["dialect_id"] == "google_genai"
+        assert next(iter(binding_plans.values()))["dialect_id"] == dialect
 
     @pytest.mark.parametrize(
         ("capability_yaml", "args_yaml"),

@@ -4453,6 +4453,7 @@ tasks:
             ("openai_chat", "authorization", "Bearer SENTINEL-ENV-KEY"),
             ("anthropic_messages", "x-api-key", "SENTINEL-ENV-KEY"),
             ("google_genai", "x-goog-api-key", "SENTINEL-ENV-KEY"),
+            ("google_interactions", "x-goog-api-key", "SENTINEL-ENV-KEY"),
         ],
     )
     async def test_inline_api_key_env_sends_the_variable_on_the_wire(
