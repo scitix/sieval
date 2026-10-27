@@ -1,28 +1,15 @@
 """SGLang native ``POST /generate`` dialect for the provider-neutral model IR.
 
-SGLang's OpenAI ``/v1/completions`` endpoint rejects ``echo=True`` together
-with ``logprobs``, so input scoring cannot go through it.  This dialect speaks
-the native ``/generate`` protocol for both generation and logprob extraction.
-The id always means that protocol; it never falls back to OpenAI completions.
+SGLang's ``/v1/completions`` rejects ``echo=True`` with ``logprobs``, so input
+scoring needs ``/generate``; this dialect serves generation and scoring there.
+``input_token_logprobs`` lifts to ``Response.input_scoring`` and
+``output_token_logprobs`` to ``Response.logprobs``; triples keep their token id.
 
-Input and output scores never share a sequence: ``input_token_logprobs`` lifts
-to ``Response.input_scoring`` and ``output_token_logprobs`` to
-``Response.logprobs``, and likewise for the ``*_top_logprobs`` lists.  Native
-``[logprob, token_id, token_text]`` triples keep their token id.
-
-The wire body is the one the ``sglang_legacy`` bypass sent, so the recorded
-``request_params`` (the body minus ``text``) are unchanged.  Three of that
-bypass's behaviours are not kept:
-
-* ``sampling_params.prefill``: SGLang builds ``SamplingParams(**sampling_params)``
-  and no release has a ``prefill`` argument, so the server could only refuse
-  it.  ``prefill``/``prefix`` options are refused before any I/O.
-* Unknown dialect options are refused rather than dropped.
-* No model id is reported: ``/generate`` returns none, and the requested id is
-  not substituted for it.
-
-The dialect borrows its HTTP connection; admission, retries and lifetime stay
-with the connection pool that constructed the bound model.
+The wire body is the retired ``sglang_legacy`` bypass's, byte for byte, except
+that options it sent or dropped are now refused before I/O: ``prefill``
+(SGLang's ``SamplingParams`` has no such argument), a request seed (``/generate``
+has none) and unknown options.  No model id is reported: ``/generate`` returns
+none.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
@@ -177,17 +164,14 @@ _CONSUMED_PATHS = frozenset(
 
 _NOOP_PATHS: Mapping[str, str] = MappingProxyType(
     {
-        # The compatibility builder defaults stream=True; the response content
-        # is the same, so the single POST is a scheduling-only difference.
+        # The builder defaults stream=True; one POST returns the same content.
         "scheduling.stream": "/generate is sent as one non-streaming POST",
-        # The descriptor declares no per-request seed, so composition never
-        # sets one. A caller-supplied seed is still kept off the wire:
-        # managed deterministic serving pins it with --random-seed instead.
-        "sampling.seed": (
-            "/generate has no per-request seed on every supported SGLang "
-            "release; managed deterministic serving pins --random-seed"
-        ),
     }
+)
+
+_SEED_UNSUPPORTED_REASON = (
+    "SGLang /generate has no per-request seed; pin it on the engine with "
+    "--random-seed (a managed deterministic engine already does)"
 )
 
 #: SGLang sampling parameters with no first-class request leaf, forwarded
@@ -206,7 +190,6 @@ _IR_OWNED_OPTION_KEYS: Mapping[str, str] = MappingProxyType(
         "frequency_penalty": "sampling.frequency_penalty",
         "presence_penalty": "sampling.presence_penalty",
         "n": "sampling.n",
-        "seed": "sampling.seed",
         "stream": "scheduling.stream",
     }
 )
@@ -286,17 +269,11 @@ def generate_url(base_url: httpx.URL) -> httpx.URL:
 
 
 def _normalize_token_text(text: object) -> str:
-    """Map GPT-2 byte-level BPE markers back to literal whitespace.
+    """Map GPT-2 byte-level BPE markers (``Ġ``, ``Ċ``) back to whitespace.
 
-    SGLang detokenizes when ``return_text_in_logprobs`` is set, but byte-level
-    tokenizers (Qwen) surface the raw markers ``Ġ`` (space) and ``Ċ``
-    (newline).  Option scoring matches ``" A"`` and CMMLU keys its top-k on
-    token text, so an un-normalized ``"ĠA"`` would silently never match.
-    SentencePiece (``▁``) and other conventions pass through unchanged.
-
-    A server launched with ``--skip-tokenizer-init`` ignores
-    ``return_text_in_logprobs`` and sends ``None``; option scoring cannot work
-    without text, so that fails loud instead of degrading every token to ``""``.
+    Byte-level tokenizers (Qwen) surface them even with
+    ``return_text_in_logprobs``; option scoring matches ``" A"``, so ``"ĠA"``
+    would never match.  ``None`` text (``--skip-tokenizer-init``) fails loud.
     """
 
     if text is None:
@@ -374,16 +351,9 @@ def _count(meta: Mapping[str, object], key: str) -> int | None:
 
 
 def _usage(metas: Sequence[Mapping[str, object]]) -> UsageStats | None:
-    """Usage from ``meta_info`` token counts.
-
-    The prompt is shared by the ``n`` samples and completions sum.
-    ``cached_tokens`` describes the shared prefix too, so it is read off the
-    first sample like ``prompt_tokens``; summing it would count one cache hit
-    ``n`` times.  SGLang reports no reasoning breakdown, so that stays absent.
-
-    A count that is present but not a non-negative int fails the sample: the
-    radix-cache guard reads the same counts, so a malformed one cannot be
-    trusted here either.
+    """Usage from ``meta_info``: completions sum over the ``n`` samples, while
+    ``prompt_tokens`` and ``cached_tokens`` describe the shared prompt and are
+    read once.  A malformed count fails the sample (the cache guard reads it).
     """
 
     input_tokens = _count(metas[0], "prompt_tokens")
@@ -411,10 +381,9 @@ def _finish_reason(meta: Mapping[str, object]) -> str:
 def _guard_radix_cache(meta: Mapping[str, object], positions: int) -> None:
     """Refuse input scores a radix-cache hit truncated.
 
-    SGLang does not recompute logprobs for cached prefix positions: on a hit it
-    returns ``prompt_tokens - cached_tokens`` input scores, silently.  Any
-    cache touch, or a reply that omits ``prompt_tokens`` and so cannot be
-    checked, is refused.  Input scoring needs ``--disable-radix-cache``.
+    On a hit SGLang silently returns only ``prompt_tokens - cached_tokens``
+    input scores, so any cache touch, or a reply without ``prompt_tokens``, is
+    refused.
     """
 
     prompt_tokens = _count(meta, "prompt_tokens")
@@ -530,6 +499,9 @@ class SglangNativeDialect:
                 continue
             if path == "dialect_options":
                 continue
+            if path == "sampling.seed":
+                audit.rejected(path, _SEED_UNSUPPORTED_REASON)
+                continue
             if not path.startswith("dialect_options."):
                 audit.rejected(
                     path, "the SGLang native dialect does not support this request leaf"
@@ -575,11 +547,9 @@ class SglangNativeDialect:
         scoring = req.scoring
         scores = scoring.input_scoring or scoring.sampled_logprobs
         max_tokens = params.max_tokens
-        # SGLang accepts max_new_tokens=0, but a scoring request must decode
-        # one token to return any logprobs; input scoring with no length set
-        # likewise asks for one rather than the server's default 128.  It is
-        # set first so sampling_params keeps the retired transport's key
-        # order, and with it the recorded request_params bytes.
+        # A scoring request decodes at least one token (and input scoring one
+        # rather than the default 128).  Set first to keep the retired
+        # transport's key order, and so the recorded request_params bytes.
         if max_tokens is None and scoring.input_scoring:
             sampling["max_new_tokens"] = 1
         elif max_tokens is not None:

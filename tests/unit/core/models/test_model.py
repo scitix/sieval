@@ -3,7 +3,7 @@ Focused tests for non-overlapping Model behaviors.
 
 with_args/meta branches are covered in test_model_derivation.py; the IR
 primitive (arun/capabilities) in test_model_arun.py; wire lowering/lifting in
-tests/unit/core/models/transports/. This file keeps unique checks: quota,
+tests/unit/core/models/dialects/. This file keeps unique checks: quota,
 runtime concurrency paths, the legacy-kwargs request builders, and the
 Response -> ModelOutput bridge.
 

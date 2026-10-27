@@ -253,7 +253,9 @@ can run as separate jobs into one `result_dir`. Each group writes
 `runs[].serving.group`.
 
 A `gen` model served by SGLang with no `dialect:` gets `sglang_native` when a
-task scores input: SGLang's `/v1/completions` cannot.
+task scores input: SGLang's `/v1/completions` cannot. `/generate` has no
+per-request `seed`, so an explicit one is refused; a managed engine pins
+`--random-seed` instead.
 
 ### Model lifecycles
 

@@ -139,6 +139,28 @@ class TestDialectDescriptors:
             "vllm_native": RequestSeedSupport.RESERVED,
         }
 
+    def test_only_sglang_native_pins_its_seed_on_the_engine(self) -> None:
+        assert [
+            dialect_id
+            for dialect_id, spec in DIALECT_SPECS.items()
+            if spec.engine_level_seed
+        ] == ["sglang_native"]
+        sglang = dialect_registry_to_json()["sglang_native"]
+        assert isinstance(sglang, dict)
+        assert sglang["engine_level_seed"] is True
+
+    def test_an_engine_level_seed_must_be_a_bool(self) -> None:
+        spec = DIALECT_SPECS["sglang_native"]
+
+        with pytest.raises(TypeError, match="engine_level_seed must be a bool"):
+            dataclasses.replace(spec, engine_level_seed=cast(bool, 1))
+
+    def test_an_engine_level_seed_excludes_a_request_seed(self) -> None:
+        spec = DIALECT_SPECS["openai_completions"]
+
+        with pytest.raises(ValueError, match="implies no per-request seed"):
+            dataclasses.replace(spec, engine_level_seed=True)
+
     def test_only_google_leaves_measured_limits_to_the_provider(self) -> None:
         assert {
             dialect_id: spec.provider_enforced_capabilities

@@ -17,9 +17,11 @@ import pytest
 from sieval.core.models._legacy_binding import (
     _legacy_provenance_projector_for_plan,
     _LegacyOpenAIBinding,
+    build_legacy_http_binding,
     build_legacy_openai_binding,
 )
 from sieval.core.models.connection_factory import DEFAULT_REQUEST_TIMEOUT
+from sieval.core.models.deployment import Engine
 from sieval.core.models.reconcile import RuntimeBindingPlan
 from sieval.core.models.request_log import RecordingOpenAIClient
 
@@ -511,4 +513,35 @@ class TestLegacyBindingClient:
         # Recovery must land on exactly what the constructor already built.
         assert projector.connection_identity == (
             binding.provenance_projector.connection_identity
+        )
+
+    @pytest.mark.parametrize(
+        ("api_key", "kind"),
+        [("sk-runtime-only", "explicit-credential"), (None, "no-credential")],
+    )
+    def test_http_binding_never_claims_an_environment_credential(
+        self, api_key: str | None, kind: str
+    ) -> None:
+        """``async_http_json`` reads no variable, so a missing key is no key."""
+
+        binding = build_legacy_http_binding(
+            dialect_id="sglang_native",
+            model="m",
+            api_base="https://sglang.example/v1",
+            api_key=api_key,
+            max_retries=0,
+            concurrency_limit=None,
+            parent_limiter=None,
+            engine=Engine("sglang"),
+        )
+        runtime_scope = binding.runtime_plan.connection_identity.credential_scope
+        assert runtime_scope.endswith(f":{kind}")
+
+        projector = _legacy_provenance_projector_for_plan(binding.runtime_plan)
+        assert projector is not None
+        assert projector.connection_identity == (
+            binding.provenance_projector.connection_identity
+        )
+        assert projector.connection_identity.credential_scope == (
+            f"legacy-private:{kind}"
         )

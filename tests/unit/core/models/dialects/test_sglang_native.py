@@ -259,14 +259,22 @@ class TestLowering:
         assert response.request_params == {"sampling_params": {"temperature": 0.0}}
 
     @pytest.mark.anyio
-    async def test_stream_and_seed_never_reach_the_wire(self):
+    async def test_stream_never_reaches_the_wire(self):
         _, server = await _run(
-            {"text": "", "meta_info": _meta()},
-            _request(sampling=SamplingParams(seed=7), stream=True),
+            {"text": "", "meta_info": _meta()}, _request(stream=True)
         )
 
         assert len(server.requests) == 1
         assert server.body == {"text": "x", "sampling_params": {}}
+
+    @pytest.mark.anyio
+    async def test_a_request_seed_is_refused_before_io(self):
+        server = _Server({"text": "", "meta_info": _meta()})
+
+        with pytest.raises(RequestAuditError, match="no per-request seed"):
+            await _dialect(server).arun(_request(sampling=SamplingParams(seed=7)))
+
+        assert server.requests == []
 
     @pytest.mark.anyio
     async def test_input_scoring_scores_from_position_zero(self):

@@ -127,6 +127,8 @@ class DialectSpec:
     #: ignore, on a model that lacks them. A binding with no model profile
     #: takes these as supported and leaves per-model limits to that error.
     provider_enforced_capabilities: frozenset[CapabilityKey] = frozenset()
+    #: Deterministic sampling is pinned at engine startup, not per request.
+    engine_level_seed: bool = False
 
     def __post_init__(self) -> None:
         if not self.dialect_id:
@@ -139,6 +141,13 @@ class DialectSpec:
             )
         if not isinstance(self.request_seed_support, RequestSeedSupport):
             raise TypeError("request_seed_support must be a RequestSeedSupport")
+        if not isinstance(self.engine_level_seed, bool):
+            raise TypeError("engine_level_seed must be a bool")
+        if (
+            self.engine_level_seed
+            and self.request_seed_support is not RequestSeedSupport.UNSUPPORTED
+        ):
+            raise ValueError("an engine-level seed implies no per-request seed")
         if not isinstance(self.provider_enforced_capabilities, frozenset):
             raise TypeError("provider_enforced_capabilities must be a frozenset")
         outcomes = normalize_dialect_capability_outcomes(
@@ -191,6 +200,7 @@ class DialectSpec:
             "connection_family": self.connection_family,
             "implementation_status": self.implementation_status.value,
             "request_seed_support": self.request_seed_support.value,
+            "engine_level_seed": self.engine_level_seed,
             "provider_enforced_capabilities": cast(
                 JSONValue, sorted(self.provider_enforced_capabilities)
             ),
@@ -319,6 +329,7 @@ def _spec(
     input_kinds: tuple[str, ...],
     input_modalities: tuple[str, ...],
     provider_enforced_capabilities: frozenset[CapabilityKey] = frozenset(),
+    engine_level_seed: bool = False,
 ) -> DialectSpec:
     status = (
         DialectImplementationStatus.ACTIVE
@@ -339,6 +350,7 @@ def _spec(
         input_kinds=input_kinds,
         input_modalities=input_modalities,
         provider_enforced_capabilities=provider_enforced_capabilities,
+        engine_level_seed=engine_level_seed,
     )
 
 
@@ -485,6 +497,7 @@ DIALECT_SPECS: Mapping[str, DialectSpec] = MappingProxyType(
             decisions=_registered_decisions("sglang_native"),
             # /generate has no per-request seed; a managed engine pins one.
             request_seed_support=RequestSeedSupport.UNSUPPORTED,
+            engine_level_seed=True,
             input_kinds=("completion",),
             input_modalities=("text",),
         ),

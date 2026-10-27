@@ -47,6 +47,8 @@ from .request_log import RecordingOpenAIClient
 type _LegacyCredentialKind = Literal[
     "explicit-credential",
     "environment-credential",
+    # No key and no environment fallback: the family sends no credential.
+    "no-credential",
 ]
 
 
@@ -180,6 +182,7 @@ def _legacy_private_credential_kind(
     stable_credential_scopes = {
         "legacy-private:explicit-credential",
         "legacy-private:environment-credential",
+        "legacy-private:no-credential",
     }
     if quota_scope == "legacy-private":
         if credential_scope in stable_credential_scopes:
@@ -216,6 +219,8 @@ def _legacy_private_credential_kind(
         return "explicit-credential"
     if credential_kind == "environment-credential":
         return "environment-credential"
+    if credential_kind == "no-credential":
+        return "no-credential"
     raise ValueError(
         "legacy-private connection identity has an invalid credential category"
     )
@@ -428,7 +433,9 @@ def build_legacy_openai_binding(
         model=model,
         connection=client,
         endpoint=str(client.base_url).rstrip("/"),
-        has_credential=api_key is not None,
+        credential_kind=(
+            "explicit-credential" if api_key is not None else "environment-credential"
+        ),
         max_retries=max_retries,
         concurrency_limit=concurrency_limit,
         parent_limiter=parent_limiter,
@@ -448,11 +455,8 @@ def build_legacy_http_binding(
     engine: Engine,
     client_timeout: httpx.Timeout | Mapping[str, float] | None = None,
 ) -> _LegacyOpenAIBinding:
-    """The same boundary over an ``async_http_json`` connection.
-
-    That family reads no environment fallback for its endpoint, so
-    ``api_base`` is required.
-    """
+    """The same boundary over ``async_http_json``, which reads no environment
+    fallback: ``api_base`` is required and a missing key sends none."""
 
     if not isinstance(api_base, str) or not api_base.rstrip("/"):
         raise ValueError(
@@ -476,7 +480,9 @@ def build_legacy_http_binding(
         model=model,
         connection=connection,
         endpoint=endpoint,
-        has_credential=api_key is not None,
+        credential_kind="explicit-credential"
+        if api_key is not None
+        else "no-credential",
         max_retries=max_retries,
         concurrency_limit=concurrency_limit,
         parent_limiter=parent_limiter,
@@ -490,7 +496,7 @@ def _private_binding(
     model: str,
     connection: object,
     endpoint: str,
-    has_credential: bool,
+    credential_kind: _LegacyCredentialKind,
     max_retries: int,
     concurrency_limit: int | None,
     parent_limiter: anyio.CapacityLimiter | None,
@@ -507,11 +513,6 @@ def _private_binding(
         shared_limiter = local_limiter
 
     private_scope = uuid4().hex
-    # Derived once for both the runtime identity and the stable provenance
-    # identity below, so the two cannot disagree.
-    credential_kind: _LegacyCredentialKind = (
-        "explicit-credential" if has_credential else "environment-credential"
-    )
     identity = ConnectionIdentity(
         endpoint=endpoint,
         connection_family=connection_family,

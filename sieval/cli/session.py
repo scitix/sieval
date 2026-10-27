@@ -192,9 +192,8 @@ class _RequestSeedDecision:
 
     dialect_id: str
     support: RequestSeedSupport
-    # Evidence-only: records where deterministic sampling is controlled
-    # (currently derivable from dialect_id). Execution consumes the frozen
-    # final seed state, not this field.
+    # Evidence-only (from DialectSpec.engine_level_seed); execution consumes
+    # the frozen final seed state, not this field.
     scope: _RequestSeedScope
     seed_present: bool
     seed: int | None
@@ -220,11 +219,11 @@ def _resolve_deterministic_request_seed(
 ) -> _RequestSeedDecision:
     """Resolve one immutable decision for execution and persistence."""
 
-    support = get_dialect_spec(dialect_id).request_seed_support
-    # Only SGLang's /generate pins its seed at engine startup, not per request.
+    spec = get_dialect_spec(dialect_id)
+    support = spec.request_seed_support
     scope = (
         _RequestSeedScope.ENGINE_LEVEL_ONLY
-        if dialect_id == "sglang_native"
+        if spec.engine_level_seed
         else _RequestSeedScope.PER_REQUEST
     )
 
@@ -3704,10 +3703,8 @@ class EvalSession:
         here invalidates every in-flight deterministic result dir. Two fields
         are deliberately kept despite being derivable from their siblings:
 
-        * ``seed_scope`` — implied by ``dialect_id`` while ``sglang_native``
-          is the one engine-scoped dialect; a later engine-scoped dialect
-          would decouple the two, and rotating the contract then would be
-          more expensive than carrying it now.
+        * ``seed_scope`` — implied by the dialect's ``engine_level_seed``,
+          and kept so the contract survives a second engine-scoped dialect.
         * ``explicit_seed_present`` — implied by ``seed_provenance``, and kept
           so an audit can answer "did a human choose this seed?" without
           knowing which provenance values count as explicit.

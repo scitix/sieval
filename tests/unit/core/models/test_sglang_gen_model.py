@@ -225,14 +225,14 @@ class TestRequestGate:
         await model.aclose()
 
     @pytest.mark.anyio
-    async def test_a_seed_is_kept_off_the_wire(self):
+    async def test_a_seed_is_refused_before_io(self):
         server = _Server({"text": "ok", "meta_info": _meta()})
         model = _model(server)
 
-        output = await model.agenerate("prompt", seed=7, temperature=0.0)
+        with pytest.raises(RequestAuditError, match="no per-request seed"):
+            await model.agenerate("prompt", seed=7)
 
-        assert output.texts == ["ok"]
-        assert server.body["sampling_params"] == {"temperature": 0.0}
+        assert server.requests == []
         await model.aclose()
 
     @pytest.mark.anyio

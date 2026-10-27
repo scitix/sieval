@@ -7362,7 +7362,7 @@ tasks:
             await session._close_owned_model_resources()
 
     @pytest.mark.anyio
-    async def test_explicit_sglang_native_seed_stays_off_the_wire(
+    async def test_explicit_sglang_native_seed_is_refused_before_io(
         self, tmp_path: Path
     ) -> None:
         config_path = self._config(
@@ -7401,12 +7401,10 @@ tasks:
             model = session.models["m"]
             assert model._kwargs["seed"] == 7
             sent = self._recording_dialect(model)
-            output = await model.agenerate("prompt")
+            with pytest.raises(RequestAuditError, match="no per-request seed"):
+                await model.agenerate("prompt")
 
-            assert output.texts == ["ok"]
-            # The configured seed stays in the model's defaults, off the wire.
-            assert model.meta()["default_params"]["seed"] == 7
-            assert sent == [{"text": "prompt", "sampling_params": {}}]
+            assert sent == []
         finally:
             await session._close_owned_model_resources()
 
@@ -8526,7 +8524,8 @@ class TestDeterministicRequestSeedPolicy:
         with patch(
             "sieval.cli.session.get_dialect_spec",
             return_value=types.SimpleNamespace(
-                request_seed_support=RequestSeedSupport.UNSUPPORTED
+                request_seed_support=RequestSeedSupport.UNSUPPORTED,
+                engine_level_seed=False,
             ),
         ):
             decision = _resolve_deterministic_request_seed(
@@ -8543,7 +8542,8 @@ class TestDeterministicRequestSeedPolicy:
         with patch(
             "sieval.cli.session.get_dialect_spec",
             return_value=types.SimpleNamespace(
-                request_seed_support=RequestSeedSupport.UNSUPPORTED
+                request_seed_support=RequestSeedSupport.UNSUPPORTED,
+                engine_level_seed=False,
             ),
         ):
             decision = _resolve_deterministic_request_seed(
@@ -8572,7 +8572,8 @@ class TestDeterministicRequestSeedPolicy:
         with patch(
             "sieval.cli.session.get_dialect_spec",
             return_value=types.SimpleNamespace(
-                request_seed_support=RequestSeedSupport.UNSUPPORTED
+                request_seed_support=RequestSeedSupport.UNSUPPORTED,
+                engine_level_seed=False,
             ),
         ):
             decision = _resolve_deterministic_request_seed(
