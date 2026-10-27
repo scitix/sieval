@@ -549,9 +549,8 @@ class TaskRunner:
         that needs a lost engine (:mod:`.engine_loss`). *judge_weights* names,
         by judge role, the weights a launched judge serves, compared instead of
         its name. *lifecycles* are the launched models' lifecycles, recorded in
-        ``runs[].serving``. *checkpoint_numerics* is the launched checkpoint's
-        own ``dtype`` and ``quantization``, which the inference identity's
-        ``numerics`` resolve unset engine params to (:func:`served_numerics`).
+        ``runs[].serving``. *checkpoint_numerics* is the launched
+        checkpoint's own ``dtype`` and ``quantization`` (:func:`served_numerics`).
         """
         # A malformed judge reference would leave every grader identity
         # unknown; refuse it before any work.

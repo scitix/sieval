@@ -379,30 +379,21 @@ entry records its own `serving` (`engine`, `engine_version`, `launch`:
 `in_run` or `external`, and `recipe`: the plan without checkpoint or host), so
 a reader sees what changed.
 
-What the served model computes with does count. These engine parameters
-change the logits, so they are `identity.inference.numerics`, compared on
-resume; every other engine parameter is serving
-(`sieval.core.tasks.run_meta.NUMERICS_PARAMS` is the list):
+What the served model computes with does count: these engine parameters
+change the logits, so they are compared as `identity.inference.numerics`.
 
 | `numerics` key | Engine parameters | Unset means |
 | --- | --- | --- |
-| `dtype` | `dtype` | The checkpoint's `torch_dtype` (`auto` too) |
-| `quantization` | `quantization` | The checkpoint's `quantization_config.quant_method`, else unknown |
+| `dtype` | `dtype` | The checkpoint's `torch_dtype`; unknown for float32, which engines downcast |
+| `quantization` | `quantization` | The checkpoint's `quantization_config.quant_method`, else none |
 | `kv_cache_dtype` | `kv_cache_dtype` | `auto` |
 | `model_overrides` | `json_model_override_args` (SGLang), `hf_overrides` (vLLM) | None |
 
-Each is compared by the value the engine uses, so stating a default
-(`dtype: auto`, `kv_cache_dtype: auto`, `bf16` for `bfloat16`) is no change.
-Out of it, among others: tp, dp, ep, pp, replicas, prefill/decode roles, memory
-fraction, chunked prefill, CUDA graphs, scheduler and port settings. Roles that
-disagree on a key record each value.
-
-A key unknown on either side is no difference: an endpoint's numerics are
-what its root model states under `serving.numerics`, and a key it does not
-state is unknown. A `meta.json` written before numerics counted (identity
-schema 4) has its numerics read from the plan of its latest run in
-`runs[].serving`, unset values resolved against this run's checkpoint, so it
-resumes against a run with the same effective values.
+Values are compared as the engine uses them, so stating a default (`dtype:
+auto`, `bf16`) is no change. A key unknown on either side is no difference:
+an endpoint's numerics are only what its root model states under
+`serving.numerics`. A schema-4 `meta.json` has its numerics read from its
+latest run's plan.
 
 The context limit does count, since it decides which prompts overflow. A
 launched engine's is the plan's `max_model_len` (vLLM) or `context_length`

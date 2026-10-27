@@ -206,11 +206,9 @@ def plan_resume(
     :func:`~sieval.core.tasks.run_meta.legacy_grader_keys` for this task,
     read only for a schema-1 directory, and *legacy_inference*
     :func:`~sieval.core.tasks.run_meta.legacy_inference_digest`, only for one
-    before identity schema 4. *checkpoint_numerics* resolves the unset
-    numerics of a schema-4 directory's plan
-    (:func:`~sieval.core.tasks.run_meta.read_recorded_numerics`). The runner
-    plans per sample and is
-    authoritative; this says what a resume of a finished directory does.
+    before identity schema 4; *checkpoint_numerics* resolves a schema-4 plan's
+    unset numerics. The runner plans per sample and is authoritative; this
+    says what a resume of a finished directory does.
     """
     block = (recorded_meta or {}).get("identity")
     schema = block.get("schema") if isinstance(block, Mapping) else None
@@ -302,12 +300,8 @@ def task_resume_plan(
     :class:`~sieval.core.runners.runner.TaskRunner` does, so call it after
     ``task.setup()``, which may resolve an argument the grading identities
     read. *runner_keys* holds :data:`~sieval.core.tasks.run_meta.INFERENCE_RUNNER_KEYS`
-    and *context_limit*, *recipe*, *stated_serving* and
-    *checkpoint_numerics* as the runner is given them; they decide the
-    served numerics (:func:`~sieval.core.tasks.run_meta.served_numerics`),
-    and *recipe* is compared whole for a directory before identity schema 4.
-    Reads files,
-    starts nothing and calls no model.
+    and the rest as the runner is given them. Reads files, starts nothing and
+    calls no model.
     """
     task_cls = type(task)
     judges = judge_identities(task.judge_models(), task.judge_prompts())

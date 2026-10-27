@@ -5092,10 +5092,8 @@ class EvalSession:
         return out or None
 
     def _checkpoint_numerics_for(self, model_name: str) -> dict[str, JSONValue] | None:
-        """The ``dtype`` and ``quantization`` of the checkpoint *model_name*'s
-        root launches, which its engine uses where the plan leaves them unset;
-        ``None`` for a model SiEval does not serve or an unreadable checkpoint.
-        """
+        """:func:`checkpoint_numerics` of the checkpoint *model_name*'s root
+        launches; ``None`` when SiEval does not serve it."""
         plan = (self._infer_plans or {}).get(self._root_model(model_name))
         if plan is None:
             return None

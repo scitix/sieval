@@ -423,14 +423,9 @@ def native_context_window(checkpoint: str) -> int | None:
 
 
 def checkpoint_numerics(checkpoint: str) -> dict[str, str] | None:
-    """The ``dtype`` and ``quantization`` an engine serving *checkpoint* uses
-    when its params leave them unset.
-
-    ``dtype`` is ``torch_dtype`` (``dtype`` in newer configs) from
-    ``config.json`` or its ``text_config``, ``quantization`` the
-    ``quantization_config.quant_method``; each absent when unstated. ``None``
-    when ``config.json`` cannot be read.
-    """
+    """*checkpoint*'s ``torch_dtype`` (or ``dtype``) and
+    ``quantization_config.quant_method``, from ``config.json`` or its
+    ``text_config``; each absent when unstated, ``None`` when unreadable."""
     sources = _text_configs(checkpoint)
     if not sources:
         return None

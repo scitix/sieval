@@ -484,6 +484,7 @@ class TestServedNumerics:
         assert unset == stated == aliased
         assert unset == {
             "dtype": "bfloat16",
+            "quantization": None,
             "kv_cache_dtype": "auto",
             "model_overrides": None,
         }
@@ -494,13 +495,25 @@ class TestServedNumerics:
         assert on_disk is not None and on_disk["quantization"] == "fp8"
         runtime = served_numerics(_plan({"quantization": "awq"}), checkpoint=checkpoint)
         assert runtime is not None and runtime["quantization"] == "awq"
-        # Unquantized checkpoint: no key, so unknown, not "none".
+        # A readable, unquantized checkpoint is known to be unquantized, so
+        # runtime fp8 on it differs.
         plain = served_numerics(_plan({}), checkpoint=BF16)
-        assert plain is not None and "quantization" not in plain
+        fp8 = served_numerics(_plan({"quantization": "fp8"}), checkpoint=BF16)
+        assert plain is not None and plain["quantization"] is None
+        assert numerics_differences(plain, fp8) == ["quantization: None -> 'fp8'"]
 
-    def test_an_unreadable_checkpoint_leaves_dtype_unknown(self):
+    def test_an_unreadable_checkpoint_leaves_dtype_and_quantization_unknown(self):
         numerics = served_numerics(_plan({}))
-        assert numerics is not None and "dtype" not in numerics
+        assert numerics is not None
+        assert "dtype" not in numerics and "quantization" not in numerics
+
+    def test_a_float32_checkpoint_under_auto_is_unknown(self):
+        """Engines downcast float32 under ``auto``, by version."""
+        fp32 = {"dtype": "float32"}
+        auto = served_numerics(_plan({}), checkpoint=fp32)
+        assert auto is not None and "dtype" not in auto
+        stated = served_numerics(_plan({"dtype": "fp32"}), checkpoint=fp32)
+        assert stated is not None and stated["dtype"] == "float32"
 
     def test_model_overrides_compare_as_objects(self):
         text = served_numerics(
@@ -622,6 +635,14 @@ class TestReadRecordedNumerics:
         }
         assert read_recorded_numerics(endpoint) is None
         assert read_recorded_numerics({"identity": {"schema": 4}}) is None
+
+    def test_schema_4_latest_run_without_serving_is_unknown(self):
+        """An older run's plan may not be what the latest samples ran with."""
+        meta = {
+            "identity": {"schema": 4},
+            "runs": [{"serving": {"recipe": _plan({"dtype": "float16"})}}, {}],
+        }
+        assert read_recorded_numerics(meta, BF16) is None
 
     @pytest.mark.parametrize("schema", [1, 2, 3, 99])
     def test_other_schemas_record_none(self, schema):

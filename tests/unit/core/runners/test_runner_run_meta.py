@@ -668,14 +668,43 @@ class TestServedNumericsAreIdentity:
                 stated_serving={"numerics": {"dtype": "fp16"}},
             ).arun()
         assert model.call_count == 0
-        # The recorded run's quantization is unknown (an unquantized
-        # checkpoint), so stating one is not a difference.
+        # The recorded checkpoint is unquantized, so a stated fp8 differs.
+        with pytest.raises(StageResumeError, match="quantization: None -> 'fp8'"):
+            await TaskRunner(
+                task,
+                make_config(tmp_path, resume=True),
+                stated_serving={"numerics": {"dtype": "bf16", "quantization": "fp8"}},
+            ).arun()
+        assert model.call_count == 0
         await TaskRunner(
             task,
             make_config(tmp_path, resume=True),
-            stated_serving={"numerics": {"dtype": "bf16", "quantization": "fp8"}},
+            stated_serving={"numerics": {"dtype": "bf16"}},
         ).arun()
         assert model.call_count == 1
+
+    @pytest.mark.anyio
+    async def test_runtime_quantization_of_an_unquantized_checkpoint_is_refused(
+        self, tmp_path
+    ):
+        task, _ = _counting_task()
+        await TaskRunner(
+            task,
+            make_config(tmp_path),
+            inference_recipe=_engine(tp=1),
+            checkpoint_numerics=self.BF16,
+        ).arun()
+        _forget_last_sample(tmp_path / "results")
+
+        task, model = _counting_task()
+        with pytest.raises(StageResumeError, match="quantization: None -> 'fp8'"):
+            await TaskRunner(
+                task,
+                make_config(tmp_path, resume=True),
+                inference_recipe=_engine(tp=1, quantization="fp8"),
+                checkpoint_numerics=self.BF16,
+            ).arun()
+        assert model.call_count == 0
 
 
 class TestUnavailableFingerprints:
