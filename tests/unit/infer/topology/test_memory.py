@@ -15,6 +15,7 @@ from sieval.infer.introspect import KvShape, ModelIdentity
 from sieval.infer.topology.memory import (
     MemoryDemand,
     default_fraction,
+    engine_fit,
     memory_demand,
     memory_fit,
     size_tp,
@@ -106,14 +107,46 @@ class TestMemoryFit:
         demand = MemoryDemand(weight_bytes=1e9, fraction=0.9)
         assert "KV not checked" in memory_fit(demand, 1, _H100_MIB).describe()
 
+    def test_describe_counts_full_context_sequences(self) -> None:
+        fit = memory_fit(_QWEN3_30B_A3B, 1, _H100_MIB)
+        # ~138.9k tokens of room / 32768 per sequence
+        assert fit.full_context_sequences == 4
+        assert "(4 full-context sequences)" in fit.describe()
+
+    def test_no_sequence_count_without_context(self) -> None:
+        demand = MemoryDemand(weight_bytes=1e9, fraction=0.9, kv=KvShape(1, 1, 1))
+        assert memory_fit(demand, 1, _H100_MIB).full_context_sequences is None
+
+    def test_low_room_warning_is_the_logged_text(self) -> None:
+        fit = memory_fit(_QWEN3_30B_A3B, 1, _H100_MIB)
+        assert fit.low_room_warning() == (
+            "The plan fits with little KV room, so concurrency will be low: "
+            + fit.describe()
+        )
+        assert memory_fit(_QWEN3_30B_A3B, 4, _H100_MIB).low_room_warning() is None
+
+    def test_to_json(self) -> None:
+        fit = memory_fit(_QWEN3_30B_A3B, 1, _H100_MIB)
+        assert fit.to_json("sized") == {
+            "tp": 1,
+            "tp_source": "sized",
+            "fraction": 0.87,
+            "fraction_declared": True,
+            "context": 32768,
+            "kv_capacity_tokens": fit.kv_capacity_tokens,
+            "full_context_sequences": 4,
+            "fits": True,
+            "low_room": True,
+            "detail": fit.describe(),
+        }
+
 
 class TestSizeTp:
     def test_issue_251_qwen3_30b_a3b_on_one_h100(self, warnings: list[str]) -> None:
         """Proceeds with tp=1 and warns that concurrency will be low."""
         fit = size_tp(_QWEN3_30B_A3B, gpu_count=1, gpu_memory_mib=_H100_MIB)
         assert fit.tp == 1
-        assert len(warnings) == 1
-        assert "little KV room" in warnings[0]
+        assert warnings == [fit.low_room_warning()]
 
     def test_smallest_power_of_two_that_fits(self) -> None:
         demand = MemoryDemand(weight_bytes=200e9, fraction=0.9)
@@ -252,6 +285,33 @@ class TestMemoryDemand:
             params={"kv_cache_dtype": "fp8_e4m3"},
         )
         assert demand.kv_dtype_bytes == 1.0
+
+    def test_engine_fit_reads_the_launched_params(self, tmp_path: Path) -> None:
+        fit = engine_fit(
+            checkpoint=self._checkpoint(
+                tmp_path,
+                architectures=["Qwen3MoeForCausalLM"],
+                model_type="qwen3_moe",
+                hidden_size=2048,
+            ),
+            backend="sglang",
+            tp=2,
+            params={"mem_fraction_static": 0.87, "context_length": 16384},
+            gpu_memory_mib=_H100_MIB,
+        )
+        assert fit is not None
+        assert (fit.tp, fit.fraction, fit.context) == (2, 0.87, 16384)
+        assert fit.weight_bytes_per_gpu == 61_064_000_000 / 2
+
+    def test_engine_fit_unknown_without_a_checkpoint(self, tmp_path: Path) -> None:
+        fit = engine_fit(
+            checkpoint=str(tmp_path / "missing"),
+            backend="sglang",
+            tp=1,
+            params={},
+            gpu_memory_mib=_H100_MIB,
+        )
+        assert fit is None
 
     def test_weights_fall_back_to_param_count(self, tmp_path: Path) -> None:
         (tmp_path / "config.json").write_text(json.dumps({}))

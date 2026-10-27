@@ -539,6 +539,15 @@ in `SIEVAL_TARGET_GPU` ([Resolving for declared GPUs](infer.md#resolving-for-dec
   [Serving plans](infer.md#serving-plans-context-window-and-dialect). An
   engine serving input scoring has `headroom`
   ([Input-scoring headroom](infer.md#input-scoring-headroom)).
+- Each engine's `memory` is, per role, how it fits one GPU with the params it
+  launches with: `tp` and its `tp_source` (`stated` in `infer.overrides`, else
+  `sized`), the memory `fraction` (`fraction_declared` is `false` for the
+  engine's default), the `context`, the `kv_capacity_tokens` beside the
+  weights, the `full_context_sequences` they hold, `fits`, `low_room` and the
+  `detail` text. It is `null` when the GPUs or the checkpoint's `config.json`
+  are unknown. A role holding fewer than 8 full-context sequences adds the
+  warning `sieval run` logs to the `serving` check's `warnings`, as
+  `engine <name>: ...`.
 - `tasks.<task>.start` is `fresh`, `resume` (stage by stage) or `reuse` (the
   recorded `report.json` stands, recomputed when only `report` changed).
   `resume_plan` counts the recorded samples as `runs[].resume` will, and is

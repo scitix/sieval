@@ -27,6 +27,7 @@ from sieval.core.models import (
 )
 from sieval.infer.backends.translator import BackendCommand
 from sieval.infer.config import InferHandle
+from sieval.infer.introspect import GPUInfo, KvShape
 from sieval.infer.topology.models import (
     DETERMINISTIC_DEFAULT_SEED,
     DeploymentPlan,
@@ -2373,6 +2374,131 @@ class TestServingGroups:
         assert "task 'long' needs 100000 tokens" in check["detail"]
         assert result["n_errors"] == 1
         assert (result["tasks"], result["serving"]) == (None, None)
+
+
+class TestDryRunSizing:
+    """The dry-run report carries how each engine fits its GPUs, and the
+    low-KV warning sizing logs (scitix/sieval#253)."""
+
+    @staticmethod
+    def _config(tmp_path: Path, **overrides: object) -> Path:
+        # Qwen3-30B-A3B bf16 (scitix/sieval#251): 61 GB of weights, 96 KiB of
+        # KV per token.
+        checkpoint = tmp_path / "Qwen3-30B-A3B"
+        checkpoint.mkdir()
+        (checkpoint / "config.json").write_text(
+            json.dumps(
+                {
+                    "architectures": ["Qwen3MoeForCausalLM"],
+                    "model_type": "qwen3_moe",
+                    "vocab_size": 151936,
+                    "hidden_size": 2048,
+                    "num_hidden_layers": 48,
+                    "num_attention_heads": 32,
+                    "num_key_value_heads": 4,
+                    "head_dim": 128,
+                    "max_position_embeddings": 40960,
+                    "torch_dtype": "bfloat16",
+                }
+            )
+        )
+        (checkpoint / "model.safetensors.index.json").write_text(
+            json.dumps({"metadata": {"total_size": 61_064_000_000}})
+        )
+        path = tmp_path / "cfg.yaml"
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    "models": {
+                        "m": {
+                            "type": "chat",
+                            "infer": {
+                                "backend": "sglang",
+                                "checkpoint": str(checkpoint),
+                                "overrides": {
+                                    "mem_fraction_static": 0.87,
+                                    "context_length": 32768,
+                                    **overrides,
+                                },
+                            },
+                        }
+                    },
+                    "result_dir": str(tmp_path / "out"),
+                    "tasks": {},
+                }
+            )
+        )
+        return path
+
+    async def _dry_run(self, config_path: Path, gpu: str) -> dict[str, object]:
+        from sieval.cli.run import _run_dry_run
+        from sieval.infer.introspect import parse_target_gpu
+
+        detect = AsyncMock(return_value=parse_target_gpu(gpu))
+        with (
+            patch("sieval.cli.infer.recipe.detect_local_gpu", new=detect),
+            patch("sieval.cli.run.detect_local_gpu", new=detect),
+            patch(
+                "sieval.cli.validation.run_dry_run",
+                return_value={"checks": [], "n_errors": 0, "n_warnings": 0},
+            ),
+            patch("sieval.cli.run._plan_tasks", new=AsyncMock(return_value=({}, {}))),
+        ):
+            return await _run_dry_run(config_path)
+
+    @pytest.mark.anyio
+    async def test_low_kv_room_warns_on_the_serving_check(self, tmp_path: Path) -> None:
+        from sieval.infer.topology.memory import MemoryDemand, memory_fit
+
+        result = await self._dry_run(self._config(tmp_path), "NVIDIA H100:1:81559")
+
+        expected = memory_fit(
+            MemoryDemand(
+                weight_bytes=61_064_000_000,
+                fraction=0.87,
+                context=32768,
+                kv=KvShape(48, 4, 2 * 128),
+            ),
+            1,
+            81559,
+        )
+        checks = cast(list, result["checks"])
+        serving = next(c for c in checks if c["name"] == "serving")
+        assert serving["ok"] is True
+        assert serving["warnings"] == [f"engine m: {expected.low_room_warning()}"]
+        assert result["n_warnings"] == 1
+        engine = cast(dict, result["serving"])["default"]["engines"]["m"]
+        assert engine["memory"] == [{"role": "full", **expected.to_json("sized")}]
+
+    @pytest.mark.anyio
+    async def test_roomy_plan_adds_no_serving_check(self, tmp_path: Path) -> None:
+        result = await self._dry_run(
+            self._config(tmp_path, tp_size=4), "NVIDIA H100:4:81559"
+        )
+
+        assert [c["name"] for c in cast(list, result["checks"])] == ["resume_plan"]
+        assert result["n_warnings"] == 0
+        (fit,) = cast(dict, result["serving"])["default"]["engines"]["m"]["memory"]
+        assert (fit["tp"], fit["tp_source"], fit["low_room"]) == (4, "stated", False)
+
+    @pytest.mark.anyio
+    async def test_memory_unknown_without_the_checkpoint(self, tmp_path: Path) -> None:
+        from sieval.cli.run import _serving_json
+
+        group = MagicMock()
+        group.own = frozenset({"m"})
+        group.names = {"m": "m"}
+        group.prepared = {"m": (_sglang_plan(32768), [])}
+        group.group.headroom = {}
+        warnings: list[str] = []
+        gpu = GPUInfo(model="NVIDIA H100", count=1, memory_mib=81559)
+
+        no_checkpoint = _serving_json(group, {}, gpu, warnings)  # no /tmp/ckpt
+        no_gpu = _serving_json(group, {}, None, warnings)
+
+        assert cast(dict, no_checkpoint["engines"])["m"]["memory"] is None
+        assert cast(dict, no_gpu["engines"])["m"]["memory"] is None
+        assert warnings == []
 
 
 class TestEngineLost:

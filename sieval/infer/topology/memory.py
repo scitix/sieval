@@ -15,6 +15,7 @@ AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
 from dataclasses import dataclass
+from typing import Literal
 
 from loguru import logger
 
@@ -25,6 +26,7 @@ from sieval.infer.introspect import (
     bytes_per_param,
     checkpoint_weight_bytes,
     dtype_bytes,
+    introspect_checkpoint_sync,
     kv_shape,
     native_context_window,
 )
@@ -49,6 +51,9 @@ _LOW_KV_SEQUENCES = 8
 
 # Bounds the smallest-tp search when no tp fits.
 _MAX_TP = 1024
+
+# One text for the log line and the ``run --dry-run`` report.
+_LOW_ROOM_WARNING = "The plan fits with little KV room, so concurrency will be low: {}"
 
 
 def default_fraction(backend: str) -> float:
@@ -102,6 +107,14 @@ class MemoryFit:
         return max(0, int(free // self.kv_bytes_per_token))
 
     @property
+    def full_context_sequences(self) -> int | None:
+        """Full-context sequences the KV room holds."""
+        capacity = self.kv_capacity_tokens
+        if capacity is None or not self.context:
+            return None
+        return capacity // self.context
+
+    @property
     def fits(self) -> bool:
         need = self.weight_bytes_per_gpu
         if self.kv_bytes_per_token and self.context:
@@ -130,8 +143,31 @@ class MemoryFit:
         elif self.context is None:
             parts.append(f"KV room ~{capacity} tokens (no context declared)")
         else:
-            parts.append(f"KV room ~{capacity} tokens for context {self.context}")
+            parts.append(
+                f"KV room ~{capacity} tokens for context {self.context} "
+                f"({self.full_context_sequences} full-context sequences)"
+            )
         return ", ".join(parts)
+
+    def low_room_warning(self) -> str | None:
+        """The warning :func:`size_tp` logs for this fit; ``None`` when roomy."""
+        return _LOW_ROOM_WARNING.format(self.describe()) if self.low_room else None
+
+    def to_json(self, tp_source: Literal["stated", "sized"]) -> dict[str, object]:
+        """This fit in the ``run --dry-run`` report. *tp_source* is ``stated``
+        when the plan set tp, ``sized`` when :func:`size_tp` chose it."""
+        return {
+            "tp": self.tp,
+            "tp_source": tp_source,
+            "fraction": self.fraction,
+            "fraction_declared": self.fraction_declared,
+            "context": self.context,
+            "kv_capacity_tokens": self.kv_capacity_tokens,
+            "full_context_sequences": self.full_context_sequences,
+            "fits": self.fits,
+            "low_room": self.low_room,
+            "detail": self.describe(),
+        }
 
 
 def _gb(n: float) -> str:
@@ -189,11 +225,9 @@ def size_tp(
             f"Model requires tp={fit.tp} but only {gpu_count} GPUs detected "
             f"({fit.describe()})."
         )
-    if fit.low_room:
-        logger.warning(
-            "The plan fits with little KV room, so concurrency will be low: {}",
-            fit.describe(),
-        )
+    warning = fit.low_room_warning()
+    if warning is not None:
+        logger.warning("{}", warning)
     return fit
 
 
@@ -246,3 +280,27 @@ def memory_demand(
         kv=kv_shape(checkpoint),
         kv_dtype_bytes=kv_dtype_bytes,
     )
+
+
+def engine_fit(
+    *,
+    checkpoint: str,
+    backend: str,
+    tp: int,
+    params: dict[str, ParamValue],
+    gpu_memory_mib: int,
+) -> MemoryFit | None:
+    """How an engine launched with *params* at *tp* lands on one GPU.
+
+    :func:`size_tp`'s check on the params the engine launches with, which a
+    serving group's window or headroom may have changed since sizing.
+    ``None`` when *checkpoint* cannot be introspected.
+    """
+    try:
+        identity = introspect_checkpoint_sync(checkpoint)
+    except (FileNotFoundError, ValueError):
+        return None
+    demand = memory_demand(
+        checkpoint=checkpoint, identity=identity, backend=backend, params=params
+    )
+    return memory_fit(demand, tp, gpu_memory_mib)
