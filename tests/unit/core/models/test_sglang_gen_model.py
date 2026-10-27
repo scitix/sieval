@@ -103,6 +103,24 @@ class TestBinding:
         assert "first-secret" not in repr(first.pool.identity)
         assert "first-secret" not in repr(first.provenance_plan)
 
+    @pytest.mark.anyio
+    async def test_reads_no_openai_api_key_from_the_environment(self, monkeypatch):
+        # The AsyncOpenAI client this replaced sent $OPENAI_API_KEY when
+        # api_key was None; async_http_json has no environment fallback.
+        monkeypatch.setenv("OPENAI_API_KEY", "env-secret")
+        server = _Server({"text": "out", "meta_info": _meta()})
+        mock = httpx.MockTransport(server)
+        with patch(
+            "sieval.core.models.connection_factory.httpx.AsyncHTTPTransport",
+            return_value=mock,
+        ):
+            model = SglangGenModel(model="m", api_base=_BASE)
+
+        await model.agenerate("hi")
+
+        assert len(server.requests) == 1
+        assert "Authorization" not in server.requests[0].headers
+
     @pytest.mark.parametrize("api_base", [None, "", "/"])
     def test_requires_an_explicit_api_base(self, api_base):
         with pytest.raises(ValueError, match="requires an explicit api_base"):

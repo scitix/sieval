@@ -5,6 +5,12 @@ inherited execution path is the same deployment/pool/runtime-plan binding used
 by canonical models, so the wrapper reports ``dialect_id == "sglang_native"``
 and carries a real ``RuntimeBindingPlan``.
 
+Like every ``async_http_json`` dialect, it reads no environment fallback:
+``api_base`` is required, and ``Authorization: Bearer`` is sent only for an
+explicit ``api_key``.  The ``AsyncOpenAI`` client it replaced read
+``OPENAI_API_KEY`` when ``api_key`` was ``None``; a config that relied on that
+names the variable with ``api_key_env: OPENAI_API_KEY``.
+
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 

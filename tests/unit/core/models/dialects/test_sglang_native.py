@@ -216,16 +216,38 @@ class TestLowering:
             _request(sampling=sampling, options={"min_p": 0.05}),
         )
 
-        assert server.body["sampling_params"] == {
-            "temperature": 0.5,
-            "top_p": 0.9,
-            "top_k": 20,
-            "max_new_tokens": 64,
-            "stop": ["\n"],
-            "frequency_penalty": 0.1,
-            "presence_penalty": 0.2,
-            "min_p": 0.05,
-        }
+        # A list, not a dict compare: the order is the retired transport's,
+        # so request_params records stay byte-identical across the migration.
+        assert list(server.body["sampling_params"].items()) == [
+            ("max_new_tokens", 64),
+            ("temperature", 0.5),
+            ("top_p", 0.9),
+            ("top_k", 20),
+            ("stop", ["\n"]),
+            ("frequency_penalty", 0.1),
+            ("presence_penalty", 0.2),
+            ("min_p", 0.05),
+        ]
+
+    @pytest.mark.anyio
+    async def test_scoring_clamp_keeps_max_new_tokens_first(self):
+        response, server = await _run(
+            {
+                "text": "",
+                "meta_info": _meta(
+                    prompt_tokens=1, input_token_logprobs=[[None, 1, "x"]]
+                ),
+            },
+            _request(sampling=SamplingParams(temperature=0.0), input_scoring=True),
+        )
+
+        assert json.dumps(response.request_params["sampling_params"]) == (
+            '{"max_new_tokens": 1, "temperature": 0.0}'
+        )
+        assert list(server.body["sampling_params"]) == [
+            "max_new_tokens",
+            "temperature",
+        ]
 
     @pytest.mark.anyio
     async def test_request_params_are_the_body_without_the_prompt(self):
@@ -520,6 +542,16 @@ class TestLifting:
     async def test_negative_count_is_refused(self):
         with pytest.raises(OutputContractError, match="prompt_tokens"):
             await _run({"text": "", "meta_info": _meta(prompt_tokens=-1)}, _request())
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "key", ["prompt_tokens", "completion_tokens", "cached_tokens"]
+    )
+    async def test_non_int_count_is_refused(self, key):
+        # The retired transport passed these through (cached_tokens became
+        # None); a float count now fails the sample instead.
+        with pytest.raises(OutputContractError, match=f"meta_info.{key}"):
+            await _run({"text": "", "meta_info": _meta(**{key: 1.0})}, _request())
 
 
 class TestNSamples:

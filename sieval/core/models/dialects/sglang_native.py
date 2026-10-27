@@ -380,6 +380,10 @@ def _usage(metas: Sequence[Mapping[str, object]]) -> UsageStats | None:
     ``cached_tokens`` describes the shared prefix too, so it is read off the
     first sample like ``prompt_tokens``; summing it would count one cache hit
     ``n`` times.  SGLang reports no reasoning breakdown, so that stays absent.
+
+    A count that is present but not a non-negative int fails the sample: the
+    radix-cache guard reads the same counts, so a malformed one cannot be
+    trusted here either.
     """
 
     input_tokens = _count(metas[0], "prompt_tokens")
@@ -568,30 +572,14 @@ class SglangNativeDialect:
         consume("input.completion", WireObservation(("text",)))
 
         params = req.sampling
-        simple = {
-            "temperature": params.temperature,
-            "top_p": params.top_p,
-            "top_k": params.top_k,
-            "frequency_penalty": params.frequency_penalty,
-            "presence_penalty": params.presence_penalty,
-        }
-        for name, value in simple.items():
-            if value is not None:
-                sampling[name] = value
-                consume(f"sampling.{name}", WireObservation(("sampling_params", name)))
-        if params.stop is not None:
-            sampling["stop"] = list(params.stop)
-            consume("sampling.stop", WireObservation(("sampling_params", "stop")))
-        if params.n != 1:
-            sampling["n"] = params.n
-            consume("sampling.n", WireObservation(("sampling_params", "n")))
-
         scoring = req.scoring
         scores = scoring.input_scoring or scoring.sampled_logprobs
         max_tokens = params.max_tokens
         # SGLang accepts max_new_tokens=0, but a scoring request must decode
         # one token to return any logprobs; input scoring with no length set
-        # likewise asks for one rather than the server's default 128.
+        # likewise asks for one rather than the server's default 128.  It is
+        # set first so sampling_params keeps the retired transport's key
+        # order, and with it the recorded request_params bytes.
         if max_tokens is None and scoring.input_scoring:
             sampling["max_new_tokens"] = 1
         elif max_tokens is not None:
@@ -601,6 +589,22 @@ class SglangNativeDialect:
                 "sampling.max_tokens",
                 _MaxNewTokensVerifier(cast(int, sampling["max_new_tokens"])),
             )
+
+        simple: dict[str, JSONValue] = {
+            "temperature": params.temperature,
+            "top_p": params.top_p,
+            "top_k": params.top_k,
+            "stop": None if params.stop is None else list(params.stop),
+            "frequency_penalty": params.frequency_penalty,
+            "presence_penalty": params.presence_penalty,
+        }
+        for name, value in simple.items():
+            if value is not None:
+                sampling[name] = value
+                consume(f"sampling.{name}", WireObservation(("sampling_params", name)))
+        if params.n != 1:
+            sampling["n"] = params.n
+            consume("sampling.n", WireObservation(("sampling_params", "n")))
 
         if scores:
             body["return_logprob"] = True

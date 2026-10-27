@@ -89,6 +89,12 @@ Write a key as `api_key`, or name the environment variable holding it with
 root model (top level or `args`) and on an inline `grader` / `extractor`, on
 every dialect. A derived model (`base:`) uses its root's key.
 
+With neither, the `openai_*` dialects fall back to `OPENAI_API_KEY` (the SDK
+reads it); `sglang_native`, `anthropic_messages` and `google_genai` send no
+key. An external SGLang server started with `--api-key` therefore needs
+`api_key` or `api_key_env` (`sglang_legacy` read `OPENAI_API_KEY`). An engine
+`sieval run` launched needs neither.
+
 ```yaml
 models:
     candidate:
