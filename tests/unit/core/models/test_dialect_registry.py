@@ -52,6 +52,7 @@ from sieval.core.models.dialects.google_genai import GoogleGenAIDialect
 from sieval.core.models.dialects.openai_chat import OpenAIChatDialect
 from sieval.core.models.dialects.openai_completions import OpenAICompletionsDialect
 from sieval.core.models.dialects.openai_responses import OpenAIResponsesDialect
+from sieval.core.models.dialects.vllm_native import VllmNativeDialect
 
 EXPECTED_DIALECTS = (
     "openai_chat",
@@ -136,7 +137,7 @@ class TestDialectDescriptors:
             "anthropic_messages": RequestSeedSupport.UNSUPPORTED,
             "google_genai": RequestSeedSupport.SUPPORTED,
             "sglang_native": RequestSeedSupport.UNSUPPORTED,
-            "vllm_native": RequestSeedSupport.RESERVED,
+            "vllm_native": RequestSeedSupport.SUPPORTED,
         }
 
     def test_only_sglang_native_pins_its_seed_on_the_engine(self) -> None:
@@ -190,6 +191,7 @@ class TestDialectDescriptors:
             "anthropic_messages",
             "google_genai",
             "sglang_native",
+            "vllm_native",
         }
         assert set(DIALECT_BINDERS) == active
         assert all(inspect.isfunction(binder) for binder in DIALECT_BINDERS.values())
@@ -255,7 +257,7 @@ class TestDialectDescriptors:
         assert compatibility_factory_for("openai_chat") is None
         assert dialect_is_bindable("sglang_native") is True
         assert compatibility_factory_for("sglang_native") is None
-        assert dialect_is_bindable("vllm_native") is False
+        assert dialect_is_bindable("vllm_native") is True
         assert compatibility_factory_for("vllm_native") is None
 
     def test_binding_key_must_match_decision_key(self) -> None:
@@ -325,18 +327,18 @@ class TestDialectDescriptors:
 
 
 class TestDialectBinders:
-    @pytest.mark.parametrize(
-        ("dialect_id", "message"),
-        [
-            ("vllm_native", "no executable binder"),
-        ],
-    )
     def test_reserved_dialects_fail_with_named_error(
-        self, dialect_id: str, message: str
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        with pytest.raises(DialectNotImplemented, match=message):
+        # Every stable id is active now; a binder removed stands in for one
+        # that is reserved.
+        binders = dict(registry.DIALECT_BINDERS)
+        del binders["vllm_native"]
+        monkeypatch.setattr(registry, "DIALECT_BINDERS", binders)
+
+        with pytest.raises(DialectNotImplemented, match="no executable binder"):
             bind_dialect(
-                dialect_id,
+                "vllm_native",
                 "model",
                 cast(Any, None),
                 cast(ConnectionPool[Any], None),
@@ -351,6 +353,7 @@ class TestDialectBinders:
             ("openai_responses", OpenAIResponsesDialect),
             ("anthropic_messages", AnthropicMessagesDialect),
             ("google_genai", GoogleGenAIDialect),
+            ("vllm_native", VllmNativeDialect),
         ],
     )
     def test_active_binders_construct_expected_dialect(
@@ -358,7 +361,7 @@ class TestDialectBinders:
     ) -> None:
         binder = DIALECT_BINDERS[dialect_id]
         connection: object = object()
-        if dialect_id in {"anthropic_messages", "google_genai"}:
+        if dialect_id in {"anthropic_messages", "google_genai", "vllm_native"}:
             connection = AsyncHTTPJSONConnection(httpx.AsyncClient(), None)
         dialect = binder(connection, "requested-model")
 
@@ -374,6 +377,7 @@ class TestDialectBinders:
             ("openai_responses", OpenAIResponsesDialect),
             ("anthropic_messages", AnthropicMessagesDialect),
             ("google_genai", GoogleGenAIDialect),
+            ("vllm_native", VllmNativeDialect),
         ],
     )
     def test_validated_runtime_plan_binds_active_dialect(

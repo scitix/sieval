@@ -93,7 +93,8 @@ root model (top level or `args`) and on an inline `grader` / `extractor`, on
 every dialect. A derived model (`base:`) uses its root's key.
 
 With neither, the `openai_*` dialects read `OPENAI_API_KEY`; the others send
-no key, so an external SGLang server started with `--api-key` needs one here.
+no key, so an external SGLang or vLLM server started with `--api-key` needs
+one here.
 
 ```yaml
 models:
@@ -182,7 +183,7 @@ one entry per rollout, in `texts` order, with the same three fields.
 
 | Dialect | `n: 1` | `n > 1` |
 | --- | --- | --- |
-| `sglang_native`, `openai_completions`, `openai_chat` | yes | yes |
+| `sglang_native`, `vllm_native`, `openai_completions`, `openai_chat` | yes | yes |
 | `google_genai` | yes | refused |
 | `openai_responses` | yes | refused (no `n`) |
 | `anthropic_messages` | refused | refused |
@@ -194,8 +195,12 @@ so changing them on a resume reruns inference.
 With `echo` (`alogprobs(text, echo=True, logprobs=N)` or `infer_args: {echo:
 true, top_logprobs: N}`), each input token's top-N lands in
 `ModelOutput.input_top_logprobs` (`{}` for the first); `top_logprobs` keeps
-the generated tokens'. Served by `sglang_native` and `openai_completions`.
-The reply grows by N entries per input token.
+the generated tokens'. Served by `sglang_native`, `vllm_native` and
+`openai_completions`. The reply grows by N entries per input token.
+
+`sglang_native` and `vllm_native` also fill each token's id
+(`TokenLogprob.token_id`, `TopKEntry.token_id` on the input side), which the
+OpenAI-shaped dialects cannot.
 
 ## Model Capabilities (`extra`)
 

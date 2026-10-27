@@ -620,17 +620,19 @@ class TestValidateModelCapabilities:
             for error in result.errors
         )
 
-    @pytest.mark.parametrize(
-        ("dialect", "message"),
-        [
-            ("vllm_native", "no executable binder"),
-        ],
-    )
-    def test_registered_but_inactive_dialect_is_rejected(self, dialect, message):
-        result = validate_eval_config(self._config(dialect=dialect))
+    def test_registered_but_inactive_dialect_is_rejected(self, monkeypatch):
+        # Every stable id is active now; a binder removed stands in for one
+        # that is reserved.
+        import sieval.core.models.dialect_registry as registry
+
+        binders = dict(registry.DIALECT_BINDERS)
+        del binders["vllm_native"]
+        monkeypatch.setattr(registry, "DIALECT_BINDERS", binders)
+
+        result = validate_eval_config(self._config(dialect="vllm_native"))
 
         assert not result.ok
-        assert any(message in error for error in result.errors)
+        assert any("no executable binder" in error for error in result.errors)
 
     @pytest.mark.parametrize(
         ("capabilities", "message"),

@@ -513,7 +513,7 @@ class TestReconcileValueValidation:
 
 
 class TestBindingJoin:
-    @pytest.mark.parametrize("dialect_id", ["unknown", "vllm_native"])
+    @pytest.mark.parametrize("dialect_id", ["unknown", "sglang_legacy"])
     def test_unavailable_dialect_becomes_a_binding_diagnostic(
         self, dialect_id: str
     ) -> None:

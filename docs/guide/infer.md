@@ -257,6 +257,25 @@ task scores input: SGLang's `/v1/completions` cannot. `/generate` has no
 per-request `seed`, so an explicit one is refused; a managed engine pins
 `--random-seed` instead.
 
+A vLLM `gen` model keeps `openai_completions` unless it sets `dialect:
+vllm_native`. That dialect posts to the same `/v1/completions` but sends
+vLLM's own fields as first-class wire:
+
+| Need | `openai_completions` | `vllm_native` |
+| --- | --- | --- |
+| Input scoring | `echo` + `logprobs`, split at `usage.prompt_tokens` | `prompt_logprobs`, its own channel, checked against `prompt_token_ids` and the usage count |
+| `texts` of a scoring call | prompt + generated text (the echo) | generated text only |
+| Token ids | none | input and sampled tokens (`return_token_ids`) |
+| Structured output | refused | `structured_output` → `structured_outputs` (`json` schema or `json_object`) |
+| `seed` | sent | sent |
+| `suffix`, `max_tokens: 0` | sent; vLLM refuses | refused before I/O |
+| Unknown options | `extra_body` | refused: vLLM drops an unknown field silently. `min_p`, `repetition_penalty` and `stop_token_ids` pass |
+
+`stream` is sent as one non-streaming POST (streamed vLLM choices carry no
+`prompt_logprobs`). Reasoning and tool parsers act on chat requests, so neither
+is offered. Input top-k needs `--max-logprobs` at least the breadth, as on the
+OpenAI route. Measured on vLLM 0.26.0.
+
 ### Model lifecycles
 
 A model `sieval run` launches may bound its engine by stage barriers

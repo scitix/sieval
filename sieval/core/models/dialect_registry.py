@@ -54,6 +54,10 @@ from .dialects.sglang_native import (
     CAPABILITY_DECISIONS as SGLANG_NATIVE_CAPABILITY_DECISIONS,
 )
 from .dialects.sglang_native import SglangNativeDialect
+from .dialects.vllm_native import (
+    CAPABILITY_DECISIONS as VLLM_NATIVE_CAPABILITY_DECISIONS,
+)
+from .dialects.vllm_native import VllmNativeDialect
 from .ir import (
     ChatInput,
     ChatMessage,
@@ -378,6 +382,10 @@ def _bind_sglang_native(connection: Any, requested_model_id: str) -> Dialect:
     return SglangNativeDialect(connection, requested_model_id)
 
 
+def _bind_vllm_native(connection: Any, requested_model_id: str) -> Dialect:
+    return VllmNativeDialect(connection, requested_model_id)
+
+
 def _binder(
     function: Callable[[Any, str], Dialect],
     decisions: Mapping[str, DialectCapabilityDecision],
@@ -431,6 +439,13 @@ DIALECT_BINDERS: Mapping[str, DialectBinder] = MappingProxyType(
             cast(
                 Mapping[str, DialectCapabilityDecision],
                 SGLANG_NATIVE_CAPABILITY_DECISIONS,
+            ),
+        ),
+        "vllm_native": _binder(
+            _bind_vllm_native,
+            cast(
+                Mapping[str, DialectCapabilityDecision],
+                VLLM_NATIVE_CAPABILITY_DECISIONS,
             ),
         ),
     }
@@ -504,7 +519,9 @@ DIALECT_SPECS: Mapping[str, DialectSpec] = MappingProxyType(
         "vllm_native": _spec(
             "vllm_native",
             "async_http_json",
-            request_seed_support=RequestSeedSupport.RESERVED,
+            decisions=_registered_decisions("vllm_native"),
+            # Measured on 0.26.0: equal seeds give equal samples at temperature 1.
+            request_seed_support=RequestSeedSupport.SUPPORTED,
             input_kinds=("completion",),
             input_modalities=("text",),
         ),
