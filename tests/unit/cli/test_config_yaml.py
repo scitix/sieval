@@ -93,6 +93,16 @@ class TestLoadEvalConfig:
         loaded = load_eval_config(_write(tmp_path, text))
         assert loaded == {"a": {"x": 1}, "b": {"y": 2}, "m": {"x": 1, "y": 2}}
 
+    def test_merge_chain_through_a_nested_anchor_may_be_overridden(self, tmp_path):
+        # The anchor is built after ``m`` merged from it: its node already
+        # holds the inherited ``a``, which must not read as a repeat.
+        text = (
+            "base: &base {a: 1}\n"
+            "defaults:\n  inner: &d\n    <<: *base\n    a: 2\n"
+            "m:\n  <<: *d\n"
+        )
+        assert load_eval_config(_write(tmp_path, text)) == yaml.safe_load(text)
+
     def test_duplicate_after_a_merge_is_still_refused(self, tmp_path):
         text = "base: &base {x: 1}\nm:\n  <<: *base\n  y: 1\n  y: 2\n"
         with pytest.raises(DuplicateKeyError, match="'y' at line 5"):
@@ -117,8 +127,7 @@ class TestLoadEvalConfig:
 
 
 class TestEveryEntryPointRefusesADuplicate:
-    """``run``, ``eval``, both ``--dry-run`` and ``EvalSession`` read the config
-    through one loader; a new bare ``yaml.safe_load`` on any of them fails here."""
+    """A bare ``yaml.safe_load`` on any entry point fails here."""
 
     @pytest.mark.parametrize(
         "argv",
@@ -180,9 +189,7 @@ class TestEveryEntryPointRefusesADuplicate:
 
 
 def test_no_other_yaml_load_in_the_cli():
-    """Every ``yaml`` load under ``sieval/cli`` is either the eval-config
-    loader or one of these files, none of which is an eval config. A new
-    call fails here until it says which it is."""
+    """A new ``yaml`` load under ``sieval/cli`` must say what it reads."""
     allowed = {
         # read_persisted_config and the effective_config diff: files sieval wrote.
         "session.py": 3,

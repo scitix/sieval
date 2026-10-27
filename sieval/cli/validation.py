@@ -1049,7 +1049,7 @@ def run_dry_run(
 
     checks.append({"name": "file_exists", "ok": True})
 
-    # 2. YAML parse; a repeated key is refused, as on every entry point
+    # 2. YAML parse; a repeated key is an error
     try:
         parsed = load_eval_config(config)
     except (yaml.YAMLError, DuplicateKeyError) as exc:

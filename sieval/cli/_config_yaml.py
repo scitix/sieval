@@ -1,10 +1,7 @@
 """The one reader of an evaluation config file.
 
-``sieval run``, ``sieval eval``, their ``--dry-run`` and ``EvalSession`` all
-open the config through :func:`load_eval_config`, so a file is accepted or
-refused the same way on every entry point. A repeated mapping key is refused:
-PyYAML keeps the last value silently, so a second ``api_base`` or
-``capabilities:`` would otherwise decide the run unseen.
+Every entry point loads the config through :func:`load_eval_config`, which
+refuses a key repeated within one mapping instead of keeping the last value.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
@@ -26,11 +23,14 @@ class _EvalConfigLoader(yaml.SafeLoader):
     def __init__(self, stream: str) -> None:
         super().__init__(stream)
         self.duplicates: list[str] = []
+        self._checked: set[int] = set()
 
-    def construct_mapping(self, node, deep=False):
-        # Before ``flatten_mapping``: keys a ``<<`` merge brings in may be
-        # overridden by the mapping's own keys, as YAML intends.
-        if isinstance(node, yaml.MappingNode):
+    def flatten_mapping(self, node):
+        # flatten_mapping rewrites node.value in place, merge sources included,
+        # so check each node once, before that: keys a ``<<`` brings in may be
+        # overridden.
+        if id(node) not in self._checked:
+            self._checked.add(id(node))
             first_line: dict[object, int] = {}
             for key_node, _ in node.value:
                 if key_node.tag == _MERGE_TAG:
@@ -48,7 +48,7 @@ class _EvalConfigLoader(yaml.SafeLoader):
                     )
                 else:
                     first_line[key] = line
-        return super().construct_mapping(node, deep=deep)
+        super().flatten_mapping(node)
 
 
 def load_eval_config(path: str | Path) -> object:
