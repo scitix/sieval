@@ -556,7 +556,8 @@ forgotten to look.
 
 What counts: token/context-limit stops (`length`, `max_tokens`,
 `max_output_tokens`, `model_context_window_exceeded`, Google `MAX_TOKENS` /
-`CONTINUATION`), OpenAI `content_filter`, Anthropic `refusal`, and Google
+`CONTINUATION`, Google Interactions `incomplete`, which also covers filtered
+output), OpenAI `content_filter`, Anthropic `refusal`, and Google
 candidate policy stops (`SAFETY`, `RECITATION`, `LANGUAGE`, …). A Google prompt
 block (`promptFeedback.blockReason`) does not count — no candidate was
 generated — and older Google records that lack `finish_reason_sources` cannot

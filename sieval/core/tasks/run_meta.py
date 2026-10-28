@@ -532,7 +532,7 @@ def request_definition(params: Mapping[Any, object]) -> dict[str, object]:
 
     Dialects record two shapes: a flat body (OpenAI, Anthropic, SGLang) and an
     HTTP envelope with ``body``, ``path`` and ``query`` (Google, whose path
-    names the model and whose method and ``alt`` query say whether it
+    names the model and whose path, query or body say whether it
     streamed), marked by :data:`REQUEST_ENVELOPE_KEY`. Both reduce to
     ``{"body": …, "stream": bool}``, so neither the model under test nor the
     gateway prefix reaches the digest.
@@ -550,8 +550,8 @@ def request_definition(params: Mapping[Any, object]) -> dict[str, object]:
             isinstance(query, Mapping)
             and cast(Mapping[Any, object], query).get("alt") == "sse"
         )
-        stream = streamed_path or sse
         source: Mapping[Any, object] = cast(Mapping[Any, object], body)
+        stream = streamed_path or sse or source.get("stream") is True
     else:
         stream = params.get("stream") is True
         source = params

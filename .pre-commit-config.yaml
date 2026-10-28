@@ -20,6 +20,7 @@ repos:
       - id: check-merge-conflict
       - id: detect-private-key
       - id: end-of-file-fixer
+        exclude: ^tests/unit/core/models/dialects/fixtures/google_interactions/.*\.sse$
       - id: trailing-whitespace
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.9

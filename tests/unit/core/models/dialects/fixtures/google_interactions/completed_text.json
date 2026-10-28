@@ -1,0 +1,37 @@
+{
+  "status": "completed",
+  "usage": {
+    "total_tokens": 111,
+    "total_input_tokens": 8,
+    "input_tokens_by_modality": [
+      {
+        "modality": "text",
+        "tokens": 8
+      }
+    ],
+    "total_cached_tokens": 0,
+    "total_output_tokens": 0,
+    "total_tool_use_tokens": 0,
+    "total_thought_tokens": 103
+  },
+  "created": "2026-10-20T07:33:13Z",
+  "updated": "2026-10-20T07:33:13Z",
+  "service_tier": "standard",
+  "steps": [
+    {
+      "signature": "sig-redacted",
+      "type": "thought"
+    },
+    {
+      "content": [
+        {
+          "text": "pong",
+          "type": "text"
+        }
+      ],
+      "type": "model_output"
+    }
+  ],
+  "object": "interaction",
+  "model": "gemini-3.8-flash"
+}

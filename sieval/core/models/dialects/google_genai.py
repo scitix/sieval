@@ -92,6 +92,11 @@ from ._google_genai_wire import (
     validate_function_parameters,
     validate_wire_body,
 )
+from ._google_json import (
+    reject_duplicate_keys,
+    reject_json_constant,
+    strict_json_loads,
+)
 from ._http_status import raise_for_provider_status
 
 _THINKING_LEVELS = frozenset({"minimal", "low", "medium", "high"})
@@ -180,35 +185,6 @@ _IR_OWNED_KEYS = BINDING_RESOURCE_KEYS | frozenset(
         "stream",
     }
 )
-
-
-def _reject_json_constant(value: str) -> None:
-    raise ValueError(f"non-finite JSON constant {value!r}")
-
-
-def _reject_duplicate_keys(
-    pairs: list[tuple[str, JSONValue]],
-) -> dict[str, JSONValue]:
-    result: dict[str, JSONValue] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"duplicate JSON key {key!r}")
-        result[key] = value
-    return result
-
-
-def _strict_json_loads(payload: str, path: str) -> JSONValue:
-    try:
-        return cast(
-            JSONValue,
-            json.loads(
-                payload,
-                object_pairs_hook=_reject_duplicate_keys,
-                parse_constant=_reject_json_constant,
-            ),
-        )
-    except (json.JSONDecodeError, TypeError, ValueError) as exc:
-        raise OutputContractError(f"{path} is not strict JSON") from exc
 
 
 def _tuple_validator(item_type: type, channel: str) -> Callable[[object], None]:
@@ -1268,8 +1244,8 @@ def _decode_opaque(
     try:
         raw = json.loads(
             value,
-            object_pairs_hook=_reject_duplicate_keys,
-            parse_constant=_reject_json_constant,
+            object_pairs_hook=reject_duplicate_keys,
+            parse_constant=reject_json_constant,
         )
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
         raise DialectError("invalid Google opaque continuation JSON") from exc
@@ -1837,8 +1813,8 @@ def _structured_output(req: Request, text: str) -> StructuredOutput | None:
     try:
         value = json.loads(
             text,
-            object_pairs_hook=_reject_duplicate_keys,
-            parse_constant=_reject_json_constant,
+            object_pairs_hook=reject_duplicate_keys,
+            parse_constant=reject_json_constant,
         )
         return StructuredOutput(cast(JSONValue, value))
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
@@ -3071,7 +3047,7 @@ class GoogleGenAIDialect:
                 return
             payload = "\n".join(data_lines)
             data_lines.clear()
-            event = _strict_json_loads(payload, "Google stream event")
+            event = strict_json_loads(payload, "Google stream event")
             if not isinstance(event, dict) or not event:
                 raise OutputContractError(
                     "Google stream event must be a non-empty response object"
@@ -3272,7 +3248,7 @@ class GoogleGenAIDialect:
             json=body,
         )
         operation_verifier.verify_http(request, self._endpoint_root)
-        actual_body = _strict_json_loads(
+        actual_body = strict_json_loads(
             request.content.decode("utf-8"), "final Google request body"
         )
         if not isinstance(actual_body, dict):
@@ -3348,7 +3324,7 @@ class GoogleGenAIDialect:
                 await response.aclose()
         response = await self._connection.client.send(request)
         raise_for_provider_status(response, "Google")
-        payload = _strict_json_loads(response.text, "Google response body")
+        payload = strict_json_loads(response.text, "Google response body")
         return self._lift(payload, execution_context)
 
     async def arun(self, req: Request) -> Response:

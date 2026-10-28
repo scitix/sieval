@@ -4302,7 +4302,11 @@ tasks:
 
     @pytest.mark.parametrize(
         ("dialect", "outcome"),
-        [("google_genai", "configured"), ("anthropic_messages", None)],
+        [
+            ("google_genai", "configured"),
+            ("google_interactions", None),
+            ("anthropic_messages", None),
+        ],
     )
     def test_inline_reasoning_is_admitted_only_where_the_provider_enforces(
         self, tmp_path: Path, dialect: str, outcome: str | None
@@ -4466,6 +4470,7 @@ tasks:
             ("openai_chat", "authorization", "Bearer SENTINEL-ENV-KEY"),
             ("anthropic_messages", "x-api-key", "SENTINEL-ENV-KEY"),
             ("google_genai", "x-goog-api-key", "SENTINEL-ENV-KEY"),
+            ("google_interactions", "x-goog-api-key", "SENTINEL-ENV-KEY"),
         ],
     )
     async def test_inline_api_key_env_sends_the_variable_on_the_wire(
@@ -4779,8 +4784,9 @@ tasks:
             "args:\n      client_timeout: {connect: 45, read: 1800}",
         ],
     )
+    @pytest.mark.parametrize("dialect", ["openai_chat", "google_interactions"])
     def test_named_model_client_timeout_reaches_the_client_not_the_request(
-        self, tmp_path: Path, placement: str
+        self, tmp_path: Path, placement: str, dialect: str
     ) -> None:
         config_path = self._config(
             tmp_path,
@@ -4788,6 +4794,7 @@ tasks:
 models:
   candidate:
     name: org/candidate
+    dialect: {dialect}
     api_base: https://candidate.example/v1
     {placement}
 tasks:
@@ -4806,9 +4813,18 @@ tasks:
                 return_value=self.ChatTask,
             ),
             patch(
-                "sieval.core.models.connection_factory.AsyncOpenAI"
+                "sieval.core.models.connection_factory."
+                + (
+                    "AsyncOpenAI"
+                    if dialect == "openai_chat"
+                    else "RecordingAsyncClient"
+                )
             ) as client_factory,
         ):
+            if dialect == "google_interactions":
+                client_factory.return_value.base_url = httpx.URL(
+                    "https://candidate.example/v1"
+                )
             session._setup_prelaunch_reconciliation()
             session._setup_postlaunch_reconciliation()
             session._setup_models()

@@ -463,6 +463,70 @@ Accounting:
   `output_tokens` is `candidatesTokenCount + thoughtsTokenCount`, so
   `reasoning_tokens` stays a breakdown of `output_tokens`.
 
+### Google Interactions
+
+`dialect: google_interactions` calls the native Gemini Interactions REST API
+(`POST /v1beta/interactions`). Endpoint, key header (`x-goog-api-key`) and
+version selection (an endpoint root is `v1beta`; a trailing `/v1` or `/v1beta`
+picks that version; gateway prefixes are kept) match `google_genai`:
+
+```yaml
+models:
+  gemini:
+    name: gemini-3.6-flash
+    type: chat
+    dialect: google_interactions
+    api_base: https://generativelanguage.googleapis.com
+    api_key_env: GEMINI_API_KEY
+```
+
+Supported: text and image input, system/user/assistant turns, function tools
+with `tool_choice` (`required` is the wire's `any`) and replayed
+`function_call`/`function_result` exchanges, the `google_search` and
+`url_context` hosted tools, JSON-schema structured output, streaming,
+`temperature`, `top_p`, `max_tokens`, `stop`, `seed`, and `reasoning.effort` /
+`reasoning.summary`. Each `function_result` carries the name of its matching
+call, which the live backend requires.
+
+Through a YAML config only plain text, streaming and `dialect_options` work
+today: reasoning, tools, structured output, images and opaque continuation
+need a Google model-profile outcome, which ordinary bindings do not supply, so
+they fail reconciliation with `model_outcome_missing`.
+
+Rejected before any network I/O: `previous_response_id`, logprobs, input
+scoring, `n > 1`, `top_k`, penalties, `reasoning.budget_tokens` (use
+`effort`), `developer` messages, assistant prefill, more than one system
+message, per-image `detail`, `tools.parallel`, structured output `name` /
+`strict`, a tool message with more than one `ToolResultPart`, `agent` /
+`agent_config`, `background`, a `service_tier` other than `standard` or
+`priority` (others can return a queued interaction), and `dialect_options`
+that set an IR-owned body key.
+
+**SiEval always sends `store: false`**, so Interactions does not store
+evaluation prompts; any other `store` value is rejected. Multi-turn calls are
+stateless: resend the full history, or pass the previous reply's
+`ReasoningOutput.opaque_roundtrip` as `session.opaque_continuation` and send
+only the new turn. The continuation carries the native steps, thought
+signatures and system instruction; a conflicting system message or a tool
+result without its call is rejected. No `session_id` is returned.
+
+Accounting:
+
+- The terminal `status` is the finish reason. `incomplete` keeps any partial
+  output and counts toward `n_truncated`, but does not tell a token limit from
+  filtering. `requires_action` is valid only when function tools were
+  declared; every other status (`failed`, `budget_exceeded`, `queued`, …) is
+  an error.
+- The request identity includes the body's `stream` flag but not the route or
+  gateway prefix.
+- `input_tokens` is `total_input_tokens + total_tool_use_tokens` and
+  `output_tokens` is `total_output_tokens + total_thought_tokens`, so
+  `reasoning_tokens` stays a breakdown of `output_tokens`. Without terminal
+  `usage`, a stream uses its latest cumulative usage snapshot.
+- Thought summaries are concatenated verbatim into `ReasoningOutput.text`.
+  `summary: auto` does not guarantee one: a signed thought without a summary
+  leaves `text` unset and keeps the continuation.
+
 ## Environment Variables
 
 Custom environment variables can be passed through the YAML config's `infer.env` section. Values are injected into the inference engine process.

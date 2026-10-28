@@ -1,0 +1,38 @@
+{
+  "id": "v1_ChdlQ0hYYXNDM05ZblhyZmNQLU5qeGdBZxIXZUNIWGFzQzNOWW5YcmZjUC1OanhnQWc",
+  "status": "completed",
+  "usage": {
+    "total_tokens": 221,
+    "total_input_tokens": 11,
+    "input_tokens_by_modality": [
+      {
+        "modality": "text",
+        "tokens": 11
+      }
+    ],
+    "total_cached_tokens": 0,
+    "total_output_tokens": 25,
+    "total_tool_use_tokens": 0,
+    "total_thought_tokens": 185
+  },
+  "created": "2026-10-20T08:08:26Z",
+  "updated": "2026-10-20T08:08:26Z",
+  "service_tier": "standard",
+  "steps": [
+    {
+      "signature": "sig-redacted",
+      "type": "thought"
+    },
+    {
+      "content": [
+        {
+          "text": "Got it! I've made a note that your number is 41. What would you like to do next?",
+          "type": "text"
+        }
+      ],
+      "type": "model_output"
+    }
+  ],
+  "object": "interaction",
+  "model": "gemini-3.6-flash"
+}

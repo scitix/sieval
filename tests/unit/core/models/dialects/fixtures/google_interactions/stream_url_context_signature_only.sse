@@ -1,0 +1,48 @@
+event: interaction.created
+data: {"interaction":{"object":"interaction","model":"gemini-3.6-flash"},"event_type":"interaction.created"}
+
+event: interaction.status_update
+data: {"status":"in_progress","event_type":"interaction.status_update"}
+
+event: step.start
+data: {"index":0,"step":{"id":"id-redacted-28","signature":"sig-redacted","type":"url_context_call"},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":0,"delta":{"signature":"sig-redacted","type":"url_context_call","arguments":{"urls":["https://example.com/"]}},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":0,"event_type":"step.stop"}
+
+event: step.start
+data: {"index":1,"step":{"call_id":"id-redacted-28","signature":"sig-redacted","type":"url_context_result"},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":1,"delta":{"signature":"sig-redacted","type":"url_context_result","result":[{"url":"https://example.com/","status":"error"}],"is_error":false},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":1,"event_type":"step.stop"}
+
+event: step.start
+data: {"index":2,"step":{"type":"thought"},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":2,"delta":{"signature":"sig-redacted","type":"thought_signature"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":2,"event_type":"step.stop"}
+
+event: step.start
+data: {"index":3,"step":{"type":"model_output"},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":3,"delta":{"text":"The page","type":"text"},"event_type":"step.delta"}
+
+event: step.delta
+data: {"index":3,"delta":{"text":" heading of [https://example.com/](https://example.com/) is **Example Domain**.","type":"text"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":3,"event_type":"step.stop"}
+
+event: interaction.completed
+data: {"interaction":{"status":"completed","usage":{"total_tokens":218,"total_input_tokens":30,"input_tokens_by_modality":[{"modality":"text","tokens":30}],"total_cached_tokens":0,"total_output_tokens":40,"total_tool_use_tokens":148,"tool_use_tokens_by_modality":[{"modality":"text","tokens":148}],"total_thought_tokens":0},"created":"2026-10-28T02:46:50Z","updated":"2026-10-28T02:46:50Z","service_tier":"standard","object":"interaction","model":"gemini-3.6-flash"},"event_type":"interaction.completed"}
+

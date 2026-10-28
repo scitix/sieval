@@ -38,6 +38,10 @@ from .dialects.google_genai import (
     CAPABILITY_DECISIONS as GOOGLE_GENAI_CAPABILITY_DECISIONS,
 )
 from .dialects.google_genai import GoogleGenAIDialect
+from .dialects.google_interactions import (
+    CAPABILITY_DECISIONS as GOOGLE_INTERACTIONS_CAPABILITY_DECISIONS,
+)
+from .dialects.google_interactions import GoogleInteractionsDialect
 from .dialects.openai_chat import (
     CAPABILITY_DECISIONS as OPENAI_CHAT_CAPABILITY_DECISIONS,
 )
@@ -378,6 +382,10 @@ def _bind_google_genai(connection: Any, requested_model_id: str) -> Dialect:
     return GoogleGenAIDialect(connection, requested_model_id)
 
 
+def _bind_google_interactions(connection: Any, requested_model_id: str) -> Dialect:
+    return GoogleInteractionsDialect(connection, requested_model_id)
+
+
 def _bind_sglang_native(connection: Any, requested_model_id: str) -> Dialect:
     return SglangNativeDialect(connection, requested_model_id)
 
@@ -432,6 +440,13 @@ DIALECT_BINDERS: Mapping[str, DialectBinder] = MappingProxyType(
             cast(
                 Mapping[str, DialectCapabilityDecision],
                 GOOGLE_GENAI_CAPABILITY_DECISIONS,
+            ),
+        ),
+        "google_interactions": _binder(
+            _bind_google_interactions,
+            cast(
+                Mapping[str, DialectCapabilityDecision],
+                GOOGLE_INTERACTIONS_CAPABILITY_DECISIONS,
             ),
         ),
         "sglang_native": _binder(
@@ -505,6 +520,14 @@ DIALECT_SPECS: Mapping[str, DialectSpec] = MappingProxyType(
             provider_enforced_capabilities=frozenset(
                 {"reasoning", "sampled_logprobs", "top_logprobs"}
             ),
+        ),
+        "google_interactions": _spec(
+            "google_interactions",
+            "async_http_json",
+            decisions=_registered_decisions("google_interactions"),
+            request_seed_support=RequestSeedSupport.SUPPORTED,
+            input_kinds=("chat",),
+            input_modalities=("text", "image", "tool_call", "tool_result"),
         ),
         "sglang_native": _spec(
             "sglang_native",

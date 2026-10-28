@@ -1,0 +1,20 @@
+event: interaction.created
+data: {"interaction":{"object":"interaction","model":"gemini-3.6-flash"},"event_type":"interaction.created"}
+
+event: interaction.status_update
+data: {"status":"in_progress","event_type":"interaction.status_update"}
+
+event: step.start
+data: {"index":0,"step":{"type":"thought"},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":0,"delta":{"signature":"sig-redacted","type":"thought_signature"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":0,"event_type":"step.stop"}
+
+event: interaction.completed
+data: {"interaction":{"status":"incomplete","usage":{"total_tokens":19,"total_input_tokens":14,"input_tokens_by_modality":[{"modality":"text","tokens":14}],"total_cached_tokens":0,"total_output_tokens":0,"total_tool_use_tokens":0,"total_thought_tokens":5},"created":"2026-10-20T08:10:14Z","updated":"2026-10-20T08:10:14Z","service_tier":"standard","object":"interaction","model":"gemini-3.6-flash"},"event_type":"interaction.completed"}
+
+event: done
+data: [DONE]

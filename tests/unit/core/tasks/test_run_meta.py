@@ -259,6 +259,25 @@ class TestRequestDefinition:
         }
         assert self._digest(streamed) != self._digest(self._google("gemini-2.5-flash"))
 
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_interactions_body_stream_is_normalized(self, stream: bool) -> None:
+        params = {
+            "envelope": "http",
+            "method": "POST",
+            "path": "/v1beta/interactions",
+            "body": {"generation_config": {"temperature": 0.2}, "stream": stream},
+        }
+        flat = {"generation_config": {"temperature": 0.2}, "stream": stream}
+        assert request_definition(params) == {
+            "body": {"generation_config": {"temperature": 0.2}},
+            "stream": stream,
+        }
+        assert self._digest(params) == self._digest(flat)
+        moved = params | {"path": "/gateway/v1beta/interactions"}
+        assert self._digest(params) == self._digest(moved)
+        changed = params | {"body": flat | {"stream": not stream}}
+        assert self._digest(params) != self._digest(changed)
+
     def test_flat_bodies_drop_model_and_stream_options(self):
         chat = {
             "model": "a",

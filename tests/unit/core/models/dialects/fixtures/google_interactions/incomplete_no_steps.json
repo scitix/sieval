@@ -1,0 +1,22 @@
+{
+  "status": "incomplete",
+  "usage": {
+    "total_tokens": 19,
+    "total_input_tokens": 14,
+    "input_tokens_by_modality": [
+      {
+        "modality": "text",
+        "tokens": 14
+      }
+    ],
+    "total_cached_tokens": 0,
+    "total_output_tokens": 0,
+    "total_tool_use_tokens": 0,
+    "total_thought_tokens": 5
+  },
+  "created": "2026-10-20T07:37:15Z",
+  "updated": "2026-10-20T07:37:15Z",
+  "service_tier": "standard",
+  "object": "interaction",
+  "model": "gemini-3.8-flash"
+}

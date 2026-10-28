@@ -1,0 +1,36 @@
+event: interaction.created
+data: {"interaction":{"object":"interaction","model":"gemini-3.6-flash"},"event_type":"interaction.created"}
+
+event: interaction.status_update
+data: {"status":"in_progress","event_type":"interaction.status_update"}
+
+event: step.start
+data: {"index":0,"step":{"type":"thought"},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":0,"delta":{"signature":"sig-redacted","type":"thought_signature"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":0,"event_type":"step.stop"}
+
+event: step.start
+data: {"index":1,"step":{"id":"id-redacted-13","type":"function_call","name":"lookup_value","arguments":{}},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":1,"delta":{"arguments":"{\"label\":\"A\"}","type":"arguments_delta"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":1,"event_type":"step.stop"}
+
+event: step.start
+data: {"index":2,"step":{"id":"id-redacted-14","type":"function_call","name":"lookup_value","arguments":{}},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":2,"delta":{"arguments":"{\"label\":\"B\"}","type":"arguments_delta"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":2,"event_type":"step.stop"}
+
+event: interaction.completed
+data: {"interaction":{"status":"requires_action","usage":{"total_tokens":207,"total_input_tokens":107,"input_tokens_by_modality":[{"modality":"text","tokens":107}],"total_cached_tokens":0,"total_output_tokens":32,"total_tool_use_tokens":0,"total_thought_tokens":68},"created":"2026-10-28T02:46:23Z","updated":"2026-10-28T02:46:23Z","service_tier":"standard","object":"interaction","model":"gemini-3.6-flash"},"event_type":"interaction.completed"}
+

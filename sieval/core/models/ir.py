@@ -25,7 +25,7 @@ from ._engine_source import EngineSource
 #: Key a dialect sets in ``request_params`` when it records an HTTP envelope
 #: (``method``, ``path``, ``query`` around a ``body``) rather than a flat body.
 REQUEST_ENVELOPE_KEY = "envelope"
-#: The one envelope recorded today: Google's GenerateContent.
+#: HTTP envelopes recorded by Google's native API dialects.
 REQUEST_ENVELOPE_HTTP = "http"
 
 

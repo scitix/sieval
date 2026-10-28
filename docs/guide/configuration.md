@@ -185,6 +185,7 @@ one entry per rollout, in `texts` order, with the same three fields.
 | --- | --- | --- |
 | `sglang_native`, `vllm_native`, `openai_completions`, `openai_chat` | yes | yes |
 | `google_genai` | yes | refused |
+| `google_interactions` | refused (no logprobs) | refused (no `n`) |
 | `openai_responses` | yes | refused (no `n`) |
 | `anthropic_messages` | refused | refused |
 
