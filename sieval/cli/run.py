@@ -465,8 +465,7 @@ def _serving_groups(
     """:func:`plan_serving_groups` for *gpu*, each group with its launches
     translated; an unchanged plan keeps what :func:`_prepare_launch_batch`
     resolved, a changed one records its recipe in ``recipes``. A scaled
-    group's engines also carry :data:`SCALING_ENV`, under the model's
-    ``infer.env``."""
+    group's engines carry :data:`SCALING_ENV` under ``infer.env``."""
     models = config.get("models") or {}
     groups = plan_serving_groups(
         config,

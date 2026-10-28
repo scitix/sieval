@@ -2259,24 +2259,28 @@ class TestServingGroups:
         assert [c.args[0] for c in launch.await_args_list] == ["m@100000"]
 
     @pytest.mark.parametrize(
-        ("user_env", "expected"),
+        ("backend", "user_env", "expected"),
         [
-            pytest.param({}, "1", id="set_for_the_scaled_engine"),
+            pytest.param("sglang", {}, "1", id="set_for_the_scaled_engine"),
             pytest.param(
+                "sglang",
                 {"SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN": "0"},
                 "0",
                 id="infer_env_overrides_it",
             ),
+            pytest.param("vllm", {}, None, id="not_set_for_vllm"),
         ],
     )
     def test_only_a_scaled_sglang_engine_may_exceed_its_derived_window(
-        self, user_env: dict[str, str], expected: str
+        self, backend: str, user_env: dict[str, str], expected: str | None
     ) -> None:
         # Issue #264: a YaRN block naming original_max_position_embeddings
         # makes SGLang derive the unscaled window and refuse the planned one.
         from sieval.cli.run import _serving_groups
+        from sieval.cli.serving import CONTEXT_PARAMS
         from sieval.cli.session import unwrap_proxies
 
+        key = "SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN"
         config = {
             "models": {
                 "m": {
@@ -2299,18 +2303,33 @@ class TestServingGroups:
                 },
             },
         }
-        plan = _sglang_plan(32768)
-        base = [BackendCommand(cli_args=["sglang"], backend="sglang", role="full")]
-        with patch("sieval.cli.run.get_translator", return_value=self._translator()):
+        plan = DeploymentPlan(
+            checkpoint="/tmp/ckpt",
+            backend=backend,
+            assignments=(
+                RoleAssignment(
+                    role=WellKnownRole.FULL,
+                    devices=DeviceGroup(count=1, gpu_model="H100"),
+                    topology=ParallelTopology(tp=1, dp=1, pp=1),
+                    engine_params={CONTEXT_PARAMS[backend]: 32768},
+                ),
+            ),
+        )
+        translator = MagicMock()
+        translator.translate.side_effect = lambda _: [
+            BackendCommand(cli_args=[backend], backend=backend, role="full")
+        ]
+        base = translator.translate(plan)
+        with patch("sieval.cli.run.get_translator", return_value=translator):
             default, scaled = _serving_groups(
                 config, {"m": unwrap_proxies(plan)}, {"m": (plan, base)}
             )
 
         assert scaled.key == "m@100000"
         (command,) = scaled.prepared["m"][1]
-        assert command.env["SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN"] == expected
+        assert command.env.get(key) == expected
         (default_command,) = default.prepared["m"][1]
-        assert "SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN" not in default_command.env
+        assert key not in default_command.env
 
     @pytest.mark.anyio
     async def test_one_group_runs_alone_and_an_unknown_key_is_refused(
