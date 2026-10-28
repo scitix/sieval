@@ -69,6 +69,7 @@ from sieval.cli.resolution import resolve_config_model_types
 from sieval.cli.services import SERVICE_LOG_DIR
 from sieval.cli.serving import (
     DEFAULT_GROUP,
+    SCALING_ENV,
     ServingGroup,
     SessionServing,
     plan_serving_groups,
@@ -463,7 +464,9 @@ def _serving_groups(
 ) -> list[_GroupLaunch]:
     """:func:`plan_serving_groups` for *gpu*, each group with its launches
     translated; an unchanged plan keeps what :func:`_prepare_launch_batch`
-    resolved, a changed one records its recipe in ``recipes``."""
+    resolved, a changed one records its recipe in ``recipes``. A scaled
+    group's engines also carry :data:`SCALING_ENV`, under the model's
+    ``infer.env``."""
     models = config.get("models") or {}
     groups = plan_serving_groups(
         config,
@@ -472,12 +475,14 @@ def _serving_groups(
     )
 
     def entry(
-        name: str, plan: DeploymentPlan
+        name: str, plan: DeploymentPlan, scaled: bool = False
     ) -> tuple[tuple[DeploymentPlan, list[BackendCommand]], dict[str, Any]]:
         base, commands = prepared_launches[name]
         if plan == base:
             return (plan, commands), plan_dicts[name]
         user_env = _user_env(models.get(name) or {})
+        if scaled:
+            user_env = {**SCALING_ENV.get(plan.backend, {}), **user_env}
         return (plan, _translate(name, plan, user_env)), unwrap_proxies(plan)
 
     default = {name: entry(name, plan) for name, plan in groups[0].plans.items()}
@@ -494,7 +499,7 @@ def _serving_groups(
             }
         else:
             for name, plan in group.plans.items():
-                entries[name] = entry(name, plan)
+                entries[name] = entry(name, plan, scaled=True)
                 names[name] = group.key
                 recipes[name] = plan_dicts[name]
         out.append(
