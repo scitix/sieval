@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.15.1] - 2026-10-28
+
+A patch release: two native dialects, `vllm_native` and `google_interactions`,
+and a scaled SGLang group that starts where 0.15.0 refused it. Nothing is
+breaking. No on-disk format changes: `meta.json` `identity` stays schema 5,
+`RESULT_SCHEMA_VERSION` stays 1, and 0.15.0 result directories resume.
+
+### Added
+
+- **`vllm_native` dialect** for vLLM's `/v1/completions` extension fields, posted as first-class wire over `async_http_json`: native prompt scoring through `prompt_logprobs` (no `echo`, checked against `prompt_token_ids` and `usage.prompt_tokens`), token ids via `return_token_ids`, `structured_output` lowered to `structured_outputs`, and sampled top-k refused when short of `k`. A request seed is supported. Every request leaf is decided before I/O; only `min_p`, `repetition_penalty` and `stop_token_ids` pass through as options, and any other option is refused because vLLM silently ignores unknown fields. No default dialect moves: a vLLM `gen` model keeps `openai_completions` unless it sets `dialect: vllm_native` (#261, closes #256).
+- **`google_interactions` dialect** for Google's native Interactions API (`POST /v1beta/interactions`), beside `google_genai`: text, images, function tools, structured JSON output, Google Search, URL context, citations and streaming. Every request sends `store: false`; continuation is stateless, replaying signed native-step history. Provider text and thought summaries are kept verbatim, and a malformed usage counter is refused rather than read as missing. `incomplete` counts as a truncation finish reason. A request digest reads an HTTP envelope's `body.stream`, so a streamed and a non-streamed Interactions request differ; GenerateContent still derives streaming from its path and query, and its digests are unchanged (#263, closes #152).
+
+### Fixed
+
+- **A scaled SGLang group starts.** A `<model>@<window>` group whose `context.scaling` YaRN block names `original_max_position_embeddings` made SGLang derive the unscaled window and refuse the planned `--context-length` at startup, after `--dry-run` had passed and the GPUs were held. A scaled group's SGLang engines now launch with `SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1`, shown in the dry-run's `launch[].env`; the model's `infer.env` wins. The variable turns off SGLang's derived-window check for every scaling block, so `context.max` is now the only bound on a scaled window. The default group and vLLM are unchanged, and the variable reaches neither `infer_plans*.yaml` nor the inference identity (#265, closes #264).
+- The 0.15.0 migration note no longer names a private loader as the replacement for `sieval.cli.validation.load_yaml_with_duplicate_check`: there is none, because `sieval run`, `sieval eval` and `EvalSession` refuse repeated keys themselves (#262).
+
 ## [0.15.0] - 2026-10-28
 
 A minor bump with breaking changes: `dialect: sglang_legacy` is replaced by
@@ -623,6 +640,7 @@ Mainstream benchmarks registered in `sieval/meta/index.json`:
 - Project-wide preflight (`scripts/check_preflight.py`): links, deps, tasks, datasets, imports, examples, meta-index sync, version.
 - Tooling: `ruff`, `ty`, `mypy strict`, `pytest`.
 
+[0.15.1]: https://github.com/scitix/sieval/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/scitix/sieval/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/scitix/sieval/compare/v0.13.2...v0.14.0
 [0.13.2]: https://github.com/scitix/sieval/compare/v0.13.1...v0.13.2
