@@ -1,20 +1,15 @@
 """vLLM native completions dialect for the provider-neutral model IR.
 
-vLLM serves no text ``/generate``; its native surface is the extension fields
-its ``/v1/completions`` accepts beyond OpenAI's, sent here as first-class wire:
+vLLM's native surface is the fields its ``/v1/completions`` accepts beyond
+OpenAI's, posted over raw HTTP (the OpenAI SDK would drop them from the typed
+reply):
 
-- ``prompt_logprobs`` scores the input as its own channel, with no ``echo``
-  and no split at a usage boundary: one entry per prompt token, keyed by token
-  id, each carrying ``logprob``, ``rank`` and ``decoded_token``;
-- ``return_token_ids`` returns ``prompt_token_ids`` and the sampled
-  ``token_ids``, which identify the scored token among its top-k and give the
-  sampled tokens their ids;
+- ``prompt_logprobs`` scores the input as its own channel, without ``echo``;
+- ``return_token_ids`` gives input and sampled tokens their ids;
 - ``structured_outputs`` constrains decoding to a JSON schema or any JSON.
 
-The request goes over raw HTTP: the OpenAI SDK would move these fields into
-``extra_body`` and type the reply without them.  vLLM accepts a per-request
-``seed``.  It silently ignores a field it does not know (measured on 0.26.0),
-so options outside a probed set are refused rather than forwarded.
+vLLM ignores an unknown field silently (measured on 0.26.0), so options
+outside a probed set are refused rather than forwarded.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
@@ -192,8 +187,7 @@ _CONSUMED_PATHS = frozenset(
 
 _NOOP_PATHS: Mapping[str, str] = MappingProxyType(
     {
-        # Streamed choices carry no prompt_logprobs (measured on 0.26.0), and
-        # one POST returns the same content.
+        # Streamed choices carry no prompt_logprobs (measured on 0.26.0).
         "scheduling.stream": "the request is sent as one non-streaming POST",
     }
 )
@@ -203,9 +197,8 @@ _SCHEMA_NAME_NOOP = (
 )
 _STRICT_NOOP = "vLLM's grammar-constrained decoding is always strict"
 
-#: vLLM sampling parameters with no first-class request leaf, forwarded as
-#: top-level body fields.  Each was sent to a live server and changed nothing
-#: else; vLLM drops a field it does not know without an error.
+#: vLLM sampling parameters with no request leaf, forwarded as top-level
+#: fields; each was probed live.
 _SAMPLING_OPTION_KEYS = frozenset({"min_p", "repetition_penalty", "stop_token_ids"})
 
 #: Option keys that spell a first-class request leaf, or a field this dialect
@@ -368,12 +361,16 @@ def _prompt_position(
 ) -> tuple[TokenLogprob, tuple[TopKEntry, ...]]:
     """Lift one ``{token_id: {logprob, rank, decoded_token}}`` position.
 
-    The scored token is the entry keyed by the prompt's own id; it is listed
-    beside the top-k when it ranks below them, so the top-k is the entries
-    with ``rank <= top_k``, in rank order.
+    The scored token is the entry keyed by the prompt's own id; ``top_k + 1``
+    entries list it beside the top-k, even when a tie gives it a top-k rank.
     """
 
     entries = _mapping(raw, path)
+    if len(entries) not in {top_k, top_k + 1}:
+        raise OutputContractError(
+            f"{path} lists {len(entries)} entries for a top-{top_k} position"
+        )
+    beside = len(entries) == top_k + 1
     scored: TokenLogprob | None = None
     ranked: list[tuple[int, TopKEntry]] = []
     for key, value in entries.items():
@@ -390,7 +387,7 @@ def _prompt_position(
             raise OutputContractError(f"{entry_path}.rank must be a positive integer")
         if entry_id == token_id:
             scored = TokenLogprob(token=text, logprob=logprob, token_id=entry_id)
-        if rank <= top_k:
+        if not (beside and entry_id == token_id):
             ranked.append(
                 (rank, TopKEntry(token=text, logprob=logprob, token_id=entry_id))
             )
@@ -405,12 +402,10 @@ def _prompt_position(
 def _first_token_text(prompt: str, scored: Sequence[TokenLogprob]) -> str:
     """The unscored first position's text: the prompt prefix the rest leaves.
 
-    vLLM reports ``None`` for position 0, its text included, and decodes the
-    rest incrementally, so they spell the prompt's suffix (measured on CJK,
-    byte-fallback emoji, leading spaces and newlines).  Empty when that token
-    is a BOS outside the prompt text, or when a tokenizer's decoding does not
-    spell the prompt: the position carries no score, and a task that locates
-    the prompt in the token text fails on its own there.
+    vLLM reports ``None`` for position 0, text included; the rest decode
+    incrementally to the prompt's suffix (measured on CJK, byte-fallback
+    emoji, leading spaces and newlines).  Empty for a BOS outside the prompt,
+    or when the decoded tokens do not spell it.
     """
 
     rest = "".join(item.token for item in scored)
@@ -432,8 +427,7 @@ def _input_scoring(
     token_ids = _token_ids(choice.get("prompt_token_ids"), "prompt_token_ids")
     if not positions:
         raise OutputContractError("vLLM scored no prompt tokens")
-    # The completeness check RFC #25 §8.2 asks for: one position per prompt
-    # token, by both the ids and the usage count.
+    # One position per prompt token, by both the ids and the usage count.
     if len(positions) != len(token_ids) or (
         prompt_tokens is not None and len(positions) != prompt_tokens
     ):
@@ -466,8 +460,11 @@ def _sampled_top(
 ) -> tuple[tuple[TopKEntry, ...], ...]:
     """Per-position ``{text: logprob}`` maps, trimmed to the top ``top_k``.
 
-    vLLM adds the sampled token to the map when it ranks below the top-k, so a
-    map one longer than ``top_k`` drops it.
+    The map is keyed by decoded text: ``top_k + 1`` entries list the sampled
+    token beside the top-k, and it is dropped.  Tokens that decode alike share
+    a key; a map that is then short, or holds another value for the sampled
+    token, is refused.  A collision that still leaves ``top_k`` entries is
+    indistinguishable, since the map carries no rank.
     """
 
     positions = _sequence(raw, "logprobs.top_logprobs")
@@ -483,7 +480,15 @@ def _sampled_top(
             text: _logprob(value, f"{path}[{text!r}]")
             for text, value in _mapping(position, path).items()
         }
-        if len(entries) == top_k + 1 and token.token in entries:
+        if (
+            len(entries) not in {top_k, top_k + 1}
+            or entries.get(token.token) != token.logprob
+        ):
+            raise OutputContractError(
+                f"{path} cannot be split into the sampled token and its top-{top_k}: "
+                "two tokens decode to the same text"
+            )
+        if len(entries) == top_k + 1:
             del entries[token.token]
         ranked = sorted(entries.items(), key=lambda item: -item[1])
         lifted.append(tuple(TopKEntry(token=text, logprob=lp) for text, lp in ranked))
@@ -722,8 +727,7 @@ class VllmNativeDialect:
                 _ScoringVerifier("logprobs", scoring.top_logprobs),
             )
         if scoring.top_logprobs > 0:
-            # Both breadths carry the one leaf: the sampled field when present,
-            # else the prompt one.
+            # One leaf, two breadth fields: claim the sampled one when sent.
             breadth = "logprobs" if scoring.sampled_logprobs else "prompt_logprobs"
             consume("scoring.top_logprobs", WireObservation((breadth,)))
 
@@ -752,8 +756,7 @@ class VllmNativeDialect:
                     "dialect_options", "an empty options mapping has no wire semantics"
                 )
             for key, value in options.values.items():
-                # Top-level fields, which a passthrough (one nested container)
-                # cannot name; each is consumed against its own body key.
+                # Top-level fields, each consumed against its own body key.
                 body[key] = value
                 consume(f"dialect_options.{key}", WireObservation((key,)))
 

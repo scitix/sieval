@@ -198,9 +198,7 @@ true, top_logprobs: N}`), each input token's top-N lands in
 the generated tokens'. Served by `sglang_native`, `vllm_native` and
 `openai_completions`. The reply grows by N entries per input token.
 
-`sglang_native` and `vllm_native` also fill each token's id
-(`TokenLogprob.token_id`, `TopKEntry.token_id` on the input side), which the
-OpenAI-shaped dialects cannot.
+`sglang_native` and `vllm_native` also fill token ids.
 
 ## Model Capabilities (`extra`)
 

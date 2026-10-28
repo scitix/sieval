@@ -645,8 +645,6 @@ def bind_dialect(
 
 
 def _not_implemented_message(dialect_id: str) -> str:
-    if dialect_id == "vllm_native":
-        return "dialect 'vllm_native' is reserved and has no executable binder"
     return f"dialect {dialect_id!r} is reserved and has no executable binder"
 
 

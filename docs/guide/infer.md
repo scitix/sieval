@@ -258,23 +258,20 @@ per-request `seed`, so an explicit one is refused; a managed engine pins
 `--random-seed` instead.
 
 A vLLM `gen` model keeps `openai_completions` unless it sets `dialect:
-vllm_native`. That dialect posts to the same `/v1/completions` but sends
-vLLM's own fields as first-class wire:
+vllm_native`, which posts to the same `/v1/completions` with vLLM's own
+fields (measured on 0.26.0):
 
 | Need | `openai_completions` | `vllm_native` |
 | --- | --- | --- |
-| Input scoring | `echo` + `logprobs`, split at `usage.prompt_tokens` | `prompt_logprobs`, its own channel, checked against `prompt_token_ids` and the usage count |
-| `texts` of a scoring call | prompt + generated text (the echo) | generated text only |
-| Token ids | none | input and sampled tokens (`return_token_ids`) |
-| Structured output | refused | `structured_output` → `structured_outputs` (`json` schema or `json_object`) |
-| `seed` | sent | sent |
-| `suffix`, `max_tokens: 0` | sent; vLLM refuses | refused before I/O |
-| Unknown options | `extra_body` | refused: vLLM drops an unknown field silently. `min_p`, `repetition_penalty` and `stop_token_ids` pass |
+| Input scoring | `echo`, split at `usage.prompt_tokens` | `prompt_logprobs`, checked against `prompt_token_ids` |
+| `texts` of a scoring call | prompt + generation | generation only |
+| Token ids | none | input and sampled (`return_token_ids`) |
+| Structured output | refused | `structured_outputs` |
+| Unknown options | `extra_body` | refused, except `min_p`, `repetition_penalty`, `stop_token_ids` |
 
-`stream` is sent as one non-streaming POST (streamed vLLM choices carry no
-`prompt_logprobs`). Reasoning and tool parsers act on chat requests, so neither
-is offered. Input top-k needs `--max-logprobs` at least the breadth, as on the
-OpenAI route. Measured on vLLM 0.26.0.
+It sends one non-streaming POST and offers no reasoning or tool parsers
+(they act on chat requests). `suffix` and `max_tokens: 0` are refused before
+I/O. Input top-k needs `--max-logprobs` at least the breadth.
 
 ### Model lifecycles
 

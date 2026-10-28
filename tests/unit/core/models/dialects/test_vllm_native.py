@@ -122,6 +122,9 @@ _PROMPT_LOGPROBS = [
 ]
 _PROMPT_IDS = [785, 6722]
 
+#: The same prompt at breadth 0: the scored token alone.
+_SCORED_ONLY = [None, {"6722": _entry(-9.45, 522, " capital")}]
+
 
 #: The sampled " Paris" at rank 1 of a top-2.
 _SAMPLED = {
@@ -313,7 +316,7 @@ class TestLowering:
 
     @pytest.mark.anyio
     async def test_input_scoring_sends_prompt_logprobs_without_echo(self):
-        positions = [None, {"6722": _entry(-9.45, 522, " capital")}]
+        positions = _SCORED_ONLY
         choice = _choice(prompt_logprobs=positions, prompt_token_ids=_PROMPT_IDS)
 
         _, server = await _run(_reply(choice), _request(input_scoring=True))
@@ -532,8 +535,41 @@ class TestInputScoring:
         ]
 
     @pytest.mark.anyio
+    async def test_a_rank_tie_beside_the_top_k_stays_out_of_it(self):
+        # " capital" ties the rank-2 entry but was not selected, so it is
+        # listed beside the top 2 with rank 2.
+        positions = [
+            None,
+            {
+                "6722": _entry(-4.95, 2, " capital"),
+                "2701": _entry(-0.32, 1, " following"),
+                "40389": _entry(-4.95, 2, " Purple"),
+            },
+        ]
+        choice = _scored_choice()
+        choice["prompt_logprobs"] = positions
+
+        response, _ = await _run(_reply(choice), _top_k_scoring())
+
+        assert [entry.token for entry in response.input_scoring.top_logprobs[1]] == [
+            " following",
+            " Purple",
+        ]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("count", [1, 4])
+    async def test_a_position_without_k_or_k_plus_one_entries_is_refused(self, count):
+        filler = {str(100 + i): _entry(-2.0 - i, 2 + i, f"t{i}") for i in range(3)}
+        position = {"6722": _entry(-0.5, 1, " capital"), **filler}
+        choice = _scored_choice()
+        choice["prompt_logprobs"] = [None, dict(list(position.items())[:count])]
+
+        with pytest.raises(OutputContractError, match=f"lists {count} entries"):
+            await _run(_reply(choice), _top_k_scoring())
+
+    @pytest.mark.anyio
     async def test_breadth_zero_carries_no_input_top_k(self):
-        positions = [None, {"6722": _entry(-9.45, 522, " capital")}]
+        positions = _SCORED_ONLY
         choice = _choice(prompt_logprobs=positions, prompt_token_ids=_PROMPT_IDS)
 
         response, _ = await _run(_reply(choice), _request(input_scoring=True))
@@ -548,7 +584,7 @@ class TestInputScoring:
 
         from sieval.core.models._legacy_bridge import response_to_model_output
 
-        positions = [None, {"6722": _entry(-9.45, 522, " capital")}]
+        positions = _SCORED_ONLY
         choice = _choice(prompt_logprobs=positions, prompt_token_ids=_PROMPT_IDS)
         response, _ = await _run(_reply(choice), _request(input_scoring=True))
 
@@ -614,7 +650,7 @@ class TestInputScoring:
                 "first prompt position",
             ),
             (
-                _choice(prompt_logprobs=_PROMPT_LOGPROBS, prompt_token_ids=[785, 9]),
+                _choice(prompt_logprobs=_SCORED_ONLY, prompt_token_ids=[785, 9]),
                 2,
                 "prompt's own token id 9",
             ),
@@ -673,7 +709,8 @@ class TestInputScoring:
 
     @pytest.mark.anyio
     async def test_without_usage_the_token_ids_still_bound_the_prompt(self):
-        reply = _reply(_scored_choice())
+        choice = _choice(prompt_logprobs=_SCORED_ONLY, prompt_token_ids=_PROMPT_IDS)
+        reply = _reply(choice)
         reply["usage"] = None
 
         response, _ = await _run(reply, _request(input_scoring=True))
@@ -704,6 +741,32 @@ class TestSampledLogprobs:
         assert response.top_logprobs == (
             (TopKEntry(" A", -0.1), TopKEntry(" C", -1.0)),
         )
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("sampled", "top"),
+        [
+            # " B" sampled inside the top 3; the other two decode to "", so
+            # the map is one short.
+            (-0.5, {" B": -0.5, "": -0.7}),
+            # " B" sampled inside the top 3; another decodes alike and
+            # overwrites its value.
+            (-0.5, {" B": -0.9, " A": -0.1, " C": -1.0}),
+        ],
+    )
+    async def test_a_decoded_text_collision_is_refused(self, sampled, top):
+        choice = _choice(
+            text=" B",
+            logprobs={
+                "tokens": [" B"],
+                "token_logprobs": [sampled],
+                "top_logprobs": [top],
+            },
+            token_ids=[425],
+        )
+
+        with pytest.raises(OutputContractError, match="decode to the same text"):
+            await _run(_reply(choice), _request(sampled_logprobs=True, top_logprobs=3))
 
     @pytest.mark.anyio
     async def test_breadth_zero_carries_no_top_k(self):
