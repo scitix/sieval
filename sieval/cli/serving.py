@@ -20,6 +20,15 @@ from sieval.infer.topology import DeploymentPlan
 #: The engine parameter that sets the served context window, by backend.
 CONTEXT_PARAMS: dict[str, str] = {"sglang": "context_length", "vllm": "max_model_len"}
 
+#: The engine environment a scaled group launches with, by backend. SGLang
+#: derives the unscaled window from a YaRN block naming
+#: ``original_max_position_embeddings`` and refuses the planned one
+#: (https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/srt/configs/model_config.py#L1182-L1207);
+#: ``context.max`` is the bound instead.
+SCALING_ENV: dict[str, dict[str, str]] = {
+    "sglang": {"SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN": "1"}
+}
+
 #: The serving group that holds every recipe plan and every task an
 #: external endpoint serves.
 DEFAULT_GROUP = "default"

@@ -232,7 +232,10 @@ tasks:
   [context overflow](metrics.md#always-present), as before.
 - Within `max`: a plan of its own with `scaling`, in serving group
   `<model>@<window>`. Scaling changes short-context outputs, so no other task
-  shares that engine.
+  shares that engine. SGLang launches it with
+  `SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1`, so `max` is the only bound:
+  SGLang no longer checks the window against the scaling. `infer.env`
+  overrides it.
 - Otherwise, or beyond a window pinned by `infer.overrides` / `context_limit`:
   refused before launch, naming the task, its need and the model's limit. An
   unknown native window refuses any raise (set `context.native`).
