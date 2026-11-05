@@ -13,7 +13,7 @@ import os
 import re
 import shlex
 import sys
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -146,6 +146,7 @@ from sieval.core.tasks.python_requires import (
 from sieval.core.tasks.services import check_service_names
 from sieval.core.types import JSONValue
 from sieval.core.utils.hf import maybe_resolve_hf_path
+from sieval.core.utils.hf_uncached import BuilderRead, uncached_reads
 from sieval.core.utils.paths import resolve_data_dir
 from sieval.datasets.downloaders.staged import probe_source, staged_dir
 from sieval.infer import deployment_plan_projection
@@ -1586,6 +1587,13 @@ def _emit_best_effort_deterministic_warning(labels: list[str]) -> None:
     )
 
 
+#: How a session reads its datasets. ``full`` is ``load_dataset`` as written,
+#: through the Arrow cache. ``light`` reads them in memory and writes no cache
+#: (:func:`~sieval.core.utils.hf_uncached.uncached_reads`): the same rows, for
+#: a session that reads each dataset once, as ``sieval run --dry-run`` does.
+type DatasetReads = Literal["light", "full"]
+
+
 def _refuse_unpinned_staging(name: str, ds_class: type, path: str) -> None:
     """Refuse *path* when it is a registered source's staging dir holding other bytes.
 
@@ -1662,6 +1670,8 @@ class EvalSession:
 
     # Every task; a run of one serving group replaces it in `__init__`.
     _serving: SessionServing = SessionServing()
+    # How datasets are read (:data:`DatasetReads`); `__init__` may replace it.
+    dataset_reads: DatasetReads = "full"
     _engine_loss: EngineLoss | None = None
 
     def __init__(
@@ -1684,8 +1694,12 @@ class EvalSession:
         serving: SessionServing | None = None,
         engine_loss: EngineLoss | None = None,
         deferred_roots: frozenset[str] = frozenset(),
+        dataset_reads: DatasetReads = "full",
     ):
         self.config_path = Path(config_path)
+        self.dataset_reads = dataset_reads
+        # Under `dataset_reads="light"`, how each dataset's builders read it.
+        self.dataset_builder_reads: dict[str, list[BuilderRead]] = {}
         self._engine_loss = engine_loss
         self._serving = serving or SessionServing()
         self.model_override = model_override
@@ -1824,6 +1838,7 @@ class EvalSession:
 
         self.models: dict[str, Model] = {}
         self.datasets: dict[str, Dataset] = {}
+        # Under `dataset_reads="light"`, how each dataset's builders read it.
         self.prelaunch_reconcile_result: ReconcileResult | None = None
         self.postlaunch_reconcile_result: ReconcileResult | None = None
         self._normalized_model_bindings: dict[str, NormalizedModelBinding] = {}
@@ -4470,7 +4485,10 @@ class EvalSession:
                 _refuse_unpinned_staging(name, ds_class, path)
 
             try:
-                dataset = ds_class(path, **init_args) if path else ds_class(**init_args)
+                with self._reading_dataset(name):
+                    dataset = (
+                        ds_class(path, **init_args) if path else ds_class(**init_args)
+                    )
             except FileNotFoundError as exc:
                 # Also catches `datasets.exceptions.DataFilesNotFoundError`.
                 try:
@@ -4499,6 +4517,16 @@ class EvalSession:
 
             self.datasets[name] = dataset
             logger.info("Created dataset '{}' with class '{}'", name, class_spec)
+
+    @contextlib.contextmanager
+    def _reading_dataset(self, name: str) -> Iterator[None]:
+        """Construct dataset *name* inside, read as ``dataset_reads`` says."""
+        if self.dataset_reads == "full":
+            yield
+            return
+        with uncached_reads() as log:
+            yield
+        self.dataset_builder_reads[name] = list(log.reads)
 
     def _apply_dataset_operations(
         self,
@@ -5139,7 +5167,8 @@ class EvalSession:
             init_args = self._normalize_dict(
                 dataset_ref.get("args"), f"Task '{task_name}' inline dataset args"
             )
-            dataset = ds_class(path, **init_args) if path else ds_class(**init_args)
+            with self._reading_dataset(f"{task_name}.dataset"):
+                dataset = ds_class(path, **init_args) if path else ds_class(**init_args)
 
             # Apply operations if any
             operations = self._normalize_list(
@@ -5585,12 +5614,16 @@ async def aplan_session(
     unlaunched_deployments: Mapping[str, Deployment] | None = None,
     cli_model: CliModel | None = None,
     serving: SessionServing | None = None,
+    dataset_reads: DatasetReads = "full",
+    builder_reads: dict[str, list[BuilderRead]] | None = None,
 ) -> tuple[dict[str, str], dict[str, RunPlan | Exception]]:
     """Plan the run :func:`arun_session` would make with the same arguments.
 
     Returns each task's model under test (its root model config) and its
     :meth:`EvalSession.aplan` entry. Every served model passes as one of
     *unlaunched_deployments*. Reads ``--resume`` directories, writes nothing.
+    *dataset_reads* is :data:`DatasetReads`; under ``light``, *builder_reads*
+    receives how each dataset was read, even when planning raises.
     """
     session = EvalSession(
         config_path=config,
@@ -5604,8 +5637,13 @@ async def aplan_session(
         unlaunched_deployments=unlaunched_deployments,
         cli_model=cli_model,
         serving=serving,
+        dataset_reads=dataset_reads,
     )
-    plans = await session.aplan()
+    try:
+        plans = await session.aplan()
+    finally:
+        if builder_reads is not None:
+            builder_reads |= session.dataset_builder_reads
     return session.task_models(), plans
 
 

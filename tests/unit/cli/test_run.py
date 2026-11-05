@@ -2827,3 +2827,68 @@ class TestSessionWatching:
             reports=reports,
         )
         assert (lost, reports) == ({}, {"t": 1})
+
+
+class TestDatasetsJson:
+    """The dry-run report's ``datasets``: which mode ran, and per dataset how."""
+
+    def test_full_reports_only_its_mode(self) -> None:
+        from sieval.cli.run import _datasets_json
+
+        assert _datasets_json("full", {}) == {"mode": "full"}
+
+    def test_light_names_each_dataset_read(self) -> None:
+        from sieval.cli.run import _datasets_json
+        from sieval.core.utils.hf_uncached import BuilderRead
+
+        reads = {
+            "mem": [BuilderRead("a", "memory"), BuilderRead("a/x", "memory")],
+            "script": [BuilderRead("b", "cache", "loading script")],
+            "both": [
+                BuilderRead("c/1", "memory"),
+                BuilderRead("c/2", "cache", "split test[:5] is not a split name"),
+            ],
+            # Constructed without `load_dataset`, as a `from_list` loader is.
+            "own": [],
+        }
+        assert _datasets_json("light", reads) == {
+            "mode": "light",
+            "read": {
+                "mem": {"read": "memory", "unverified": ["arrow_cache_write"]},
+                "script": {
+                    "read": "cache",
+                    "unverified": [],
+                    "cache_reasons": ["b: loading script"],
+                },
+                "both": {
+                    "read": "mixed",
+                    "unverified": ["arrow_cache_write"],
+                    "cache_reasons": ["c/2: split test[:5] is not a split name"],
+                },
+                "own": {"read": "none", "unverified": []},
+            },
+        }
+
+    @pytest.mark.anyio
+    async def test_a_report_that_stops_early_still_names_its_mode(
+        self, tmp_path: Path
+    ) -> None:
+        from sieval.cli.run import _run_dry_run
+
+        light = await _run_dry_run(tmp_path / "absent.yaml")
+        full = await _run_dry_run(tmp_path / "absent.yaml", dataset_reads="full")
+        assert light["datasets"] == {"mode": "light", "read": {}}
+        assert full["datasets"] == {"mode": "full"}
+
+    def test_the_flag_reaches_the_dry_run(self, tmp_path: Path) -> None:
+        config = tmp_path / "c.yaml"
+        config.write_text("models: {}\ntasks: {}")
+        seen = AsyncMock(return_value={"checks": [], "n_errors": 0, "n_warnings": 0})
+        with patch("sieval.cli.run._run_dry_run", new=seen):
+            runner.invoke(app, ["run", str(config), "--dry-run", "-o", "json"])
+            runner.invoke(
+                app,
+                ["run", str(config), "--dry-run", "--full-datasets", "-o", "json"],
+            )
+        modes = [call.kwargs["dataset_reads"] for call in seen.await_args_list]
+        assert modes == ["light", "full"]

@@ -56,6 +56,7 @@ from sieval.cli.session import (
     unwrap_proxies,
 )
 from sieval.cli.validation import _VALID_OPERATIONS
+from sieval.core.datasets import Dataset
 from sieval.core.models.capabilities import (
     CapabilityIntent,
     ModelCapabilityStatus,
@@ -10512,3 +10513,73 @@ class TestEngineGuardFor:
     def test_no_loss_to_watch_means_no_guard(self):
         session = self._session(None, {"served"})
         assert session._engine_guard_for("t", self._context(candidate="served")) is None
+
+
+class TestDatasetReads:
+    """``dataset_reads`` decides how ``_setup_datasets`` reads each dataset."""
+
+    @staticmethod
+    def _session(tmp_path: Path, mode: str):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from sieval.cli.session import EvalSession
+
+        data = tmp_path / "data"
+        data.mkdir()
+        pq.write_table(
+            pa.Table.from_pylist([{"x": i} for i in range(4)]),
+            data / "test-0.parquet",
+        )
+        session = EvalSession.__new__(EvalSession)
+        session.datasets = {}
+        session.dataset_builder_reads = {}
+        session.dataset_reads = mode
+        session.config = {
+            "datasets": {
+                "d": {
+                    "class": "tests.unit.cli.test_session._ParquetDataset",
+                    "path": str(data),
+                    "operations": [{"slice": {"num": 2}}],
+                }
+            }
+        }
+        return session
+
+    @pytest.mark.parametrize("mode", ["light", "full"])
+    def test_each_mode_reads_the_same_rows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+    ) -> None:
+        from datasets import config as hf_config
+
+        cache = tmp_path / "cache"
+        monkeypatch.setattr(hf_config, "HF_DATASETS_CACHE", cache)
+        session = self._session(tmp_path, mode)
+        session._setup_datasets()
+        test_set = session.datasets["d"].test_set
+        assert test_set is not None
+        assert test_set.to_list() == [{"x": 0}, {"x": 1}]
+        arrow = sorted(cache.rglob("*.arrow")) if cache.exists() else []
+        if mode == "light":
+            assert arrow == []
+            ((read,),) = session.dataset_builder_reads.values()
+            assert read.path == "memory"
+        else:
+            assert arrow
+            assert session.dataset_builder_reads == {}
+
+    def test_a_missing_dataset_keeps_its_download_hint(self, tmp_path: Path) -> None:
+        session = self._session(tmp_path, "light")
+        session.config["datasets"]["d"]["path"] = str(tmp_path / "absent")
+        with pytest.raises(RuntimeError, match="FileNotFoundError") as caught:
+            session._setup_datasets()
+        assert isinstance(caught.value.__cause__, FileNotFoundError)
+
+
+class _ParquetDataset(Dataset):
+    def load(self, name_or_path: str, **kwargs):
+        from datasets import DatasetDict, load_dataset
+
+        loaded = load_dataset(name_or_path, **kwargs)
+        assert isinstance(loaded, DatasetDict)
+        return loaded

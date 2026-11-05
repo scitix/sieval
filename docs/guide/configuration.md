@@ -511,6 +511,12 @@ without launching an engine or writing a result directory. It reads the
 `--resume` directories in place. On a node without GPUs, declare the target ones
 in `SIEVAL_TARGET_GPU` ([Resolving for declared GPUs](infer.md#resolving-for-declared-gpus)).
 
+Planning reads every dataset row the run reads, and builds each task as the run
+does. By default it reads each dataset in memory and writes no Arrow cache
+under `HF_DATASETS_CACHE`; `--full-datasets` loads them through the cache, as
+the run does. Both read the same rows and give the same report, except for
+`datasets` below.
+
 ```json
 {
   "checks": [{"name": "resume_plan", "ok": true, "detail": "1 task(s): 1 sample(s) to infer, 1 to grade"}],
@@ -549,7 +555,8 @@ in `SIEVAL_TARGET_GPU` ([Resolving for declared GPUs](infer.md#resolving-for-dec
       "metrics": {"names": ["correct", "score", "total"], "patterns": ["score_{category}"]}
     }
   },
-  "needs_inference": true
+  "needs_inference": true,
+  "datasets": {"mode": "light", "read": {"echo": {"read": "memory", "unverified": ["arrow_cache_write"]}}}
 }
 ```
 
@@ -594,8 +601,19 @@ in `SIEVAL_TARGET_GPU` ([Resolving for declared GPUs](infer.md#resolving-for-dec
   `report_metrics` check. See [Report metric names](metrics.md#report-metric-names).
 - `needs_inference` is whether the run starts any engine. A task that infers
   through an `api_base` model counts in its `to_infer` but starts none.
+- `datasets.mode` is `light` (the default) or `full` (`--full-datasets`).
+  Under `light`, `datasets.read` has one entry per dataset planning built, by
+  its `datasets:` key (`<task>.dataset` for an inline one). `read` is `memory`
+  when every `load_dataset` call read in memory, `cache` when every one went
+  through the Arrow cache, `mixed` for both, and `none` for a loader that
+  calls none. A call keeps the cache for a loading script, a split asked for by
+  slice (`test[:10]`), a split over 2 GiB or not on local disk, batches of
+  different schemas, or an empty split; `cache_reasons` names each. `unverified`
+  lists what the run checks that this dry-run did not: `arrow_cache_write`,
+  that the cache can be written (disk space, permissions). Every other check,
+  the rows and their count included, is the run's.
 
-`gpu`, `models`, `serving`, `tasks` and `needs_inference` are always present. When the
+`gpu`, `models`, `serving`, `tasks`, `needs_inference` and `datasets` are always present. When the
 config checks fail, or planning raises (the `resume_plan` check then names
 why), `tasks` and every `needs_inference` are `null`: unknown, not false.
 

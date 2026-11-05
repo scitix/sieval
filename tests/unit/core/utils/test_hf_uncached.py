@@ -1,0 +1,277 @@
+"""Tests for sieval/core/utils/hf_uncached.py.
+
+Each case loads one local source twice, through the Arrow cache and inside
+``uncached_reads``, and compares what comes back: rows, features, split names,
+fingerprints, and which files land under ``HF_DATASETS_CACHE``.
+
+AI-Generated Code - Claude Opus 5.5 (Anthropic)
+"""
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
+from datasets import DatasetDict, Features, Value, config, load_dataset
+from datasets.builder import DatasetBuilder
+from datasets.utils.info_utils import NonMatchingSplitsSizesError
+
+import sieval.core.utils.hf_uncached as hf_uncached
+from sieval.core.utils.hf import ensure_dataset
+from sieval.core.utils.hf_uncached import uncached_reads
+
+
+@pytest.fixture
+def cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A fresh ``HF_DATASETS_CACHE``, as a job's first dry-run sees it."""
+    root = tmp_path / "hf-cache"
+    monkeypatch.setattr(config, "HF_DATASETS_CACHE", root)
+    return root
+
+
+def _arrow_files(root: Path) -> list[Path]:
+    return sorted(root.rglob("*.arrow")) if root.exists() else []
+
+
+def _parquet_repo(root: Path) -> Path:
+    """A staged repo of two splits, the test split in two shards."""
+    repo = root / "org" / "bench"
+    (repo / "main").mkdir(parents=True)
+    rows = [{"question": f"q{i}", "answer": i} for i in range(7)]
+    pq.write_table(pa.Table.from_pylist(rows[:4]), repo / "main" / "test-0.parquet")
+    pq.write_table(pa.Table.from_pylist(rows[4:]), repo / "main" / "test-1.parquet")
+    pq.write_table(
+        pa.Table.from_pylist([{"question": "dev", "answer": -1}]),
+        repo / "main" / "dev-0.parquet",
+    )
+    return repo
+
+
+def _jsonl(path: Path, rows: list[dict]) -> Path:
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    return path
+
+
+def _load_parquet(repo: Path) -> DatasetDict:
+    files = {
+        "test": [str(p) for p in sorted((repo / "main").glob("test-*.parquet"))],
+        "dev": [str(repo / "main" / "dev-0.parquet")],
+    }
+    loaded = load_dataset("parquet", data_files=files)
+    assert isinstance(loaded, DatasetDict)
+    return loaded
+
+
+class TestSameRows:
+    def test_parquet_splits_match_the_cached_load(
+        self, tmp_path: Path, cache: Path
+    ) -> None:
+        repo = _parquet_repo(tmp_path)
+        with uncached_reads() as log:
+            light = _load_parquet(repo)
+        assert _arrow_files(cache) == []
+        full = _load_parquet(repo)
+        assert _arrow_files(cache), "the cached load writes Arrow files"
+
+        assert list(light) == list(full) == ["test", "dev"]
+        for split in full:
+            assert light[split].to_list() == full[split].to_list()
+            assert light[split].features == full[split].features
+            assert str(light[split].split) == str(full[split].split)
+            # The same fingerprint, so a later transform hashes alike.
+            assert light[split]._fingerprint == full[split]._fingerprint
+        assert [r.path for r in log.reads] == ["memory"]
+
+    def test_one_named_split(self, tmp_path: Path, cache: Path) -> None:
+        rows = [{"x": i} for i in range(5)]
+        path = _jsonl(tmp_path / "rows.jsonl", rows)
+        with uncached_reads() as log:
+            light = ensure_dataset(
+                load_dataset("json", data_files=str(path), split="train")
+            )
+        assert light.to_list() == rows
+        assert _arrow_files(cache) == []
+        assert [r.path for r in log.reads] == ["memory"]
+
+    def test_transforms_after_the_read_write_no_cache(
+        self, tmp_path: Path, cache: Path
+    ) -> None:
+        # What a loader such as C-Eval does to each subject's rows.
+        path = _jsonl(tmp_path / "rows.jsonl", [{"x": i} for i in range(6)])
+        with uncached_reads():
+            rows = ensure_dataset(
+                load_dataset("json", data_files=str(path), split="train")
+            )
+            tagged = rows.map(lambda row: {"tag": "s"}).filter(lambda r: r["x"] % 2)
+        assert tagged.to_list() == [{"x": x, "tag": "s"} for x in (1, 3, 5)]
+        assert _arrow_files(cache) == []
+
+
+class TestCachedFallback:
+    def test_a_sliced_split_reads_through_the_cache(
+        self, tmp_path: Path, cache: Path
+    ) -> None:
+        path = _jsonl(tmp_path / "rows.jsonl", [{"x": i} for i in range(5)])
+        with uncached_reads() as log:
+            head = ensure_dataset(
+                load_dataset("json", data_files=str(path), split="train[:2]")
+            )
+        assert head.to_list() == [{"x": 0}, {"x": 1}]
+        assert _arrow_files(cache), "a slice is the cached path's to read"
+        (read,) = log.reads
+        assert (read.path, read.reason) == (
+            "cache",
+            "split train[:2] is not a split name",
+        )
+
+    def test_a_split_over_the_size_bound_reads_through_the_cache(
+        self, tmp_path: Path, cache: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = _jsonl(tmp_path / "rows.jsonl", [{"x": i} for i in range(5)])
+        monkeypatch.setattr(hf_uncached, "MAX_IN_MEMORY_BYTES", 1)
+        with uncached_reads() as log:
+            rows = ensure_dataset(
+                load_dataset("json", data_files=str(path), split="train")
+            )
+        assert len(rows) == 5
+        (read,) = log.reads
+        assert read.path == "cache"
+        assert read.reason.startswith("split train is ")
+
+    def test_batches_of_different_schemas_read_through_the_cache(
+        self, tmp_path: Path, cache: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A column null in the first batch and a string in the next: the cache
+        # writer casts each batch to one schema, which a concatenation cannot.
+        monkeypatch.setattr(hf_uncached, "_BATCH_ROWS", 1)
+        rows = [{"x": 1, "note": None}, {"x": 2, "note": "n"}]
+        path = _jsonl(tmp_path / "rows.jsonl", rows)
+
+        def concat_fails(*_: object, **__: object) -> pa.Table:
+            raise pa.ArrowInvalid("Schema at index 1 was different")
+
+        monkeypatch.setattr(hf_uncached.pa, "concat_tables", concat_fails)
+        with uncached_reads() as log:
+            loaded = ensure_dataset(
+                load_dataset("json", data_files=str(path), split="train")
+            )
+        monkeypatch.undo()
+        assert loaded.to_list() == rows
+        (read,) = log.reads
+        assert read.path == "cache"
+        assert read.reason.startswith("batches differ in schema")
+
+    def test_an_empty_split_fails_as_the_cached_load_does(
+        self, tmp_path: Path, cache: Path
+    ) -> None:
+        path = tmp_path / "empty.csv"
+        path.write_text("x,y\n")
+        features = Features({"x": Value("int64"), "y": Value("string")})
+        with pytest.raises(ValueError, match="corresponds to no data") as full:
+            load_dataset("csv", data_files=str(path), split="train", features=features)
+        with (
+            pytest.raises(ValueError, match="corresponds to no data") as light,
+            uncached_reads() as log,
+        ):
+            load_dataset("csv", data_files=str(path), split="train", features=features)
+        assert str(light.value) == str(full.value)
+        assert [(r.path, r.reason) for r in log.reads] == [
+            ("cache", "split train has no rows")
+        ]
+
+    def test_a_loading_script_reads_through_the_cache(
+        self, cache: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The generator builder's cached path also checks for duplicate keys.
+        from datasets import GeneratorBasedBuilder
+
+        builder = object.__new__(GeneratorBasedBuilder)
+        assert hf_uncached._memory_splits(builder, "test") == (None, "loading script")
+
+    def test_a_split_off_local_disk_reads_through_the_cache(
+        self, tmp_path: Path, cache: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = _jsonl(tmp_path / "rows.jsonl", [{"x": 1}])
+        size = hf_uncached._local_size
+        monkeypatch.setattr(
+            hf_uncached, "_local_size", lambda paths: size(["hf://org/r/f.jsonl"])
+        )
+        with uncached_reads() as log:
+            rows = ensure_dataset(
+                load_dataset("json", data_files=str(path), split="train")
+            )
+        assert rows.to_list() == [{"x": 1}]
+        assert [(r.path, r.reason) for r in log.reads] == [
+            ("cache", "split train is not on local disk")
+        ]
+
+
+class TestChecksKept:
+    def test_a_split_size_the_card_contradicts_is_refused(
+        self, tmp_path: Path, cache: Path
+    ) -> None:
+        # The card's `num_examples` is what the cached path verifies.
+        repo = tmp_path / "card"
+        repo.mkdir()
+        _jsonl(repo / "test.jsonl", [{"x": i} for i in range(3)])
+        (repo / "README.md").write_text(
+            "---\n"
+            "dataset_info:\n"
+            "  features:\n"
+            "  - name: x\n"
+            "    dtype: int64\n"
+            "  splits:\n"
+            "  - name: test\n"
+            "    num_examples: 4\n"
+            "configs:\n"
+            "- config_name: default\n"
+            "  data_files:\n"
+            "  - split: test\n"
+            "    path: test.jsonl\n"
+            "---\n"
+        )
+        with pytest.raises(NonMatchingSplitsSizesError):
+            load_dataset(str(repo))
+        with pytest.raises(NonMatchingSplitsSizesError), uncached_reads():
+            load_dataset(str(repo))
+
+
+class TestPatching:
+    def test_the_builder_is_restored_after_an_error(self, tmp_path: Path) -> None:
+        before = (DatasetBuilder.download_and_prepare, DatasetBuilder.as_dataset)
+        with pytest.raises(FileNotFoundError), uncached_reads():
+            load_dataset("json", data_files=str(tmp_path / "absent.jsonl"))
+        after = (DatasetBuilder.download_and_prepare, DatasetBuilder.as_dataset)
+        assert after == before
+
+    def test_a_nested_block_is_refused(self) -> None:
+        with (
+            uncached_reads(),
+            pytest.raises(RuntimeError, match="already open"),
+            uncached_reads(),
+        ):
+            pass
+        # The outer block released it.
+        with uncached_reads():
+            pass
+
+    def test_a_card_is_parsed_once_per_block(
+        self, tmp_path: Path, cache: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # C-Eval loads one config per subject from the same repo.
+        repo = _parquet_repo(tmp_path)
+        calls: list[str] = []
+        factory = hf_uncached.hf_load.dataset_module_factory
+
+        def counting(path: str, *args: Any, **kwargs: Any) -> Any:
+            calls.append(path)
+            return factory(path, *args, **kwargs)
+
+        monkeypatch.setattr(hf_uncached.hf_load, "dataset_module_factory", counting)
+        with uncached_reads():
+            first = load_dataset(str(repo), data_dir="main", split="test")
+            again = load_dataset(str(repo), data_dir="main", split="test")
+        assert ensure_dataset(first).to_list() == ensure_dataset(again).to_list()
+        assert calls == [str(repo)]

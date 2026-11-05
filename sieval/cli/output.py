@@ -428,6 +428,9 @@ def _render_dry_run_plan(data: dict) -> None:
             "" if entry.get("metrics") else ", report metrics unknown",
         )
     log_user("needs inference: {}", "yes" if data.get("needs_inference") else "no")
+    datasets = data.get("datasets") or {}
+    if datasets.get("mode") == "light":
+        log_user("datasets read in memory; --full-datasets loads them as the run does")
 
 
 def _render_text_dry_run(result: CommandResult) -> None:
