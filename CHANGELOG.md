@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - **`sieval run --dry-run` reads datasets in memory.** It used to load them through `load_dataset`, which writes every split and every loader `map`/`filter` as Arrow files under `HF_DATASETS_CACHE`; a dry-run in a job with a fresh cache paid for all of them. It now streams the local source files and writes no cache: the same rows, features and split-size check, across every split. On a 5-dataset local fixture it takes 2.7 s instead of 6.4 s and writes 0 MB instead of 142 MB. `--full-datasets` restores the cached load. The report gains `datasets` (`mode`, and under `light` how each dataset was read). `sieval eval --dry-run` and the run are unchanged.
 
+### Fixed
+
+- **A busy SGLang engine is no longer declared lost.** `sieval run` probed a launched engine's `/health` every 10 s and declared it lost after 180 s of failures. SGLang's `/health` runs a one-token generation on the event loop that also renders and tokenizes requests, and under load it misses its 2 s timeout for minutes (sgl-project/sglang#30770, #35884, #22511): an SGLang 0.5.13 engine at tp 4 / dp 2 was stopped while decoding about 2400 tok/s per DP rank, and 581 samples failed. An engine is now lost only when, for 180 s in a row, it both fails a liveness probe and logs no progress. SGLang is probed at `/ping` (falling back to `/health`), and a `Prefill batch` or `Decode batch` line in its log counts as progress. vLLM keeps `/health`, which is not starved, and a nonzero `Avg prompt/generation throughput` line counts as progress. A process exit is still caught within a second; readiness at startup still uses `/health`. The `unhealthy_for` summary now reads "failed its health check and logged no progress for N s".
+
 ## [0.15.1] - 2026-10-28
 
 A patch release: two native dialects, `vllm_native` and `google_interactions`,
