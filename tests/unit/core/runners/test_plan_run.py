@@ -303,11 +303,21 @@ def _handshake_runner(tmp_path: Path, error: BaseException) -> TaskRunner:
     return TaskRunner(task, make_config(tmp_path, result_dir=str(tmp_path / "r")))
 
 
-def _unreachable() -> RuntimeError:
+_ENDPOINT = "http://127.0.0.1:40123/evaluations"
+_UNSTARTED = {"code-eval": _ENDPOINT}
+
+
+def _unreachable(
+    url: str | None = "http://127.0.0.1:40123/languages", *, implicit: bool = False
+) -> RuntimeError:
+    """A ``setup()`` failure wrapping a refused connection to *url*."""
+    request = httpx.Request("GET", url) if url else None
     try:
-        raise httpx.ConnectError("connection refused")
+        raise httpx.ConnectError("connection refused", request=request)
     except httpx.ConnectError as cause:
         try:
+            if implicit:
+                raise RuntimeError("cannot reach the code-eval service")
             raise RuntimeError("cannot reach the code-eval service") from cause
         except RuntimeError as wrapped:
             return wrapped
@@ -321,7 +331,7 @@ class TestPlanWithUnstartedServices:
         self, tmp_path: Path
     ) -> None:
         runner = _handshake_runner(tmp_path, _unreachable())
-        plan = await runner.plan_run(unstarted=frozenset({"code-eval"}))
+        plan = await runner.plan_run(unstarted=_UNSTARTED)
         assert (plan["start"], plan["samples"]) == ("fresh", 3)
         assert runner.setup_unreached == (
             "RuntimeError: cannot reach the code-eval service"
@@ -341,7 +351,43 @@ class TestPlanWithUnstartedServices:
     async def test_any_other_setup_failure_raises(self, tmp_path: Path) -> None:
         runner = _handshake_runner(tmp_path, ValueError("bad argument"))
         with pytest.raises(ValueError, match="bad argument"):
-            await runner.plan_run(unstarted=frozenset({"code-eval"}))
+            await runner.plan_run(unstarted=_UNSTARTED)
+
+    @pytest.mark.anyio
+    async def test_an_implicitly_chained_connect_error_is_recorded(
+        self, tmp_path: Path
+    ) -> None:
+        runner = _handshake_runner(tmp_path, _unreachable(implicit=True))
+        await runner.plan_run(unstarted=_UNSTARTED)
+        assert runner.setup_unreached is not None
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            # Another server down (a judge, the Hub) fails as the run would.
+            pytest.param("http://127.0.0.1:9/x", id="other-port"),
+            pytest.param("http://judge.example:40123/x", id="other-host"),
+            pytest.param(None, id="no-request"),
+        ],
+    )
+    @pytest.mark.anyio
+    async def test_a_transport_error_elsewhere_raises(
+        self, tmp_path: Path, url: str | None
+    ) -> None:
+        runner = _handshake_runner(tmp_path, _unreachable(url))
+        with pytest.raises(RuntimeError, match="cannot reach"):
+            await runner.plan_run(unstarted=_UNSTARTED)
+        assert runner.setup_unreached is None
+
+    @pytest.mark.anyio
+    async def test_a_cyclic_chain_raises_rather_than_looping(
+        self, tmp_path: Path
+    ) -> None:
+        first, second = RuntimeError("a"), RuntimeError("b")
+        first.__cause__, second.__cause__ = second, first
+        runner = _handshake_runner(tmp_path, first)
+        with pytest.raises(RuntimeError, match="a"):
+            await runner.plan_run(unstarted=_UNSTARTED)
 
     @pytest.mark.anyio
     async def test_a_task_not_declaring_the_service_raises(
@@ -349,7 +395,7 @@ class TestPlanWithUnstartedServices:
     ) -> None:
         runner = _handshake_runner(tmp_path, _unreachable())
         with pytest.raises(RuntimeError, match="cannot reach"):
-            await runner.plan_run(unstarted=frozenset({"other"}))
+            await runner.plan_run(unstarted={"other": _ENDPOINT})
 
     @pytest.mark.anyio
     async def test_the_session_runner_reports_each_unreached_task(
@@ -363,6 +409,6 @@ class TestPlanWithUnstartedServices:
             error=_unreachable(),
         )
         multi.add_task(task, make_config(tmp_path, result_dir=None))
-        plans = await multi.plan_run(unstarted=frozenset({"code-eval"}))
+        plans = await multi.plan_run(unstarted=_UNSTARTED)
         assert not isinstance(plans["h"], Exception)
         assert list(multi.setup_unreached()) == ["h"]

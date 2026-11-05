@@ -1697,9 +1697,8 @@ class EvalSession:
     ):
         self.config_path = Path(config_path)
         self.mode = mode
-        # What `mode` did, item by item; filled where it departs from the run.
+        # What planning did per dataset and service, for the dry-run report.
         self.record = DryRunRecord()
-        self._inline_dataset_names: list[str] = []
         self._engine_loss = engine_loss
         self._serving = serving or SessionServing()
         self.model_override = model_override
@@ -4522,19 +4521,15 @@ class EvalSession:
 
     @contextlib.contextmanager
     def _reading_dataset(self, name: str) -> Iterator[None]:
-        """Construct dataset *name* inside, read as ``mode.datasets`` says."""
+        """Construct dataset *name* inside, read as ``mode.datasets`` says,
+        and record its reads (none logged through the cache)."""
         if self.mode.datasets == "cache":
             yield
+            self.record.datasets[name] = []
             return
         with uncached_reads() as log:
             yield
         self.record.datasets[name] = list(log.reads)
-
-    @property
-    def dataset_names(self) -> list[str]:
-        """Each dataset built so far: its ``datasets:`` key, or
-        ``<task>.dataset`` for an inline one."""
-        return [*self.datasets, *getattr(self, "_inline_dataset_names", ())]
 
     def _apply_dataset_operations(
         self,
@@ -5175,8 +5170,6 @@ class EvalSession:
             init_args = self._normalize_dict(
                 dataset_ref.get("args"), f"Task '{task_name}' inline dataset args"
             )
-            if hasattr(self, "_inline_dataset_names"):
-                self._inline_dataset_names.append(f"{task_name}.dataset")
             with self._reading_dataset(f"{task_name}.dataset"):
                 dataset = ds_class(path, **init_args) if path else ds_class(**init_args)
 
@@ -5476,12 +5469,11 @@ class EvalSession:
     async def aplan(self) -> dict[str, RunPlan | Exception]:
         """What :meth:`arun` would do with each task, by task name; writes nothing.
 
-        Prepares the session as :meth:`arun` does and asks each task's runner
-        for its :meth:`TaskRunner.plan_run`. A task whose planning raises maps
-        to the exception its run would raise. Raises what :meth:`arun` would
-        raise before any task starts. ``mode.services`` decides whether each
-        vendored service starts (logs under ``~/.sieval/logs``, never in a
-        result directory) or is only checked; :attr:`record` says which.
+        Prepares the session as :meth:`arun` does, as far as :attr:`mode` says,
+        and asks each task's runner for its :meth:`TaskRunner.plan_run`. A task
+        whose planning raises maps to the exception its run would raise. Raises
+        what :meth:`arun` would raise before any task starts. A started service
+        logs under ``~/.sieval/logs``, never in a result directory.
         """
         try:
             await run_sync(self.prepare_prelaunch)
@@ -5493,16 +5485,16 @@ class EvalSession:
                     read_persisted_config, Path(result_dir) / "effective_config.yaml"
                 )
             if self.mode.services == "check":
-                async with checked_services_for(self._required_services) as checks:
+                async with checked_services_for(self._required_services) as endpoints:
                     await self._prepare_execution()
                     if self.runner is None:
                         raise RuntimeError("Runner not initialized")
-                    plans = await self.runner.plan_run(unstarted=frozenset(checks))
+                    plans = await self.runner.plan_run(unstarted=endpoints)
                     unreached = self.runner.setup_unreached()
-                for name, passed in checks.items():
+                for name in endpoints:
                     self.record.services[name] = ServiceCheck(
                         started=False,
-                        verified=passed,
+                        verified=list(SERVICE_CHECKS),
                         unverified=list(SERVICE_UNVERIFIED),
                         setup_unreached=sorted(
                             t
@@ -5658,8 +5650,7 @@ async def aplan_session(
     Returns each task's model under test (its root model config) and its
     :meth:`EvalSession.aplan` entry. Every served model passes as one of
     *unlaunched_deployments*. Reads ``--resume`` directories, writes nothing.
-    *mode* is how planning does its heavy setup (:class:`DryRunMode`);
-    *record* receives what it did, item by item, even when planning raises.
+    *record* receives what planning under *mode* did, even when it raises.
     """
     session = EvalSession(
         config_path=config,
@@ -5679,10 +5670,7 @@ async def aplan_session(
         plans = await session.aplan()
     finally:
         if record is not None:
-            # Under `cache`, nothing is logged per read: name what was built.
-            built = {name: [] for name in session.dataset_names}
-            record.datasets |= built | session.record.datasets
-            record.services |= session.record.services
+            record.merge(session.record)
     return session.task_models(), plans
 
 

@@ -669,8 +669,7 @@ async def _plan_tasks(
 ) -> tuple[dict[str, str], dict[str, RunPlan | Exception]]:
     """Each task's served model and resume plan, with no engine launched.
 
-    The one call that turns resume planning into a launch decision. See
-    :func:`~sieval.cli.session.aplan_session` for *mode* and *record*.
+    The one call that turns resume planning into a launch decision.
     """
     from sieval.cli.session import aplan_session
 
@@ -752,31 +751,17 @@ def _launch_json(command: BackendCommand) -> dict[str, object]:
     return out
 
 
-#: What the run checks of a dataset that reading it in memory does not: the
-#: run writes it as Arrow files under ``HF_DATASETS_CACHE`` (disk space, write
-#: access).
+#: What a dataset read verifies, and what only an Arrow cache write adds.
 _MEMORY_UNVERIFIED = ("arrow_cache_write",)
-#: What every read of a dataset verifies: it is present and readable, its rows
-#: and their count after ``operations``, and its features.
 _DATASET_VERIFIED = ("present", "rows", "count", "schema")
 
 
 def _datasets_json(
-    mode: DryRunMode,
-    names: Iterable[str],
-    builder_reads: Mapping[str, list[BuilderRead]],
+    mode: DryRunMode, builder_reads: Mapping[str, list[BuilderRead]]
 ) -> dict[str, dict[str, object]]:
-    """The report's ``datasets``: how planning read each dataset in *names*.
-
-    ``read`` is ``memory`` where every ``load_dataset`` call read in memory,
-    ``cache`` where every one used the Arrow cache, ``mixed`` for both and
-    ``none`` for a loader that calls none, with ``cache_reasons`` where a call
-    kept the cache under a mode that reads in memory. ``verified`` names what
-    this planning verified and ``unverified`` what the run checks that it did
-    not.
-    """
+    """The report's ``datasets``; see ``docs/guide/configuration.md``."""
     out: dict[str, dict[str, object]] = {}
-    for name in names:
+    for name, reads in builder_reads.items():
         if mode.datasets == "cache":
             out[name] = {
                 "read": "cache",
@@ -784,7 +769,6 @@ def _datasets_json(
                 "unverified": [],
             }
             continue
-        reads = builder_reads.get(name, [])
         paths = {r.path for r in reads}
         in_memory = "memory" in paths
         entry: dict[str, object] = {
@@ -801,9 +785,7 @@ def _datasets_json(
 
 
 def _services_json(checks: Mapping[str, ServiceCheck]) -> dict[str, dict[str, object]]:
-    """The report's ``services``: each vendored service the run would start,
-    whether planning ``started`` it, what it ``verified`` and did not, and
-    the tasks whose ``setup()`` could not reach it (``setup_unreached``)."""
+    """The report's ``services``; see ``docs/guide/configuration.md``."""
     return {
         name: {
             "started": check.started,
@@ -870,9 +852,7 @@ async def _run_dry_run(
     The checks, then each served model's plan and launch argv, each serving
     group (*serving_group* only, when given) and each task's plan; see
     ``docs/guide/configuration.md``. Reads ``--resume`` directories in
-    place and writes no result directory. Planning reads every dataset row
-    the run reads; *mode* (``--mode``) decides how it reads them and whether it
-    starts each vendored service a task declares or only checks it.
+    place and writes no result directory. *mode* is ``--mode``.
     """
 
     from sieval.cli.validation import run_dry_run, task_report_metrics_json
@@ -900,7 +880,6 @@ async def _run_dry_run(
             )
         )
 
-    # What planning did per item, filled in by `_plan_tasks`.
     record = DryRunRecord()
 
     def unplanned(result: dict[str, object]) -> dict[str, object]:
@@ -1025,9 +1004,8 @@ async def _run_dry_run(
         return unplanned(result)
 
     # What the run would do: each task's plan, from the call the run makes.
-    # Planning sets the session up as the run does, as far as `mode` says: it
-    # reads every dataset and starts, or only checks, each vendored service a
-    # task declares, writing nothing under the result directory.
+    # Planning sets the session up as the run does, as far as `mode` says,
+    # writing nothing under the result directory.
     task_models: dict[str, str] = {}
     plans: dict[str, RunPlan | Exception] = {}
     launches_by_group: dict[str, set[str]] = {}
@@ -1129,16 +1107,10 @@ async def _run_dry_run(
 def _with_mode(
     result: dict[str, object], mode: DryRunMode, record: DryRunRecord, *, planned: bool
 ) -> dict[str, object]:
-    """Add ``mode``, ``datasets`` and ``services`` to *result*.
-
-    ``datasets`` and ``services`` are ``None`` when planning did not finish
-    (unknown, not empty), else one entry per dataset built and per vendored
-    service the run would start.
-    """
+    """Add ``mode``, ``datasets`` and ``services``: ``None`` when planning did
+    not finish (unknown, not empty)."""
     result["mode"] = mode.name
-    result["datasets"] = (
-        _datasets_json(mode, record.datasets, record.datasets) if planned else None
-    )
+    result["datasets"] = _datasets_json(mode, record.datasets) if planned else None
     result["services"] = _services_json(record.services) if planned else None
     return result
 

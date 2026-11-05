@@ -3,8 +3,7 @@
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
-from collections.abc import Iterable
-from collections.abc import Set as AbstractSet
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, Self
@@ -215,13 +214,13 @@ class MultiTaskRunner:
         return self
 
     async def plan_run(
-        self, unstarted: AbstractSet[str] = frozenset()
+        self, unstarted: Mapping[str, str] | None = None
     ) -> dict[str, RunPlan | Exception]:
         """Each task's :meth:`TaskRunner.plan_run`, by task name; read-only.
 
         A task whose planning raises maps to the exception, which its run
-        would raise before its first sample. *unstarted* passes through.
-        Runners that planned are not run.
+        would raise before its first sample; *unstarted* is passed on. Runners
+        that planned are not run.
         """
         plans: dict[str, RunPlan | Exception] = {}
         barriers = self._session_barriers()
@@ -234,8 +233,7 @@ class MultiTaskRunner:
         return plans
 
     def setup_unreached(self) -> dict[str, str]:
-        """Each task whose last :meth:`plan_run` went on without its
-        ``setup()``, with why (:attr:`TaskRunner.setup_unreached`)."""
+        """:attr:`TaskRunner.setup_unreached` of each task that has one."""
         return {
             r._task.name: r.setup_unreached
             for r in self._runners

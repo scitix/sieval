@@ -9,11 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **`sieval run --dry-run` is light by default; `--mode` chooses.** Planning used to set the session up as the run does. It loaded every dataset through `load_dataset`, which writes each split, and each `map`/`filter` a loader applies, as Arrow files under `HF_DATASETS_CACHE`. It also started each vendored service a task declares (code-eval). A dry-run in a job with a fresh cache paid for all of it.
-    - `--mode light` (the default) reads datasets in memory, writing no Arrow cache, and checks each vendored service without starting it: its sources resolve, its interpreter answers, its command is present and a port binds. A task's `setup()` handshake that cannot reach the unstarted service is named, not failed. Every split is parsed and its size checked, as the run does. A loading script, a sliced split, a split over 2 GiB or not on local disk, a split that does not stream and an empty requested split still read through the cache.
-    - `--mode full` does both as the run does. An unknown mode is refused with the known ones (exit 2), as is `--mode` without `--dry-run`.
-    - The report keeps every field and gains `mode`, `datasets` and `services`: per dataset how it was read and what was `verified` / `unverified`, per service whether it was `started` and what was `verified` / `unverified`.
-    - On local fixtures: 5 datasets (bbh, c_eval, mbpp, gsm8k, trivia_qa) plan in 2.8–3.3 s instead of 6.7–6.9 s and write 0 MB instead of 142 MB; a code-eval task plans in 1.1 s instead of 2.4–2.5 s.
+- **`sieval run --dry-run` is light by default; `--mode light|full` chooses.** Planning used to load every dataset through the Arrow cache under `HF_DATASETS_CACHE` and start each vendored service (code-eval), which a job with a fresh cache paid for in full.
+    - `light` reads datasets in memory, writing no cache, and checks each vendored service without starting it (sources, interpreter, command, a free port). A task `setup()` that cannot connect to the unstarted service is listed under `setup_unreached`; any other `setup()` failure fails the plan. Splits the in-memory read cannot handle (a loading script, a sliced split, over 2 GiB, not local, not streamable, empty) still use the cache.
+    - `full` does both as the run does. An unknown mode, or `--mode` without `--dry-run`, exits 2.
+    - The report keeps every field and gains `mode`, `datasets` and `services`, each item saying what it `verified` and left `unverified`.
+    - On local fixtures: 5 datasets plan in 2.8–3.3 s instead of 6.7–6.9 s and write 0 MB instead of 142 MB; a code-eval task plans in 1.1 s instead of 2.4–2.5 s.
     - The run itself and `sieval eval --dry-run` are unchanged.
 
 ### Fixed

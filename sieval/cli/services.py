@@ -266,9 +266,7 @@ def code_eval_service(
 _BUILDERS = {CODE_EVAL: code_eval_service}
 _CHECKS = {CODE_EVAL: check_code_eval}
 
-#: What :func:`checked_services_for` verifies of each service, in order, and
-#: what only a start would: the server binding its port and answering its
-#: health check, and the tasks' own ``setup()`` handshakes against it.
+#: What :func:`checked_services_for` verifies, and what only a start does.
 SERVICE_CHECKS = ("resolves", "command", "interpreter", "port")
 SERVICE_UNVERIFIED = ("starts", "health", "task_setup")
 
@@ -352,14 +350,11 @@ async def _start(
     raise AssertionError("unreachable")
 
 
-def check_service_start(name: str) -> tuple[VendoredService, str, list[str]]:
-    """Check that *name* would start, without starting it.
+def check_service_start(name: str) -> tuple[VendoredService, str]:
+    """Build *name* as a start does, on a port that binds, without starting it.
 
-    Builds the service as a start does: its sources resolve (directory,
-    commit, digest), the interpreter it runs under answers for its runtime and
-    its command is present; and a local port binds. Returns the service, the
-    base URL on that port (where nothing listens) and :data:`SERVICE_CHECKS`;
-    raises what a start would raise first.
+    Returns the service and its base URL, where nothing listens; raises what
+    a start would raise first, or ``FileNotFoundError`` for a missing command.
     """
     port = _free_port()
     service = _BUILDERS[name](port)
@@ -368,20 +363,18 @@ def check_service_start(name: str) -> tuple[VendoredService, str, list[str]]:
         raise FileNotFoundError(
             f"{name}'s command {executable!r} is not an executable on PATH"
         )
-    return service, f"http://127.0.0.1:{port}", list(SERVICE_CHECKS)
+    return service, f"http://127.0.0.1:{port}"
 
 
 @contextlib.asynccontextmanager
 async def checked_services_for(
     required: Iterable[str],
-) -> AsyncIterator[dict[str, list[str]]]:
-    """:func:`vendored_services_for` without starting anything.
+) -> AsyncIterator[dict[str, str]]:
+    """:func:`vendored_services_for`, checking each service instead of starting it.
 
-    Checks each service it would start (:func:`check_service_start`) and
-    yields the checks passed, by name. For the block, each endpoint variable
-    names the checked port, where nothing serves, and
-    :data:`VENDORED_SERVICES_ENV` holds the provenance a start records, so a
-    task's identities are the started run's and a handshake fails fast.
+    Yields ``{name: endpoint}`` with the endpoint variables and
+    :data:`VENDORED_SERVICES_ENV` set as a start sets them, so grading
+    identities match the started run's; nothing listens at the endpoints.
     """
     names = services_to_start(required)
     busy = sorted(set(required) & _running)
@@ -392,26 +385,24 @@ async def checked_services_for(
             f"process, or set {SERVICE_ENDPOINT_ENV[busy[0]]} to a service "
             "you manage."
         )
-    if not names:
-        yield {}
-        return
-    checks: dict[str, list[str]] = {}
-    overlay: dict[str, str] = {}
+    endpoints: dict[str, str] = {}
     provenance: dict[str, dict] = {}
     for name in names:
-        service, base, passed = check_service_start(name)
-        checks[name] = passed
-        endpoint = base + service.endpoint_path
-        overlay[SERVICE_ENDPOINT_ENV[name]] = endpoint
+        service, base = check_service_start(name)
+        endpoints[name] = base + service.endpoint_path
         provenance[name] = {
             "commit": service.commit,
             "digest": service.digest,
             "runtime": service.runtime,
-            "endpoint": endpoint,
+            "endpoint": endpoints[name],
         }
+    if not endpoints:
+        yield {}
+        return
+    overlay = {SERVICE_ENDPOINT_ENV[n]: url for n, url in endpoints.items()}
     overlay[VENDORED_SERVICES_ENV] = json.dumps(provenance, sort_keys=True)
     with _env_overlay(overlay):
-        yield checks
+        yield endpoints
 
 
 @contextlib.asynccontextmanager

@@ -844,6 +844,7 @@ class TestResolveTaskDataset:
     def _make_runner(self, datasets=None):
         runner = object.__new__(EvalSession)
         runner.datasets = datasets or {}
+        runner.record = DryRunRecord()
         return runner
 
     def test_success_paths(self):
@@ -1742,6 +1743,7 @@ class TestSetupDatasetsErrors:
         runner.resume_override = False
         runner.models = {}
         runner.datasets = {}
+        runner.record = DryRunRecord()
         runner.runner = None
         return runner
 
@@ -10171,6 +10173,7 @@ def test_dataset_path_env_expanded_before_instantiation(monkeypatch, tmp_path):
 
     session = EvalSession.__new__(EvalSession)
     session.datasets = {}
+    session.record = DryRunRecord()
     session.config = {
         "datasets": {
             "drop": {
@@ -10567,8 +10570,7 @@ class TestDatasetReads:
             assert read.path == "memory"
         else:
             assert arrow
-            assert session.record.datasets == {}
-            assert session.dataset_names == ["d"]
+            assert session.record.datasets == {"d": []}
 
     def test_a_missing_dataset_keeps_its_download_hint(self, tmp_path: Path) -> None:
         session = self._session(tmp_path, "light")

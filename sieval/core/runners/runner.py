@@ -5,8 +5,7 @@ import os
 import re
 import time
 from collections import defaultdict
-from collections.abc import Callable, Iterable
-from collections.abc import Set as AbstractSet
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -172,15 +171,21 @@ class SievalCounts(TypedDict):
     context_overflow: int
 
 
-def _transport_error(exc: BaseException) -> bool:
-    """Whether *exc*, or an exception it was raised from, failed to reach a
-    server (:class:`httpx.TransportError`)."""
+def _unreached(exc: BaseException, endpoints: Iterable[str]) -> bool:
+    """Whether *exc*'s chain holds an :class:`httpx.TransportError` for a
+    request to the host and port of one of *endpoints*."""
+    origins = {(u.host, u.port) for u in map(httpx.URL, endpoints)}
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
-        if isinstance(current, httpx.TransportError):
-            return True
         seen.add(id(current))
+        if isinstance(current, httpx.TransportError):
+            try:
+                url = current.request.url
+            except RuntimeError:  # raised without a request
+                url = None
+            if url is not None and (url.host, url.port) in origins:
+                return True
         current = current.__cause__ or current.__context__
     return False
 
@@ -2309,7 +2314,7 @@ class TaskRunner:
     def _recorded_dir(self) -> str:
         return self._run_from["dir"] if self._run_from else str(self._root_dir)
 
-    async def plan_run(self, unstarted: AbstractSet[str] = frozenset()) -> RunPlan:
+    async def plan_run(self, unstarted: Mapping[str, str] | None = None) -> RunPlan:
         """Decide what :meth:`arun` would do, without doing or writing any of it.
 
         Runs the resume planning :meth:`arun` runs (:meth:`_plan_recorded`)
@@ -2319,18 +2324,19 @@ class TaskRunner:
         ``setup()`` and ``shutdown()``, as :meth:`arun` does. A runner that
         planned is not run.
 
-        *unstarted* names services the caller checked but did not start. When
-        the task declares one and its ``setup()`` fails to reach a server
-        (an ``httpx.TransportError`` in the chain), planning goes on without it
-        and :attr:`setup_unreached` holds the error; any other failure raises.
+        *unstarted* maps services checked but not started to their endpoints.
+        A ``setup()`` that fails to connect to one the task declares is kept
+        in :attr:`setup_unreached` and planning goes on; anything else raises.
         """
+        endpoints = [
+            url
+            for name, url in (unstarted or {}).items()
+            if name in type(self._task).services
+        ]
         try:
             await self._task.setup()
         except Exception as exc:
-            if not (
-                set(type(self._task).services) & set(unstarted)
-                and _transport_error(exc)
-            ):
+            if not _unreached(exc, endpoints):
                 raise
             self.setup_unreached = f"{type(exc).__name__}: {exc}"
         try:

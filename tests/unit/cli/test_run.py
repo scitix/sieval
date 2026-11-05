@@ -2861,7 +2861,7 @@ class TestDryRunModes:
         from sieval.cli.dry_run_modes import DRY_RUN_MODES
         from sieval.cli.run import _datasets_json
 
-        assert _datasets_json(DRY_RUN_MODES["full"], ["d"], {"d": []}) == {
+        assert _datasets_json(DRY_RUN_MODES["full"], {"d": []}) == {
             "d": {
                 "read": "cache",
                 "verified": ["present", "rows", "count", "schema", "arrow_cache_write"],
@@ -2885,7 +2885,7 @@ class TestDryRunModes:
             "own": [],
         }
         base = ["present", "rows", "count", "schema"]
-        assert _datasets_json(DRY_RUN_MODES["light"], reads, reads) == {
+        assert _datasets_json(DRY_RUN_MODES["light"], reads) == {
             "mem": {
                 "read": "memory",
                 "verified": base,
@@ -2909,6 +2909,21 @@ class TestDryRunModes:
                 "unverified": [],
             },
         }
+
+    def test_a_record_merges_every_groups_unreached_tasks(self) -> None:
+        from sieval.cli.dry_run_modes import DryRunRecord, ServiceCheck
+
+        def group(task: str) -> DryRunRecord:
+            check = ServiceCheck(False, ["port"], ["starts"], setup_unreached=[task])
+            return DryRunRecord(services={"code-eval": check})
+
+        record = DryRunRecord()
+        first = group("mbpp")
+        record.merge(first)
+        record.merge(group("human_eval"))
+        assert record.services["code-eval"].setup_unreached == ["human_eval", "mbpp"]
+        # The first group's own record is not mutated through the merge.
+        assert first.services["code-eval"].setup_unreached == ["mbpp"]
 
     def test_services_say_what_ran(self) -> None:
         from sieval.cli.dry_run_modes import ServiceCheck
