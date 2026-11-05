@@ -3,7 +3,7 @@
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, Self
@@ -213,21 +213,32 @@ class MultiTaskRunner:
         self._output_dirs.add(runner.root_dir)
         return self
 
-    async def plan_run(self) -> dict[str, RunPlan | Exception]:
+    async def plan_run(
+        self, unstarted: Mapping[str, str] | None = None
+    ) -> dict[str, RunPlan | Exception]:
         """Each task's :meth:`TaskRunner.plan_run`, by task name; read-only.
 
         A task whose planning raises maps to the exception, which its run
-        would raise before its first sample. Runners that planned are not run.
+        would raise before its first sample; *unstarted* is passed on. Runners
+        that planned are not run.
         """
         plans: dict[str, RunPlan | Exception] = {}
         barriers = self._session_barriers()
         for runner in self._runners:
             try:
                 runner.set_barriers(barriers)
-                plans[runner._task.name] = await runner.plan_run()
+                plans[runner._task.name] = await runner.plan_run(unstarted)
             except Exception as exc:
                 plans[runner._task.name] = exc
         return plans
+
+    def setup_unreached(self) -> dict[str, str]:
+        """:attr:`TaskRunner.setup_unreached` of each task that has one."""
+        return {
+            r._task.name: r.setup_unreached
+            for r in self._runners
+            if r.setup_unreached is not None
+        }
 
     def run(self) -> dict[str, Any]:
         """Synchronous wrapper around :meth:`arun`."""

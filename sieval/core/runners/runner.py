@@ -5,7 +5,7 @@ import os
 import re
 import time
 from collections import defaultdict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +13,7 @@ from typing import Any, Literal, TypedDict, cast
 
 import anyio
 import anyio.to_thread
+import httpx
 import orjson
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
@@ -168,6 +169,25 @@ class SievalCounts(TypedDict):
     failed: int
     anomalies: int
     context_overflow: int
+
+
+def _unreached(exc: BaseException, endpoints: Iterable[str]) -> bool:
+    """Whether *exc*'s chain holds an :class:`httpx.TransportError` for a
+    request to the host and port of one of *endpoints*."""
+    origins = {(u.host, u.port) for u in map(httpx.URL, endpoints)}
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, httpx.TransportError):
+            try:
+                url = current.request.url
+            except RuntimeError:  # raised without a request
+                url = None
+            if url is not None and (url.host, url.port) in origins:
+                return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _overflowed(ctx: TaskContext) -> bool:
@@ -571,6 +591,8 @@ class TaskRunner:
         self._engine_guard = engine_guard
         # Per-stage resume: what was copied in, and what the comparison chose.
         self._run_from: RunFrom | None = None
+        # Why `plan_run` planned without the task's `setup()`; see it.
+        self.setup_unreached: str | None = None
         self._copied: list[Path] = []
         self._recorded: dict | None = None
         # The earliest grading stage whose recorded identity differs from this
@@ -2292,7 +2314,7 @@ class TaskRunner:
     def _recorded_dir(self) -> str:
         return self._run_from["dir"] if self._run_from else str(self._root_dir)
 
-    async def plan_run(self) -> RunPlan:
+    async def plan_run(self, unstarted: Mapping[str, str] | None = None) -> RunPlan:
         """Decide what :meth:`arun` would do, without doing or writing any of it.
 
         Runs the resume planning :meth:`arun` runs (:meth:`_plan_recorded`)
@@ -2301,8 +2323,22 @@ class TaskRunner:
         sample, such as a :class:`StageResumeError`. Calls the task's
         ``setup()`` and ``shutdown()``, as :meth:`arun` does. A runner that
         planned is not run.
+
+        *unstarted* maps services checked but not started to their endpoints.
+        A ``setup()`` that fails to connect to one the task declares is kept
+        in :attr:`setup_unreached` and planning goes on; anything else raises.
         """
-        await self._task.setup()
+        endpoints = [
+            url
+            for name, url in (unstarted or {}).items()
+            if name in type(self._task).services
+        ]
+        try:
+            await self._task.setup()
+        except Exception as exc:
+            if not _unreached(exc, endpoints):
+                raise
+            self.setup_unreached = f"{type(exc).__name__}: {exc}"
         try:
             return await self._plan_run()
         finally:

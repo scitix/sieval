@@ -428,9 +428,23 @@ def _render_dry_run_plan(data: dict) -> None:
             "" if entry.get("metrics") else ", report metrics unknown",
         )
     log_user("needs inference: {}", "yes" if data.get("needs_inference") else "no")
-    datasets = data.get("datasets") or {}
-    if datasets.get("mode") == "light":
-        log_user("datasets read in memory; --full-datasets loads them as the run does")
+    mode = data.get("mode")
+    if mode:
+        unverified = sorted(
+            {
+                item
+                for section in ("datasets", "services")
+                for entry in (data.get(section) or {}).values()
+                for item in entry.get("unverified") or ()
+            }
+        )
+        log_user(
+            "mode {}{}",
+            mode,
+            f": not verified {', '.join(unverified)} (--mode full does)"
+            if unverified
+            else "",
+        )
 
 
 def _render_text_dry_run(result: CommandResult) -> None:

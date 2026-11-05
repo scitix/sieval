@@ -9,7 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **`sieval run --dry-run` reads datasets in memory.** It used to load them through `load_dataset`, which writes every split and every loader `map`/`filter` as Arrow files under `HF_DATASETS_CACHE`; a dry-run in a job with a fresh cache paid for all of them. It now streams the local source files and writes no cache: the same rows, features and split-size check, across every split. On a 5-dataset local fixture it takes 2.7 s instead of 6.4 s and writes 0 MB instead of 142 MB. `--full-datasets` restores the cached load. The report gains `datasets` (`mode`, and under `light` how each dataset was read). `sieval eval --dry-run` and the run are unchanged.
+- **`sieval run --dry-run` is light by default; `--mode light|full` chooses.** Planning used to load every dataset through the Arrow cache under `HF_DATASETS_CACHE` and start each vendored service (code-eval), which a job with a fresh cache paid for in full.
+    - `light` reads datasets in memory, writing no cache, and checks each vendored service without starting it (sources, interpreter, command, a free port). A task `setup()` that cannot connect to the unstarted service is listed under `setup_unreached`; any other `setup()` failure fails the plan. Splits the in-memory read cannot handle (a loading script, a sliced split, over 2 GiB, not local, not streamable, empty) still use the cache.
+    - `full` does both as the run does. An unknown mode, or `--mode` without `--dry-run`, exits 2.
+    - The report keeps every field and gains `mode`, `datasets` and `services`, each item saying what it `verified` and left `unverified`.
+    - On local fixtures: 5 datasets plan in 2.8–3.3 s instead of 6.7–6.9 s and write 0 MB instead of 142 MB; a code-eval task plans in 1.1 s instead of 2.4–2.5 s.
+    - The run itself and `sieval eval --dry-run` are unchanged.
 
 ### Fixed
 

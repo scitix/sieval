@@ -1,10 +1,12 @@
-"""Pattern: ``sieval run --dry-run`` reads datasets light by default, and
-``--full-datasets`` loads them as the run does. Both report the same plan.
+"""Pattern: ``sieval run --dry-run`` is ``--mode light`` by default, and
+``--mode full`` loads datasets and starts services as the run does. Both report
+the same plan.
 
 The config is a fixture board: two local parquet datasets loaded through
-``load_dataset``, one sliced by an operation, a task on each, and an
-``api_base`` model, so nothing is launched. Each dry-run gets a fresh
-``HF_DATASETS_CACHE``, as a Harmony config-check job does.
+``load_dataset``, one sliced by an operation, a task on each (one declaring the
+vendored code-eval service, stubbed) and an ``api_base`` model, so no engine is
+launched. Each dry-run gets a fresh ``HF_DATASETS_CACHE``, as a Harmony
+config-check job does.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
@@ -23,6 +25,8 @@ from typer.testing import CliRunner
 from sieval.cli import app
 from sieval.core.datasets import Dataset
 from sieval.core.tasks import Task
+from sieval.core.tasks.services import CODE_EVAL
+from tests.unit.cli.test_services import _pids, install_code_eval_stub
 
 runner = CliRunner()
 
@@ -47,6 +51,7 @@ class ParquetDataset(Dataset):
 
 class AskTask(Task):
     model_type = "chat"
+    services = frozenset()
 
     async def preprocess(self, raw, ctx):
         return raw["q"]
@@ -62,6 +67,12 @@ class AskTask(Task):
 
     async def report(self, finals, fails):
         return {"total": len(finals) + len(fails)}
+
+
+class CodeAskTask(AskTask):
+    """Declares code-eval, as the code tasks do; never calls it here."""
+
+    services = frozenset({CODE_EVAL})
 
 
 def _stage(root: Path, name: str, n: int) -> Path:
@@ -100,12 +111,12 @@ def _config(tmp_path: Path) -> Path:
         },
         "tasks": {
             name: {
-                "class": f"{here}.AskTask",
+                "class": f"{here}.{cls}",
                 "dataset": name,
                 "model": "api",
                 "runner_config": {"show_progress": False},
             }
-            for name in ("small", "whole")
+            for name, cls in (("small", "AskTask"), ("whole", "CodeAskTask"))
         },
     }
     path = tmp_path / "board.yaml"
@@ -128,22 +139,76 @@ def _arrow_files(root: Path) -> list[Path]:
     return sorted(root.rglob("*.arrow")) if root.exists() else []
 
 
+@pytest.fixture(autouse=True)
+def code_eval(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """code-eval launched as a stub server; each start appends its PID."""
+    return install_code_eval_stub(tmp_path, monkeypatch)
+
+
+_BASE = ["present", "rows", "count", "schema"]
+
+
+def _plain_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Typer's usage errors unboxed and wide. Under GitHub Actions typer forces
+    a colored, boxed error that splits the message."""
+    import typer.rich_utils as rich_utils
+
+    monkeypatch.setattr(rich_utils, "FORCE_TERMINAL", None, raising=False)
+    monkeypatch.setattr(rich_utils, "COLOR_SYSTEM", None, raising=False)
+    monkeypatch.setattr(rich_utils, "MAX_WIDTH", 200, raising=False)
+
+
 class TestDryRunDatasets:
     def test_light_and_full_report_the_same_plan(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code_eval: Path
     ) -> None:
         config_path = _config(tmp_path)
         light = _dry_run(config_path, tmp_path / "light", monkeypatch)
-        full = _dry_run(config_path, tmp_path / "full", monkeypatch, "--full-datasets")
+        assert _pids(code_eval) == []
+        full = _dry_run(config_path, tmp_path / "full", monkeypatch, "--mode", "full")
+        assert len(_pids(code_eval)) == 1
 
+        assert (light.pop("mode"), full.pop("mode")) == ("light", "full")
         assert light.pop("datasets") == {
-            "mode": "light",
-            "read": {
-                name: {"read": "memory", "unverified": ["arrow_cache_write"]}
-                for name in ("small", "whole")
-            },
+            name: {
+                "read": "memory",
+                "verified": _BASE,
+                "unverified": ["arrow_cache_write"],
+            }
+            for name in ("small", "whole")
         }
-        assert full.pop("datasets") == {"mode": "full"}
+        assert full.pop("datasets") == {
+            name: {
+                "read": "cache",
+                "verified": [*_BASE, "arrow_cache_write"],
+                "unverified": [],
+            }
+            for name in ("small", "whole")
+        }
+        assert light.pop("services") == {
+            CODE_EVAL: {
+                "started": False,
+                "verified": ["resolves", "command", "interpreter", "port"],
+                "unverified": ["starts", "health", "task_setup"],
+                "setup_unreached": [],
+            }
+        }
+        assert full.pop("services") == {
+            CODE_EVAL: {
+                "started": True,
+                "verified": [
+                    "resolves",
+                    "command",
+                    "interpreter",
+                    "port",
+                    "starts",
+                    "health",
+                    "task_setup",
+                ],
+                "unverified": [],
+                "setup_unreached": [],
+            }
+        }
         # Every other key, `tasks.<t>.samples` and the stage identities
         # included, as Harmony parses them.
         assert light == full
@@ -164,7 +229,7 @@ class TestDryRunDatasets:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         config_path = _config(tmp_path)
-        _dry_run(config_path, tmp_path / "full", monkeypatch, "--full-datasets")
+        _dry_run(config_path, tmp_path / "full", monkeypatch, "--mode", "full")
         # Each split's prepared file, then each `map` over it.
         assert len(_arrow_files(tmp_path / "full")) >= 8
 
@@ -177,7 +242,7 @@ class TestDryRunDatasets:
         config_path.write_text(yaml.safe_dump(cfg))
 
         details = {}
-        for mode, flags in (("light", ()), ("full", ("--full-datasets",))):
+        for mode, flags in (("light", ()), ("full", ("--mode", "full"))):
             monkeypatch.setattr(config, "HF_DATASETS_CACHE", tmp_path / mode)
             result = runner.invoke(
                 app, ["run", str(config_path), "--dry-run", *flags, "-o", "json"]
@@ -186,19 +251,16 @@ class TestDryRunDatasets:
             data = json.loads(result.stdout)["data"]
             (check,) = [c for c in data["checks"] if c["name"] == "resume_plan"]
             details[mode] = check["detail"]
-            assert data["datasets"]["mode"] == mode
+            assert data["mode"] == mode
+            assert (data["datasets"], data["services"]) == (None, None)
         assert details["light"] == details["full"]
 
-    def test_full_datasets_needs_dry_run(
+    def test_an_unknown_mode_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Under GitHub Actions typer forces a colored, boxed error that splits
-        # the message; plain and wide, as `tests/unit/cli/conftest.py` does.
-        import typer.rich_utils as rich_utils
-
-        monkeypatch.setattr(rich_utils, "FORCE_TERMINAL", None, raising=False)
-        monkeypatch.setattr(rich_utils, "COLOR_SYSTEM", None, raising=False)
-        monkeypatch.setattr(rich_utils, "MAX_WIDTH", 200, raising=False)
-        result = runner.invoke(app, ["run", str(_config(tmp_path)), "--full-datasets"])
+        _plain_errors(monkeypatch)
+        result = runner.invoke(
+            app, ["run", str(_config(tmp_path)), "--dry-run", "--mode", "auto"]
+        )
         assert result.exit_code == 2
-        assert "--dry-run only" in result.output
+        assert "known: light, full" in result.output
