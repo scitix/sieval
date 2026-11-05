@@ -16,6 +16,7 @@ import pyarrow.parquet as pq
 import pytest
 from datasets import DatasetDict, Features, Value, config, load_dataset
 from datasets.builder import DatasetBuilder
+from datasets.exceptions import DatasetGenerationError
 from datasets.utils.info_utils import NonMatchingSplitsSizesError
 
 import sieval.core.utils.hf_uncached as hf_uncached
@@ -161,7 +162,7 @@ class TestCachedFallback:
         assert loaded.to_list() == rows
         (read,) = log.reads
         assert read.path == "cache"
-        assert read.reason.startswith("batches differ in schema")
+        assert read.reason.startswith("split did not stream")
 
     def test_an_empty_split_fails_as_the_cached_load_does(
         self, tmp_path: Path, cache: Path
@@ -236,6 +237,68 @@ class TestChecksKept:
             load_dataset(str(repo))
         with pytest.raises(NonMatchingSplitsSizesError), uncached_reads():
             load_dataset(str(repo))
+
+    def test_an_unrequested_split_that_does_not_parse_fails_as_the_cached_load_does(
+        self, tmp_path: Path, cache: Path
+    ) -> None:
+        # The cached path prepares every split, not only the one asked for.
+        pq.write_table(pa.table({"x": [1, 2, 3]}), tmp_path / "test.parquet")
+        (tmp_path / "train.parquet").write_bytes(b"not parquet")
+        files = {
+            "test": str(tmp_path / "test.parquet"),
+            "train": str(tmp_path / "train.parquet"),
+        }
+        with pytest.raises(DatasetGenerationError):
+            load_dataset("parquet", data_files=files, split="test")
+        with pytest.raises(DatasetGenerationError), uncached_reads() as log:
+            load_dataset("parquet", data_files=files, split="test")
+        (read,) = log.reads
+        assert read.path == "cache"
+        assert read.reason.startswith("split did not stream")
+
+    def test_an_unrequested_split_size_the_card_contradicts_is_refused(
+        self, tmp_path: Path, cache: Path
+    ) -> None:
+        repo = _card_repo(tmp_path, test_rows=3, dev_rows=2, dev_card=5)
+        with pytest.raises(NonMatchingSplitsSizesError):
+            load_dataset(str(repo), split="test")
+        with pytest.raises(NonMatchingSplitsSizesError), uncached_reads():
+            load_dataset(str(repo), split="test")
+
+    def test_an_unrequested_split_is_counted_not_held(
+        self, tmp_path: Path, cache: Path
+    ) -> None:
+        repo = _card_repo(tmp_path, test_rows=3, dev_rows=2, dev_card=2)
+        with uncached_reads() as log:
+            rows = ensure_dataset(load_dataset(str(repo), split="test"))
+        assert rows.to_list() == [{"x": i} for i in range(3)]
+        assert [r.path for r in log.reads] == ["memory"]
+        assert _arrow_files(cache) == []
+
+
+def _card_repo(root: Path, *, test_rows: int, dev_rows: int, dev_card: int) -> Path:
+    """A repo of a test and a dev split whose card claims *dev_card* dev rows."""
+    repo = root / "card2"
+    repo.mkdir()
+    _jsonl(repo / "test.jsonl", [{"x": i} for i in range(test_rows)])
+    _jsonl(repo / "dev.jsonl", [{"x": -i} for i in range(dev_rows)])
+    (repo / "README.md").write_text(
+        "---\n"
+        "dataset_info:\n"
+        "  features:\n"
+        "  - name: x\n"
+        "    dtype: int64\n"
+        "  splits:\n"
+        f"  - name: test\n    num_examples: {test_rows}\n"
+        f"  - name: dev\n    num_examples: {dev_card}\n"
+        "configs:\n"
+        "- config_name: default\n"
+        "  data_files:\n"
+        "  - split: test\n    path: test.jsonl\n"
+        "  - split: dev\n    path: dev.jsonl\n"
+        "---\n"
+    )
+    return repo
 
 
 class TestPatching:

@@ -1587,10 +1587,8 @@ def _emit_best_effort_deterministic_warning(labels: list[str]) -> None:
     )
 
 
-#: How a session reads its datasets. ``full`` is ``load_dataset`` as written,
-#: through the Arrow cache. ``light`` reads them in memory and writes no cache
-#: (:func:`~sieval.core.utils.hf_uncached.uncached_reads`): the same rows, for
-#: a session that reads each dataset once, as ``sieval run --dry-run`` does.
+#: How a session reads its datasets: ``full`` through the Arrow cache, ``light``
+#: in memory (:func:`~sieval.core.utils.hf_uncached.uncached_reads`).
 type DatasetReads = Literal["light", "full"]
 
 
@@ -1670,7 +1668,6 @@ class EvalSession:
 
     # Every task; a run of one serving group replaces it in `__init__`.
     _serving: SessionServing = SessionServing()
-    # How datasets are read (:data:`DatasetReads`); `__init__` may replace it.
     dataset_reads: DatasetReads = "full"
     _engine_loss: EngineLoss | None = None
 
@@ -1838,7 +1835,6 @@ class EvalSession:
 
         self.models: dict[str, Model] = {}
         self.datasets: dict[str, Dataset] = {}
-        # Under `dataset_reads="light"`, how each dataset's builders read it.
         self.prelaunch_reconcile_result: ReconcileResult | None = None
         self.postlaunch_reconcile_result: ReconcileResult | None = None
         self._normalized_model_bindings: dict[str, NormalizedModelBinding] = {}

@@ -1,30 +1,21 @@
 """Read HuggingFace datasets into memory, writing no Arrow cache.
 
-``load_dataset`` first converts every split of a source into Arrow files under
-``HF_DATASETS_CACHE``, then memory-maps them; each ``map`` and ``filter`` a
-loader applies writes another file. A caller that reads a dataset once, such as
-``sieval run --dry-run`` in a job with a fresh cache, pays for writing all of
-them and reads none back.
+``load_dataset`` writes every split of a source as Arrow files under
+``HF_DATASETS_CACHE``, and each later ``map``/``filter`` writes another. A
+caller that reads a dataset once (``sieval run --dry-run``) reads none of them
+back.
 
 Inside :func:`uncached_reads`, an Arrow-based builder (parquet, json, csv,
-arrow, text) streams each requested split's files into one in-memory table,
-and transforms on it stay in memory. The rows, their order and the features are
-those ``load_dataset`` gives, since the same ``_generate_tables`` produces
-them, and HF's split-size check still runs. A load keeps the cached path when:
+arrow, text) streams its splits from the same ``_generate_tables`` the cached
+path uses: the requested ones into an in-memory table, the others only counted.
+Every split is parsed and HF's split-size check runs over all of them, as in
+the cached path. A load keeps the cached path for a loading script (its cached
+path also checks duplicate keys), a split asked for by slice (``"test[:10]"``),
+a split not on local disk or over :data:`MAX_IN_MEMORY_BYTES`, any failure to
+stream, and an empty requested split; the cached path then raises its own error.
 
-- the builder is generator-based (a loading script): its cached path also
-  checks for duplicate keys, which streaming does not;
-- the split is asked for by slice or instruction (``"test[:10]"``) rather than
-  by name;
-- a split's source files are not local, or exceed :data:`MAX_IN_MEMORY_BYTES`,
-  where a memory-mapped file is the cheaper reading;
-- its batches infer different schemas (JSON lines whose column is null in one
-  batch and a string in the next), which the cache writer casts to the first;
-- a split has no rows, which the cached path refuses.
-
-The module factory is memoized within the block too: a loader calling
-``load_dataset`` once per config (C-Eval's 52 subjects) otherwise parses the
-dataset card each time.
+The module factory is memoized within the block, so a loader calling
+``load_dataset`` once per config (C-Eval's 52) parses the card once.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
@@ -47,7 +38,7 @@ from datasets.splits import NamedSplit, Split, SplitDict, SplitInfo
 from datasets.table import InMemoryTable
 from datasets.utils.info_utils import VerificationMode, verify_splits
 
-#: Above this many bytes of source files in one split, read through the cache.
+#: Above this many bytes of source files in a requested split, read through the cache.
 MAX_IN_MEMORY_BYTES = 2 * 1024**3
 
 _BATCH_ROWS = 10_000
@@ -74,11 +65,10 @@ class ReadLog:
 
 
 def uncached_reads() -> contextlib.AbstractContextManager[ReadLog]:
-    """Within the block, :func:`datasets.load_dataset` writes no Arrow cache
-    where it can read in memory; the :class:`ReadLog` says which loads did.
+    """Within the block, :func:`datasets.load_dataset` reads in memory where it can.
 
-    Process-wide while open: it patches ``DatasetBuilder`` and the module
-    factory. Not reentrant; a second open block raises ``RuntimeError``.
+    Patches ``DatasetBuilder`` and the module factory process-wide while open,
+    so one block at a time: a second raises ``RuntimeError``.
     """
     return _uncached_reads()
 
@@ -86,7 +76,10 @@ def uncached_reads() -> contextlib.AbstractContextManager[ReadLog]:
 @contextlib.contextmanager
 def _uncached_reads() -> Iterator[ReadLog]:
     if not _lock.acquire(blocking=False):
-        raise RuntimeError("uncached_reads() is already open")
+        raise RuntimeError(
+            "uncached_reads() is already open; it patches `datasets` "
+            "process-wide, so only one block may be open at a time"
+        )
     log = ReadLog()
     prepare = DatasetBuilder.download_and_prepare
     as_dataset = DatasetBuilder.as_dataset
@@ -94,6 +87,9 @@ def _uncached_reads() -> Iterator[ReadLog]:
     modules: dict[str, Any] = {}
 
     def memo_factory(path: str, *args: Any, **kwargs: Any) -> Any:
+        # `load_dataset_builder` passes paths, strings, data-file specs and a
+        # `DownloadConfig`, a dataclass: each repr shows every field, so equal
+        # reprs mean equal arguments.
         key = repr((path, args, sorted(kwargs.items(), key=lambda kv: kv[0])))
         if key not in modules:
             modules[key] = factory(path, *args, **kwargs)
@@ -113,16 +109,22 @@ def _uncached_reads() -> Iterator[ReadLog]:
     ) -> HFDataset | HFDatasetDict:
         names, reason = _memory_splits(self, split)
         built: dict[str, HFDataset] = {}
+        counts: dict[str, int] = {}
         if names is not None:
             try:
-                built = {name: _read_split(self, name) for name in names}
-            except (pa.ArrowInvalid, pa.ArrowTypeError) as exc:
-                # Batches whose inferred schemas differ: the cache writer casts
-                # each to the first one's, which concatenation does not.
-                names, reason = None, f"batches differ in schema ({exc})"
+                for name in map(str, cast(dict, self.config.data_files)):
+                    if name in names:
+                        built[name] = _read_split(self, name)
+                        counts[name] = len(built[name])
+                    else:
+                        counts[name] = _count_split(self, name)
             except _EmptySplit as exc:
-                # The cached path refuses it, in its own words.
                 names, reason = None, f"split {exc} has no rows"
+            except Exception as exc:
+                # Batches whose schemas differ (the cache writer casts them to
+                # the first), or a file that does not parse: the cached path
+                # reads it, or raises its own error.
+                names, reason = None, f"split did not stream ({exc})"
         if names is None:
             log.reads.append(BuilderRead(_label(self), "cache", reason))
             args, kwargs = getattr(self, _PREPARE_ARGS, ((), {}))
@@ -135,12 +137,11 @@ def _uncached_reads() -> Iterator[ReadLog]:
                 in_memory=in_memory,
             )
         mode = VerificationMode(verification_mode or VerificationMode.BASIC_CHECKS)
-        if mode != VerificationMode.NO_CHECKS and self.info.splits:
-            expected = {n: s for n, s in self.info.splits.items() if n in built}
+        if mode != VerificationMode.NO_CHECKS:
             recorded = SplitDict(dataset_name=self.dataset_name)
-            for name, rows in built.items():
-                recorded.add(SplitInfo(name=name, num_examples=len(rows)))
-            verify_splits(expected, recorded)
+            for name, rows in counts.items():
+                recorded.add(SplitInfo(name=name, num_examples=rows))
+            verify_splits(self.info.splits, recorded)
         log.reads.append(BuilderRead(_label(self), "memory"))
         if split is None:
             return HFDatasetDict(dict(built))
@@ -167,23 +168,24 @@ def _label(builder: DatasetBuilder) -> str:
 def _memory_splits(
     builder: DatasetBuilder, split: object
 ) -> tuple[list[str] | None, str]:
-    """The split names to read in memory, or ``None`` and why not."""
+    """The requested split names to hold in memory, or ``None`` and why not."""
     if not isinstance(builder, ArrowBasedBuilder):
         return None, "loading script"
     files = builder.config.data_files
     if files is None:
         return None, "no data files"
+    names_all = [str(name) for name in files]
     if split is None:
-        names = [str(name) for name in files]
+        names = names_all
     elif isinstance(split, str) and split in files:
         names = [split]
     else:
         return None, f"split {split!s} is not a split name"
-    for name in names:
+    for name in names_all:
         size = _local_size(files[name])
         if size is None:
             return None, f"split {name} is not on local disk"
-        if size > MAX_IN_MEMORY_BYTES:
+        if name in names and size > MAX_IN_MEMORY_BYTES:
             return None, f"split {name} is {size} bytes"
     return names, ""
 
@@ -200,23 +202,30 @@ def _local_size(paths: list[str]) -> int | None:
 
 
 class _EmptySplit(Exception):
-    """A split that streamed no rows."""
+    """A requested split that streamed no rows."""
 
 
-def _read_split(builder: DatasetBuilder, name: str) -> HFDataset:
+def _batches(builder: DatasetBuilder, name: str) -> Iterator[pa.Table]:
     streamed = builder.as_streaming_dataset(split=name)
     if not isinstance(streamed, IterableDataset):
         raise TypeError(f"split {name!r} streamed as {type(streamed).__name__}")
-    tables = list(streamed.with_format("arrow").iter(batch_size=_BATCH_ROWS))
+    return streamed.with_format("arrow").iter(batch_size=_BATCH_ROWS)
+
+
+def _count_split(builder: DatasetBuilder, name: str) -> int:
+    """Rows in split *name*, parsed and dropped batch by batch."""
+    return sum(len(table) for table in _batches(builder, name))
+
+
+def _read_split(builder: DatasetBuilder, name: str) -> HFDataset:
+    tables = list(_batches(builder, name))
     if not tables:
         raise _EmptySplit(name)
-    table = pa.concat_tables(tables)
-    # `Split(name)` is how the cached path names it; at runtime a NamedSplit.
     split = Split(name)
-    # The fingerprint the cached path gives this split. Without one, HF hashes
-    # every row of an in-memory table on each later transform.
+    # The cached path's fingerprint: without one, HF hashes every row of an
+    # in-memory table on each later transform.
     return HFDataset(
-        InMemoryTable(table),
+        InMemoryTable(pa.concat_tables(tables)),
         info=builder.info.copy(),
         split=cast(NamedSplit, split),
         fingerprint=builder._get_dataset_fingerprint(split),

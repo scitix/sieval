@@ -661,9 +661,7 @@ async def _plan_tasks(
 ) -> tuple[dict[str, str], dict[str, RunPlan | Exception]]:
     """Each task's served model and resume plan, with no engine launched.
 
-    The one call that turns resume planning into a launch decision. See
-    :func:`~sieval.cli.session.aplan_session` for *dataset_reads* and
-    *builder_reads*.
+    The one call that turns resume planning into a launch decision.
     """
     from sieval.cli.session import aplan_session
 
@@ -745,23 +743,14 @@ def _launch_json(command: BackendCommand) -> dict[str, object]:
     return out
 
 
-#: What a run checks of a dataset that ``light`` reading does not: the run
-#: writes it as Arrow files under ``HF_DATASETS_CACHE`` (disk space, write
-#: access), the dry-run read it in memory.
+#: What the run checks of a dataset that ``light`` reading does not.
 _LIGHT_UNVERIFIED = ("arrow_cache_write",)
 
 
 def _datasets_json(
     mode: DatasetReads, builder_reads: Mapping[str, list[BuilderRead]]
 ) -> dict[str, object]:
-    """The report's ``datasets``: how planning read each dataset.
-
-    ``mode`` is ``light`` or ``full``. Under ``light``, ``read`` names each
-    dataset planning constructed: ``memory`` where every builder read in
-    memory, ``cache`` where every one used the Arrow cache, ``mixed``
-    otherwise, with the ``cache_reasons``; ``unverified`` lists what the run
-    checks that this dry-run did not, empty when nothing was read in memory.
-    """
+    """The report's ``datasets``; see ``docs/guide/configuration.md``."""
     out: dict[str, object] = {"mode": mode}
     if mode == "full":
         return out
@@ -836,10 +825,9 @@ async def _run_dry_run(
     The checks, then each served model's plan and launch argv, each serving
     group (*serving_group* only, when given) and each task's plan; see
     ``docs/guide/configuration.md``. Reads ``--resume`` directories in
-    place and writes no result directory. Planning reads every dataset row
-    the run reads and starts each vendored service a task declares, as the
-    run does. *dataset_reads* ``light`` (``--full-datasets`` off) reads them
-    in memory, writing no Arrow cache; ``full`` loads them as the run does.
+    place and writes no result directory. Planning reads every dataset and
+    starts each vendored service a task declares, as the run does; under
+    *dataset_reads* ``light`` it reads the datasets in memory.
     """
 
     from sieval.cli.validation import run_dry_run, task_report_metrics_json
@@ -993,9 +981,9 @@ async def _run_dry_run(
         return unplanned(result)
 
     # What the run would do: each task's plan, from the call the run makes.
-    # Planning sets the session up as the run does: it reads every dataset
-    # (in memory unless `dataset_reads` is `full`) and starts each vendored
-    # service a task declares, writing nothing under the result directory.
+    # Planning sets the session up as the run does: it reads every dataset and
+    # starts each vendored service a task declares, writing nothing under the
+    # result directory.
     task_models: dict[str, str] = {}
     plans: dict[str, RunPlan | Exception] = {}
     launches_by_group: dict[str, set[str]] = {}
