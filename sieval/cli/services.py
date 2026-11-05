@@ -23,6 +23,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -265,6 +266,12 @@ def code_eval_service(
 _BUILDERS = {CODE_EVAL: code_eval_service}
 _CHECKS = {CODE_EVAL: check_code_eval}
 
+#: What :func:`checked_services_for` verifies of each service, in order, and
+#: what only a start would: the server binding its port and answering its
+#: health check, and the tasks' own ``setup()`` handshakes against it.
+SERVICE_CHECKS = ("resolves", "command", "interpreter", "port")
+SERVICE_UNVERIFIED = ("starts", "health", "task_setup")
+
 
 def check_vendored_services(required: Iterable[str]) -> None:
     """Check that each service in *required* that would be started can be."""
@@ -343,6 +350,68 @@ async def _start(
             continue
         return service, base, handles
     raise AssertionError("unreachable")
+
+
+def check_service_start(name: str) -> tuple[VendoredService, str, list[str]]:
+    """Check that *name* would start, without starting it.
+
+    Builds the service as a start does: its sources resolve (directory,
+    commit, digest), the interpreter it runs under answers for its runtime and
+    its command is present; and a local port binds. Returns the service, the
+    base URL on that port (where nothing listens) and :data:`SERVICE_CHECKS`;
+    raises what a start would raise first.
+    """
+    port = _free_port()
+    service = _BUILDERS[name](port)
+    executable = service.command[0] if service.command else ""
+    if not shutil.which(executable):
+        raise FileNotFoundError(
+            f"{name}'s command {executable!r} is not an executable on PATH"
+        )
+    return service, f"http://127.0.0.1:{port}", list(SERVICE_CHECKS)
+
+
+@contextlib.asynccontextmanager
+async def checked_services_for(
+    required: Iterable[str],
+) -> AsyncIterator[dict[str, list[str]]]:
+    """:func:`vendored_services_for` without starting anything.
+
+    Checks each service it would start (:func:`check_service_start`) and
+    yields the checks passed, by name. For the block, each endpoint variable
+    names the checked port, where nothing serves, and
+    :data:`VENDORED_SERVICES_ENV` holds the provenance a start records, so a
+    task's identities are the started run's and a handshake fails fast.
+    """
+    names = services_to_start(required)
+    busy = sorted(set(required) & _running)
+    if busy:
+        raise RuntimeError(
+            f"{', '.join(busy)} is already started by another run in this "
+            "process, which stops it when that run ends. Run one session per "
+            f"process, or set {SERVICE_ENDPOINT_ENV[busy[0]]} to a service "
+            "you manage."
+        )
+    if not names:
+        yield {}
+        return
+    checks: dict[str, list[str]] = {}
+    overlay: dict[str, str] = {}
+    provenance: dict[str, dict] = {}
+    for name in names:
+        service, base, passed = check_service_start(name)
+        checks[name] = passed
+        endpoint = base + service.endpoint_path
+        overlay[SERVICE_ENDPOINT_ENV[name]] = endpoint
+        provenance[name] = {
+            "commit": service.commit,
+            "digest": service.digest,
+            "runtime": service.runtime,
+            "endpoint": endpoint,
+        }
+    overlay[VENDORED_SERVICES_ENV] = json.dumps(provenance, sort_keys=True)
+    with _env_overlay(overlay):
+        yield checks
 
 
 @contextlib.asynccontextmanager

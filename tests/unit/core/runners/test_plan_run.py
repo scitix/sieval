@@ -6,6 +6,7 @@ AI-Generated Code - Claude Opus 5.5 (Anthropic)
 import hashlib
 from pathlib import Path
 
+import httpx
 import pytest
 
 from sieval.core.runners import MultiTaskRunner, StageResumeError
@@ -272,3 +273,96 @@ class TestUnservedCandidate:
         report = await resume(model).arun()
         assert model.call_count == 3
         assert (report["completed"], report["failed"]) == (3, 0)
+
+
+class _HandshakeTask(ResumeTask):
+    """Calls a service in ``setup()``; *error* is what that call raises."""
+
+    services = frozenset({"code-eval"})
+
+    def __init__(self, dataset, model, name=None, error=None):
+        super().__init__(dataset=dataset, model=model, name=name)
+        self._error = error
+        self.shut = False
+
+    async def setup(self) -> None:
+        if self._error is not None:
+            raise self._error
+
+    async def shutdown(self) -> None:
+        self.shut = True
+
+
+def _handshake_runner(tmp_path: Path, error: BaseException) -> TaskRunner:
+    task = _HandshakeTask(
+        dataset=MockDataset(RESUME_SAMPLES),
+        model=MockChatModel(answers=ANSWERS),
+        name="t",
+        error=error,
+    )
+    return TaskRunner(task, make_config(tmp_path, result_dir=str(tmp_path / "r")))
+
+
+def _unreachable() -> RuntimeError:
+    try:
+        raise httpx.ConnectError("connection refused")
+    except httpx.ConnectError as cause:
+        try:
+            raise RuntimeError("cannot reach the code-eval service") from cause
+        except RuntimeError as wrapped:
+            return wrapped
+
+
+class TestPlanWithUnstartedServices:
+    """A dry-run that checked a service without starting it still plans."""
+
+    @pytest.mark.anyio
+    async def test_a_handshake_that_cannot_connect_is_recorded(
+        self, tmp_path: Path
+    ) -> None:
+        runner = _handshake_runner(tmp_path, _unreachable())
+        plan = await runner.plan_run(unstarted=frozenset({"code-eval"}))
+        assert (plan["start"], plan["samples"]) == ("fresh", 3)
+        assert runner.setup_unreached == (
+            "RuntimeError: cannot reach the code-eval service"
+        )
+        assert runner._task.shut  # ty: ignore[unresolved-attribute]
+
+    @pytest.mark.anyio
+    async def test_the_same_failure_raises_when_the_service_started(
+        self, tmp_path: Path
+    ) -> None:
+        runner = _handshake_runner(tmp_path, _unreachable())
+        with pytest.raises(RuntimeError, match="cannot reach"):
+            await runner.plan_run()
+        assert runner.setup_unreached is None
+
+    @pytest.mark.anyio
+    async def test_any_other_setup_failure_raises(self, tmp_path: Path) -> None:
+        runner = _handshake_runner(tmp_path, ValueError("bad argument"))
+        with pytest.raises(ValueError, match="bad argument"):
+            await runner.plan_run(unstarted=frozenset({"code-eval"}))
+
+    @pytest.mark.anyio
+    async def test_a_task_not_declaring_the_service_raises(
+        self, tmp_path: Path
+    ) -> None:
+        runner = _handshake_runner(tmp_path, _unreachable())
+        with pytest.raises(RuntimeError, match="cannot reach"):
+            await runner.plan_run(unstarted=frozenset({"other"}))
+
+    @pytest.mark.anyio
+    async def test_the_session_runner_reports_each_unreached_task(
+        self, tmp_path: Path
+    ) -> None:
+        multi = MultiTaskRunner(result_dir=str(tmp_path / "r"))
+        task = _HandshakeTask(
+            dataset=MockDataset(RESUME_SAMPLES),
+            model=MockChatModel(answers=ANSWERS),
+            name="h",
+            error=_unreachable(),
+        )
+        multi.add_task(task, make_config(tmp_path, result_dir=None))
+        plans = await multi.plan_run(unstarted=frozenset({"code-eval"}))
+        assert not isinstance(plans["h"], Exception)
+        assert list(multi.setup_unreached()) == ["h"]

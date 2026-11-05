@@ -8,6 +8,7 @@ AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
 import contextlib
+import dataclasses
 import importlib.metadata
 import json
 import os
@@ -86,6 +87,11 @@ def stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     Each start appends the server's PID to the returned file.
     """
+    return install_code_eval_stub(tmp_path, monkeypatch)
+
+
+def install_code_eval_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """:func:`stub`, for a test module outside this one."""
     script = tmp_path / "stub_server.py"
     script.write_text(_STUB)
     starts = tmp_path / "starts.txt"
@@ -489,4 +495,135 @@ class TestSession:
         config, _ = _write_config(tmp_path, {"logs": _PLAIN_TASK})
         with pytest.raises(ValueError, match="'logs' is reserved"):
             await arun_session(config)
+        assert _pids(stub) == []
+
+
+# ===================================================================
+# Checked, not started (`sieval run --dry-run --mode light`)
+# ===================================================================
+class HandshakeMockTask(CodeEvalMockTask):
+    """Calls the service in ``setup()``, as quotebench and LiveOIBench do."""
+
+    async def setup(self) -> None:
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.get(self._api, timeout=2.0)
+            except httpx.HTTPError as e:
+                raise RuntimeError(f"cannot reach the code-eval service: {e}") from e
+        resp.raise_for_status()
+
+
+class BrokenSetupTask(CodeEvalMockTask):
+    async def setup(self) -> None:
+        raise ValueError("misconfigured task")
+
+
+_HANDSHAKE_TASK = "tests.unit.cli.test_services.HandshakeMockTask"
+_BROKEN_TASK = "tests.unit.cli.test_services.BrokenSetupTask"
+
+
+async def _plan(config: Path, mode: str):
+    from sieval.cli.dry_run_modes import DRY_RUN_MODES, DryRunRecord
+    from sieval.cli.session import aplan_session
+
+    record = DryRunRecord()
+    _, plans = await aplan_session(config, mode=DRY_RUN_MODES[mode], record=record)
+    return plans, record
+
+
+class TestCheckedServices:
+    @pytest.mark.anyio
+    async def test_light_checks_the_service_and_starts_nothing(
+        self, stub: Path, tmp_path: Path
+    ) -> None:
+        config, _ = _write_config(tmp_path, {"a": _CODE_TASK, "plain": _PLAIN_TASK})
+        plans, record = await _plan(config, "light")
+        assert _pids(stub) == []
+        assert not isinstance(plans["a"], Exception)
+        check = record.services[CODE_EVAL]
+        assert check.started is False
+        assert check.verified == ["resolves", "command", "interpreter", "port"]
+        assert check.unverified == ["starts", "health", "task_setup"]
+        assert check.setup_unreached == []
+        # The block's endpoint and provenance are gone again.
+        assert _ENDPOINT_ENV not in os.environ
+        assert VENDORED_SERVICES_ENV not in os.environ
+
+    @pytest.mark.anyio
+    async def test_full_starts_the_service(self, stub: Path, tmp_path: Path) -> None:
+        config, _ = _write_config(tmp_path, {"a": _CODE_TASK})
+        plans, record = await _plan(config, "full")
+        [pid] = _pids(stub)
+        assert not pid_alive(pid)
+        assert not isinstance(plans["a"], Exception)
+        check = record.services[CODE_EVAL]
+        assert check.started is True
+        assert check.unverified == []
+
+    @pytest.mark.anyio
+    async def test_both_modes_plan_the_same_identities(
+        self, stub: Path, tmp_path: Path
+    ) -> None:
+        # The grading identities record the service as `vendored` either way.
+        config, _ = _write_config(tmp_path, {"a": _CODE_TASK})
+        light, _ = await _plan(config, "light")
+        full, _ = await _plan(config, "full")
+        assert light == full
+
+    @pytest.mark.anyio
+    async def test_a_handshake_that_cannot_reach_it_is_named_not_failed(
+        self, stub: Path, tmp_path: Path
+    ) -> None:
+        config, _ = _write_config(tmp_path, {"h": _HANDSHAKE_TASK})
+        plans, record = await _plan(config, "light")
+        assert not isinstance(plans["h"], Exception)
+        assert record.services[CODE_EVAL].setup_unreached == ["h"]
+        full, record = await _plan(config, "full")
+        assert full == plans
+        assert record.services[CODE_EVAL].setup_unreached == []
+
+    @pytest.mark.anyio
+    async def test_another_setup_failure_still_fails_the_plan(
+        self, stub: Path, tmp_path: Path
+    ) -> None:
+        config, _ = _write_config(tmp_path, {"b": _BROKEN_TASK})
+        plans, _ = await _plan(config, "light")
+        assert isinstance(plans["b"], ValueError)
+
+    @pytest.mark.anyio
+    async def test_a_service_that_cannot_start_fails_light_too(
+        self, stub: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def missing(_port: int) -> VendoredService:
+            raise FileNotFoundError("no code-evaluator is at /nowhere")
+
+        monkeypatch.setitem(services._BUILDERS, CODE_EVAL, missing)
+        config, _ = _write_config(tmp_path, {"a": _CODE_TASK})
+        for mode in ("light", "full"):
+            with pytest.raises(FileNotFoundError, match="/nowhere"):
+                await _plan(config, mode)
+
+    @pytest.mark.anyio
+    async def test_a_missing_command_is_refused(
+        self, stub: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        build = services._BUILDERS[CODE_EVAL]
+
+        def absent(port: int) -> VendoredService:
+            service = build(port)
+            return dataclasses.replace(service, command=[str(tmp_path / "no-python")])
+
+        monkeypatch.setitem(services._BUILDERS, CODE_EVAL, absent)
+        config, _ = _write_config(tmp_path, {"a": _CODE_TASK})
+        with pytest.raises(FileNotFoundError, match="not an executable"):
+            await _plan(config, "light")
+
+    @pytest.mark.anyio
+    async def test_a_preset_endpoint_is_neither_checked_nor_started(
+        self, stub: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(_ENDPOINT_ENV, "http://evaluator/evaluations")
+        config, _ = _write_config(tmp_path, {"a": _CODE_TASK})
+        _, record = await _plan(config, "light")
+        assert record.services == {}
         assert _pids(stub) == []

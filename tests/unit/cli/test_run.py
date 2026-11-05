@@ -2829,15 +2829,48 @@ class TestSessionWatching:
         assert (lost, reports) == ({}, {"t": 1})
 
 
-class TestDatasetsJson:
-    """The dry-run report's ``datasets``: which mode ran, and per dataset how."""
+def _plain_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Typer's usage errors unboxed and wide. Under GitHub Actions typer forces
+    a colored, boxed error that splits the message."""
+    import typer.rich_utils as rich_utils
 
-    def test_full_reports_only_its_mode(self) -> None:
+    monkeypatch.setattr(rich_utils, "FORCE_TERMINAL", None, raising=False)
+    monkeypatch.setattr(rich_utils, "COLOR_SYSTEM", None, raising=False)
+    monkeypatch.setattr(rich_utils, "MAX_WIDTH", 200, raising=False)
+
+
+class TestDryRunModes:
+    """``--mode`` and the report's ``mode``, ``datasets`` and ``services``."""
+
+    def test_the_known_modes(self) -> None:
+        from sieval.cli.dry_run_modes import (
+            DEFAULT_DRY_RUN_MODE,
+            DRY_RUN_MODES,
+            dry_run_mode,
+        )
+
+        assert DEFAULT_DRY_RUN_MODE == "light"
+        assert list(DRY_RUN_MODES) == ["light", "full"]
+        light, full = dry_run_mode("light"), dry_run_mode("full")
+        assert (light.datasets, light.services) == ("memory", "check")
+        assert (full.datasets, full.services) == ("cache", "start")
+        with pytest.raises(ValueError, match="unknown mode 'auto'; known: light, full"):
+            dry_run_mode("auto")
+
+    def test_full_mode_datasets_verify_everything(self) -> None:
+        from sieval.cli.dry_run_modes import DRY_RUN_MODES
         from sieval.cli.run import _datasets_json
 
-        assert _datasets_json("full", {}) == {"mode": "full"}
+        assert _datasets_json(DRY_RUN_MODES["full"], ["d"], {"d": []}) == {
+            "d": {
+                "read": "cache",
+                "verified": ["present", "rows", "count", "schema", "arrow_cache_write"],
+                "unverified": [],
+            }
+        }
 
     def test_light_names_each_dataset_read(self) -> None:
+        from sieval.cli.dry_run_modes import DRY_RUN_MODES
         from sieval.cli.run import _datasets_json
         from sieval.core.utils.hf_uncached import BuilderRead
 
@@ -2851,44 +2884,105 @@ class TestDatasetsJson:
             # Constructed without `load_dataset`, as a `from_list` loader is.
             "own": [],
         }
-        assert _datasets_json("light", reads) == {
-            "mode": "light",
-            "read": {
-                "mem": {"read": "memory", "unverified": ["arrow_cache_write"]},
-                "script": {
-                    "read": "cache",
-                    "unverified": [],
-                    "cache_reasons": ["b: loading script"],
-                },
-                "both": {
-                    "read": "mixed",
-                    "unverified": ["arrow_cache_write"],
-                    "cache_reasons": ["c/2: split test[:5] is not a split name"],
-                },
-                "own": {"read": "none", "unverified": []},
+        base = ["present", "rows", "count", "schema"]
+        assert _datasets_json(DRY_RUN_MODES["light"], reads, reads) == {
+            "mem": {
+                "read": "memory",
+                "verified": base,
+                "unverified": ["arrow_cache_write"],
+            },
+            "script": {
+                "read": "cache",
+                "verified": [*base, "arrow_cache_write"],
+                "unverified": [],
+                "cache_reasons": ["b: loading script"],
+            },
+            "both": {
+                "read": "mixed",
+                "verified": base,
+                "unverified": ["arrow_cache_write"],
+                "cache_reasons": ["c/2: split test[:5] is not a split name"],
+            },
+            "own": {
+                "read": "none",
+                "verified": [*base, "arrow_cache_write"],
+                "unverified": [],
             },
         }
 
+    def test_services_say_what_ran(self) -> None:
+        from sieval.cli.dry_run_modes import ServiceCheck
+        from sieval.cli.run import _services_json
+
+        checks = {
+            "code-eval": ServiceCheck(
+                started=False,
+                verified=["resolves"],
+                unverified=["starts"],
+                setup_unreached=["quotebench"],
+            )
+        }
+        assert _services_json(checks) == {
+            "code-eval": {
+                "started": False,
+                "verified": ["resolves"],
+                "unverified": ["starts"],
+                "setup_unreached": ["quotebench"],
+            }
+        }
+
     @pytest.mark.anyio
-    async def test_a_report_that_stops_early_still_names_its_mode(
+    async def test_a_report_that_stops_early_names_its_mode(
         self, tmp_path: Path
     ) -> None:
+        from sieval.cli.dry_run_modes import DRY_RUN_MODES
         from sieval.cli.run import _run_dry_run
 
         light = await _run_dry_run(tmp_path / "absent.yaml")
-        full = await _run_dry_run(tmp_path / "absent.yaml", dataset_reads="full")
-        assert light["datasets"] == {"mode": "light", "read": {}}
-        assert full["datasets"] == {"mode": "full"}
+        full = await _run_dry_run(tmp_path / "absent.yaml", mode=DRY_RUN_MODES["full"])
+        assert (light["mode"], full["mode"]) == ("light", "full")
+        # Unknown, not empty: planning never ran.
+        for report in (light, full):
+            assert (report["datasets"], report["services"]) == (None, None)
 
     def test_the_flag_reaches_the_dry_run(self, tmp_path: Path) -> None:
         config = tmp_path / "c.yaml"
         config.write_text("models: {}\ntasks: {}")
         seen = AsyncMock(return_value={"checks": [], "n_errors": 0, "n_warnings": 0})
         with patch("sieval.cli.run._run_dry_run", new=seen):
-            runner.invoke(app, ["run", str(config), "--dry-run", "-o", "json"])
-            runner.invoke(
-                app,
-                ["run", str(config), "--dry-run", "--full-datasets", "-o", "json"],
+            for flags in ([], ["--mode", "light"], ["--mode", "full"]):
+                result = runner.invoke(
+                    app, ["run", str(config), "--dry-run", *flags, "-o", "json"]
+                )
+                assert result.exit_code == 0, result.output
+        modes = [call.kwargs["mode"].name for call in seen.await_args_list]
+        assert modes == ["light", "light", "full"]
+
+    def test_an_unknown_mode_is_refused_naming_the_known_ones(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _plain_errors(monkeypatch)
+        config = tmp_path / "c.yaml"
+        config.write_text("models: {}\ntasks: {}")
+        seen = AsyncMock()
+        with patch("sieval.cli.run._run_dry_run", new=seen):
+            result = runner.invoke(
+                app, ["run", str(config), "--dry-run", "--mode", "hybrid"]
             )
-        modes = [call.kwargs["dataset_reads"] for call in seen.await_args_list]
-        assert modes == ["light", "full"]
+        assert result.exit_code == 2
+        plain = re.sub(r"\s+", " ", re.sub(r"\x1b\[[0-9;]*m", "", result.output))
+        assert "unknown mode 'hybrid'; known: light, full" in plain
+        seen.assert_not_awaited()
+
+    def test_mode_needs_dry_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _plain_errors(monkeypatch)
+        config = tmp_path / "c.yaml"
+        config.write_text("models: {}\ntasks: {}")
+        run_all = AsyncMock()
+        with patch("sieval.cli.run._run_all", new=run_all):
+            result = runner.invoke(app, ["run", str(config), "--mode", "full"])
+        assert result.exit_code == 2
+        assert "--dry-run only" in re.sub(r"\s+", " ", result.output)
+        run_all.assert_not_awaited()

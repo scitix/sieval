@@ -23,6 +23,7 @@ import pytest
 import yaml
 
 from sieval.cli._filter_spec import VALUES_DIGEST_KEY, compute_values_digest
+from sieval.cli.dry_run_modes import DRY_RUN_MODES, DryRunRecord
 from sieval.cli.resolution import derive_model_type
 from sieval.cli.session import (
     _DETERMINISTIC_SEED_CONTRACT_KEY,
@@ -10516,7 +10517,7 @@ class TestEngineGuardFor:
 
 
 class TestDatasetReads:
-    """``dataset_reads`` decides how ``_setup_datasets`` reads each dataset."""
+    """``mode.datasets`` decides how ``_setup_datasets`` reads each dataset."""
 
     @staticmethod
     def _session(tmp_path: Path, mode: str):
@@ -10533,8 +10534,8 @@ class TestDatasetReads:
         )
         session = EvalSession.__new__(EvalSession)
         session.datasets = {}
-        session.dataset_builder_reads = {}
-        session.dataset_reads = mode
+        session.record = DryRunRecord()
+        session.mode = DRY_RUN_MODES[mode]
         session.config = {
             "datasets": {
                 "d": {
@@ -10562,11 +10563,12 @@ class TestDatasetReads:
         arrow = sorted(cache.rglob("*.arrow")) if cache.exists() else []
         if mode == "light":
             assert arrow == []
-            ((read,),) = session.dataset_builder_reads.values()
+            ((read,),) = session.record.datasets.values()
             assert read.path == "memory"
         else:
             assert arrow
-            assert session.dataset_builder_reads == {}
+            assert session.record.datasets == {}
+            assert session.dataset_names == ["d"]
 
     def test_a_missing_dataset_keeps_its_download_hint(self, tmp_path: Path) -> None:
         session = self._session(tmp_path, "light")

@@ -511,9 +511,18 @@ without launching an engine or writing a result directory. It reads the
 `--resume` directories in place. On a node without GPUs, declare the target ones
 in `SIEVAL_TARGET_GPU` ([Resolving for declared GPUs](infer.md#resolving-for-declared-gpus)).
 
-Planning reads every dataset as the run does, but in memory: it writes no Arrow
-cache under `HF_DATASETS_CACHE`. `--full-datasets` loads them through the
-cache instead. Both give the same report except for `datasets`.
+`--mode` decides how planning does the heavy parts of setting the session up.
+Both modes read every dataset row the run reads and give the same report,
+apart from `mode`, `datasets` and `services`:
+
+| `--mode` | Datasets | Vendored services |
+| --- | --- | --- |
+| `light` (default) | read in memory; no Arrow cache under `HF_DATASETS_CACHE` | checked, not started |
+| `full` | loaded through the Arrow cache, as the run does | started, as the run does |
+
+An unknown mode is refused with the known ones (exit 2), as is `--mode`
+without `--dry-run`. A caller reads what each item verified from the report
+rather than from the mode's name.
 
 ```json
 {
@@ -554,7 +563,9 @@ cache instead. Both give the same report except for `datasets`.
     }
   },
   "needs_inference": true,
-  "datasets": {"mode": "light", "read": {"echo": {"read": "memory", "unverified": ["arrow_cache_write"]}}}
+  "mode": "light",
+  "datasets": {"ds": {"read": "memory", "verified": ["present", "rows", "count", "schema"], "unverified": ["arrow_cache_write"]}},
+  "services": {}
 }
 ```
 
@@ -599,22 +610,37 @@ cache instead. Both give the same report except for `datasets`.
   `report_metrics` check. See [Report metric names](metrics.md#report-metric-names).
 - `needs_inference` is whether the run starts any engine. A task that infers
   through an `api_base` model counts in its `to_infer` but starts none.
-- `datasets.mode` is `light` (the default) or `full` (`--full-datasets`).
-  Under `light`, `datasets.read` has one entry per dataset, by its `datasets:`
-  key (`<task>.dataset` for an inline one). `read` is `memory`, `cache`,
-  `mixed`, or `none` for a loader that calls no `load_dataset`. A call reads
-  through the cache for a loading script, a sliced split (`test[:10]`), a split
-  over 2 GiB or not on local disk, or a split that does not stream;
-  `cache_reasons` names each. `unverified` is `["arrow_cache_write"]` (that the
-  cache can be written) when anything was read in memory, else empty.
+- `mode` is the `--mode` that ran.
+- `datasets` has one entry per dataset planning built, by its `datasets:` key
+  (`<task>.dataset` for an inline one). `read` is `memory` when every
+  `load_dataset` call read in memory, `cache` when every one went through the
+  Arrow cache, `mixed` for both, and `none` for a loader that calls none. In
+  memory, every split is parsed and its size checked, the requested ones kept;
+  a call keeps the cache for a loading script, a sliced split (`test[:10]`), a
+  split over 2 GiB or not on local disk, a split that does not stream, or an
+  empty requested split; `cache_reasons` names each.
+  `verified` lists what planning checked: `present`, `rows`, `count`, `schema`,
+  and `arrow_cache_write` (the cache can be written: disk space, permissions)
+  when it went through the cache. `unverified` lists what the run checks that
+  this planning did not.
+- `services` has one entry per vendored service the run would start (none for
+  one whose endpoint variable is set). `started` is whether planning started
+  it. `verified` lists the checks that passed: `resolves` (its sources, commit
+  and digest), `command`, `interpreter` (it answers for its runtime), `port`
+  (a local port binds), and, when started, `starts`, `health` and
+  `task_setup`. Unstarted, `unverified` lists those three, and
+  `setup_unreached` names each task whose `setup()` handshake (code-eval's
+  language or digest check) could not reach it; its plan is still made. Its
+  grading identities are the started run's.
 
-`gpu`, `models`, `serving`, `tasks`, `needs_inference` and `datasets` are always present. When the
-config checks fail, or planning raises (the `resume_plan` check then names
-why), `tasks` and every `needs_inference` are `null`: unknown, not false.
+`gpu`, `models`, `serving`, `tasks`, `needs_inference`, `mode`, `datasets` and
+`services` are always present. When the config checks fail, or planning raises
+(the `resume_plan` check then names why), `tasks`, `datasets`, `services` and
+every `needs_inference` are `null`: unknown, not false.
 
-Planning sets the session up as the run does. It loads every dataset,
-downloading one not yet cached, and starts each vendored service a task
-declares; neither writes under the result directory. A sample that `feedback`
+Planning otherwise sets the session up as the run does: it builds every model
+client, reads `--resume` directories in place, and calls each task's `setup()`.
+Nothing writes under the result directory. A sample that `feedback`
 sends to another iteration after a rerun from `feedback` is not counted, since
 the plan cannot know it.
 
