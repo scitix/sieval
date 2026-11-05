@@ -5,7 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.15.2] - 2026-11-06
+
+A patch release: `sieval run --dry-run` is light by default, with
+`--mode light|full`, and its report gains `mode`, `datasets` and `services`.
+A busy engine stays alive while it answers its liveness probe (`/ping` for
+SGLang) or logs progress. The `--full-datasets` flag from #267 was never
+released; `--mode` replaces it. Nothing is breaking. No on-disk format
+changes: `meta.json` `identity` stays schema 5, `RESULT_SCHEMA_VERSION` stays
+1, and 0.15.1 result directories resume (#267, #268, #269).
 
 ### Changed
 
@@ -655,6 +663,7 @@ Mainstream benchmarks registered in `sieval/meta/index.json`:
 - Project-wide preflight (`scripts/check_preflight.py`): links, deps, tasks, datasets, imports, examples, meta-index sync, version.
 - Tooling: `ruff`, `ty`, `mypy strict`, `pytest`.
 
+[0.15.2]: https://github.com/scitix/sieval/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/scitix/sieval/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/scitix/sieval/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/scitix/sieval/compare/v0.13.2...v0.14.0
