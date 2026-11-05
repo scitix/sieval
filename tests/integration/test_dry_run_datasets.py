@@ -189,7 +189,16 @@ class TestDryRunDatasets:
             assert data["datasets"]["mode"] == mode
         assert details["light"] == details["full"]
 
-    def test_full_datasets_needs_dry_run(self, tmp_path: Path) -> None:
+    def test_full_datasets_needs_dry_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Under GitHub Actions typer forces a colored, boxed error that splits
+        # the message; plain and wide, as `tests/unit/cli/conftest.py` does.
+        import typer.rich_utils as rich_utils
+
+        monkeypatch.setattr(rich_utils, "FORCE_TERMINAL", None, raising=False)
+        monkeypatch.setattr(rich_utils, "COLOR_SYSTEM", None, raising=False)
+        monkeypatch.setattr(rich_utils, "MAX_WIDTH", 200, raising=False)
         result = runner.invoke(app, ["run", str(_config(tmp_path)), "--full-datasets"])
         assert result.exit_code == 2
         assert "--dry-run only" in result.output
