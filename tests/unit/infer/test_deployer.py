@@ -20,10 +20,13 @@ from sieval.infer.backends.translator import BackendCommand
 from sieval.infer.config import InferCondition, InferHandle, InferPhase
 from sieval.infer.deployer import (
     DEFAULT_READY_TIMEOUT,
+    ENGINE_HEALTH_INTERVAL,
+    ENGINE_UNHEALTHY_AFTER,
     DeployError,
     DeployTimeoutError,
     EngineExit,
     LocalDeployer,
+    _logged_progress,
 )
 from sieval.infer.topology.models import (
     DeploymentPlan,
@@ -1360,7 +1363,7 @@ class TestWatch:
             patch("sieval.infer.deployer.ENGINE_POLL_INTERVAL", 0.001),
             patch("sieval.infer.deployer.ENGINE_HEALTH_INTERVAL", 0.01),
             patch("sieval.infer.deployer.ENGINE_UNHEALTHY_AFTER", 0.05),
-            patch.object(deployer, "_probe_health", side_effect=probe),
+            patch.object(deployer, "_probe_liveness", side_effect=probe),
         ):
             exit = await deployer.watch([handle])
 
@@ -1370,6 +1373,301 @@ class TestWatch:
         # Counted from the third probe, after the recovery.
         assert len(seen) >= 3
         assert "failed its health check" in exit.summary()
+
+    @staticmethod
+    async def _watch_with(
+        deployer: LocalDeployer,
+        handle: InferHandle,
+        probe,
+        *,
+        within: float = 5,
+    ) -> EngineExit | None:
+        """Watch *handle* with *probe* as its liveness probe, 10 ms windows and
+        a 50 ms loss threshold; ``None`` when it is still alive after *within*."""
+        with (
+            patch("sieval.infer.deployer.ENGINE_POLL_INTERVAL", 0.001),
+            patch("sieval.infer.deployer.ENGINE_HEALTH_INTERVAL", 0.01),
+            patch("sieval.infer.deployer.ENGINE_UNHEALTHY_AFTER", 0.05),
+            patch.object(deployer, "_probe_liveness", side_effect=probe),
+            anyio.move_on_after(within),
+        ):
+            return await deployer.watch([handle])
+        return None
+
+    @pytest.mark.anyio
+    async def test_a_busy_engine_starving_its_health_check_stays_alive(
+        self, tmp_path: Path
+    ):
+        # The aries loss: /health timed out for minutes while SGLang decoded.
+        log = tmp_path / "full.log"
+        log.write_text("")
+        deployer = LocalDeployer()
+        handle = self._launched(deployer, [None])
+        handle.metadata["log_file"] = str(log)
+
+        async def probe(_handle):
+            with log.open("a") as fh:
+                fh.write(
+                    "[2026-11-05 03:12:09 DP0 TP0] Decode batch, #running-req: 24, "
+                    "#token: 41210, token usage: 0.11, cuda graph: True, "
+                    "gen throughput (token/s): 2401.37, #queue-req: 0\n"
+                )
+            return InferCondition(status=False, reason="health_check_timeout")
+
+        assert await self._watch_with(deployer, handle, probe, within=0.3) is None
+
+    @pytest.mark.anyio
+    async def test_prefill_alone_counts_as_progress(self, tmp_path: Path):
+        log = tmp_path / "full.log"
+        log.write_text("")
+        deployer = LocalDeployer()
+        handle = self._launched(deployer, [None])
+        handle.metadata["log_file"] = str(log)
+
+        async def probe(_handle):
+            with log.open("a") as fh:
+                fh.write(
+                    "Prefill batch, #new-seq: 1, #new-token: 8192, "
+                    "#cached-token: 0, input throughput (token/s): 31002.11\n"
+                )
+            return InferCondition(status=False, reason="health_check_timeout")
+
+        assert await self._watch_with(deployer, handle, probe, within=0.3) is None
+
+    @pytest.mark.anyio
+    async def test_a_passing_ping_keeps_a_silent_engine_alive(self, tmp_path: Path):
+        # Idle: SGLang logs no batch, so only the probe speaks for it.
+        log = tmp_path / "full.log"
+        log.write_text("")
+        deployer = LocalDeployer()
+        handle = self._launched(deployer, [None])
+        handle.metadata["log_file"] = str(log)
+
+        async def probe(_handle):
+            return InferCondition(status=True)
+
+        assert await self._watch_with(deployer, handle, probe, within=0.3) is None
+
+    @pytest.mark.anyio
+    async def test_no_probe_and_no_progress_is_lost(self, tmp_path: Path):
+        log = tmp_path / "full.log"
+        # Progress before the watch started does not count.
+        log.write_text("Decode batch, #running-req: 3, gen throughput: 90.0\n")
+        deployer = LocalDeployer()
+        handle = self._launched(deployer, [None])
+        handle.metadata["log_file"] = str(log)
+
+        async def probe(_handle):
+            with log.open("a") as fh:
+                fh.write("[2026-11-05 03:12:09] INFO: 127.0.0.1 GET /metrics 200\n")
+            return InferCondition(status=False, reason="health_check_timeout")
+
+        reads: list[tuple[bool, int]] = []
+
+        async def recorded(path: Path, offset: int, backend: str):
+            read = await _logged_progress(path, offset, backend)
+            reads.append(read)
+            return read
+
+        with patch("sieval.infer.deployer._logged_progress", side_effect=recorded):
+            exit = await self._watch_with(deployer, handle, probe)
+
+        assert exit is not None and exit.exit_code is None
+        # Not even the first window saw the line logged before the watch.
+        assert reads and not any(progressed for progressed, _ in reads)
+        assert exit.reason == "health_check_timeout"
+        assert exit.unhealthy_for is not None and exit.unhealthy_for >= 0.05
+        assert "logged no progress" in exit.summary()
+
+    @pytest.mark.anyio
+    async def test_progress_restarts_the_clock(self, tmp_path: Path):
+        log = tmp_path / "full.log"
+        log.write_text("")
+        deployer = LocalDeployer()
+        handle = self._launched(deployer, [None])
+        handle.metadata["log_file"] = str(log)
+        calls: list[float] = []
+
+        async def probe(_handle):
+            calls.append(anyio.current_time())
+            if len(calls) == 3:
+                with log.open("a") as fh:
+                    fh.write("Decode batch, #running-req: 1\n")
+            return InferCondition(status=False, reason="health_check_timeout")
+
+        exit = await self._watch_with(deployer, handle, probe)
+
+        assert exit is not None
+        # Counted from the probe after the one that saw progress.
+        assert exit.unhealthy_for is not None
+        assert anyio.current_time() - calls[2] >= 0.05
+
+    @pytest.mark.anyio
+    async def test_nothing_for_180s_is_lost(self, tmp_path: Path):
+        # The defaults, scaled 1000x down.
+        assert (ENGINE_HEALTH_INTERVAL, ENGINE_UNHEALTHY_AFTER) == (10.0, 180.0)
+        log = tmp_path / "full.log"
+        log.write_text("")
+        deployer = LocalDeployer()
+        handle = self._launched(deployer, [None])
+        handle.metadata["log_file"] = str(log)
+        probes: list[float] = []
+
+        async def probe(_handle):
+            probes.append(anyio.current_time())
+            return InferCondition(status=False, reason="health_check_timeout")
+
+        with (
+            patch("sieval.infer.deployer.ENGINE_POLL_INTERVAL", 0.001),
+            patch("sieval.infer.deployer.ENGINE_HEALTH_INTERVAL", 0.01),
+            patch("sieval.infer.deployer.ENGINE_UNHEALTHY_AFTER", 0.18),
+            patch.object(deployer, "_probe_liveness", side_effect=probe),
+            anyio.fail_after(10),
+        ):
+            exit = await deployer.watch([handle])
+
+        assert exit.exit_code is None
+        assert exit.unhealthy_for is not None and exit.unhealthy_for >= 0.18
+        # Counted from the first failed probe, not from the watch's start.
+        assert anyio.current_time() - probes[0] >= 0.18
+
+    @pytest.mark.anyio
+    async def test_vllm_idle_throughput_lines_are_not_progress(self, tmp_path: Path):
+        log = tmp_path / "full.log"
+        log.write_text("")
+        deployer = LocalDeployer()
+        handle = self._launched(deployer, [None])
+        handle = InferHandle(
+            backend="vllm",
+            handle_id=handle.handle_id,
+            endpoint=handle.endpoint,
+            metadata={**handle.metadata, "log_file": str(log)},
+        )
+
+        async def probe(_handle):
+            with log.open("a") as fh:
+                fh.write(
+                    "INFO 11-05 03:12:09 [loggers.py:257] Engine 000: "
+                    "Avg prompt throughput: 0.0 tokens/s, "
+                    "Avg generation throughput: 0.0 tokens/s, "
+                    "Running: 0 reqs, Waiting: 0 reqs\n"
+                )
+            return InferCondition(status=False, reason="health_check_failed")
+
+        exit = await self._watch_with(deployer, handle, probe)
+        assert exit is not None and exit.exit_code is None
+
+    @pytest.mark.anyio
+    async def test_vllm_throughput_is_progress(self, tmp_path: Path):
+        log = tmp_path / "full.log"
+        log.write_text("")
+        deployer = LocalDeployer()
+        handle = self._launched(deployer, [None])
+        handle = InferHandle(
+            backend="vllm",
+            handle_id=handle.handle_id,
+            endpoint=handle.endpoint,
+            metadata={**handle.metadata, "log_file": str(log)},
+        )
+
+        async def probe(_handle):
+            with log.open("a") as fh:
+                fh.write(
+                    "Avg prompt throughput: 0.0 tokens/s, "
+                    "Avg generation throughput: 1843.2 tokens/s, Running: 31 reqs\n"
+                )
+            return InferCondition(status=False, reason="health_check_timeout")
+
+        assert await self._watch_with(deployer, handle, probe, within=0.3) is None
+
+    @pytest.mark.anyio
+    async def test_a_rotated_log_is_read_from_its_start(self, tmp_path: Path):
+        log = tmp_path / "full.log"
+        log.write_text("x" * 4096)
+        progressed, offset = await _logged_progress(log, 4096, "sglang")
+        assert (progressed, offset) == (False, 4096)
+        log.write_text("Decode batch, #running-req: 2\n")
+        progressed, _ = await _logged_progress(log, offset, "sglang")
+        assert progressed
+
+    @pytest.mark.anyio
+    async def test_a_missing_log_is_no_progress(self, tmp_path: Path):
+        assert await _logged_progress(tmp_path / "absent.log", 7, "sglang") == (
+            False,
+            7,
+        )
+
+    @pytest.mark.anyio
+    async def test_only_the_last_window_of_new_bytes_is_read(self, tmp_path: Path):
+        log = tmp_path / "full.log"
+        line = "Decode batch, #running-req: 2\n"
+        with patch("sieval.infer.deployer._LOG_TAIL_WINDOW_BYTES", 1024):
+            # Progress more than a window before the end is not read.
+            log.write_text(line + "x" * 1024)
+            size = log.stat().st_size
+            assert await _logged_progress(log, 0, "sglang") == (False, size)
+            # Inside the window it is.
+            log.write_text("x" * 1023 + "\n" + line)
+            size = log.stat().st_size
+            assert await _logged_progress(log, 0, "sglang") == (True, size)
+
+    @pytest.mark.anyio
+    async def test_an_engine_without_a_progress_signal_shows_none(self, tmp_path: Path):
+        log = tmp_path / "full.log"
+        log.write_text("Decode batch, #running-req: 2\n")
+        assert await _logged_progress(log, 0, "full") == (False, 0)
+
+    @pytest.mark.anyio
+    async def test_liveness_pings_sglang_and_falls_back_to_health(self):
+        deployer = LocalDeployer()
+        handle = _make_handle(health_url="http://10.0.0.5:30000/health")
+        urls: list[str] = []
+
+        async def get(url: str) -> InferCondition:
+            urls.append(url)
+            return InferCondition(status=url.endswith("/ping"))
+
+        with patch.object(deployer, "_probe", side_effect=get):
+            alive = await deployer._probe_liveness(handle)
+        assert alive is not None and alive.status
+
+        assert urls == ["http://10.0.0.5:30000/ping"]
+
+        urls.clear()
+
+        async def no_ping(url: str) -> InferCondition:
+            urls.append(url)
+            ok = url.endswith("/health")
+            return InferCondition(status=ok, reason="" if ok else "health_check_failed")
+
+        with patch.object(deployer, "_probe", side_effect=no_ping):
+            alive = await deployer._probe_liveness(handle)
+        assert alive is not None and alive.status
+        # An SGLang without /ping is probed as before.
+        assert urls == [
+            "http://10.0.0.5:30000/ping",
+            "http://10.0.0.5:30000/health",
+        ]
+
+    @pytest.mark.anyio
+    async def test_liveness_of_vllm_is_its_health_check(self):
+        deployer = LocalDeployer()
+        handle = _make_handle(backend="vllm")
+        urls: list[str] = []
+
+        async def get(url: str) -> InferCondition:
+            urls.append(url)
+            return InferCondition(status=True)
+
+        with patch.object(deployer, "_probe", side_effect=get):
+            alive = await deployer._probe_liveness(handle)
+        assert alive is not None and alive.status
+        assert urls == ["http://localhost:8000/health"]
+
+    @pytest.mark.anyio
+    async def test_liveness_without_a_health_url_is_none(self):
+        handle = _make_handle(health_url="", endpoint="")
+        assert await LocalDeployer()._probe_liveness(handle) is None
 
     @pytest.mark.anyio
     async def test_a_hanging_probe_does_not_delay_an_exit(self):
@@ -1383,7 +1681,7 @@ class TestWatch:
             patch("sieval.infer.deployer.ENGINE_POLL_INTERVAL", 0.001),
             patch("sieval.infer.deployer.ENGINE_HEALTH_INTERVAL", 0.001),
             patch("sieval.infer.deployer.kill_orphaned_group"),
-            patch.object(deployer, "_probe_health", side_effect=probe),
+            patch.object(deployer, "_probe_liveness", side_effect=probe),
             anyio.fail_after(5),
         ):
             engine_exit = await deployer.watch([handle])

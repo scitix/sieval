@@ -12,6 +12,7 @@ import importlib
 import json
 import os
 import platform
+import re
 import secrets
 import shutil
 import signal
@@ -64,12 +65,58 @@ _FAILURE_LOG_TAIL = 30
 # _tail_lines) can turn tens of kilobytes into one line, emptying such a window.
 _LOG_TAIL_WINDOW_BYTES = 256 * 1024
 
-# `LocalDeployer.watch`: poll the process every ENGINE_POLL_INTERVAL s, probe
-# health every ENGINE_HEALTH_INTERVAL s, and count only ENGINE_UNHEALTHY_AFTER s
-# of failed probes in a row: a loaded engine can miss one.
+# `LocalDeployer.watch`: poll the process every ENGINE_POLL_INTERVAL s; every
+# ENGINE_HEALTH_INTERVAL s, probe liveness and read the log for progress. An
+# engine is lost only after ENGINE_UNHEALTHY_AFTER s in which every probe failed
+# and the log showed no progress: a loaded engine can miss probes.
 ENGINE_POLL_INTERVAL = 1.0
 ENGINE_HEALTH_INTERVAL = 10.0
 ENGINE_UNHEALTHY_AFTER = 180.0
+
+# Liveness path per engine, replacing the health URL's path once the engine is
+# serving. SGLang's /health enqueues a one-token generation and waits at least
+# a second for the scheduler to answer, on the event loop that also renders and
+# tokenizes requests, so a busy engine misses its 2 s timeout for minutes
+# (sgl-project/sglang#30770, #35884, #22511). Its /ping is the SageMaker
+# contract, which must answer within 2 s: on 0.5.13 an unconditional 200, on
+# main a flag check (`is_healthy()`). That flag is not starvation-proof: a
+# timed-out /health marks the server unhealthy, and /ping answers 503 until a
+# later /health passes, so under load the log progress below keeps it alive.
+# A wedged scheduler behind a live HTTP server still answers /ping on 0.5.13,
+# so the watch catches it only once SGLang's own `--watchdog-timeout` (300 s by
+# default) crashes it and the exit is caught by pid; a run that sets that
+# timeout to 0 or higher loses the 180 s bound. vLLM's /health is already a
+# flag check (`check_health()`, 503 once the engine core is dead), so it stays.
+_LIVENESS_PATHS: dict[str, str] = {"sglang": "/ping"}
+
+# A log line that shows the engine computed tokens. SGLang logs every prefill
+# batch and every `decode_log_interval` decode steps (40 by default) at INFO,
+# without extra flags; `--log-level warning` removes them. vLLM logs throughput
+# every 10 s unless `--disable-log-stats`, and only at INFO while not idle; a
+# line with both rates 0.0 is not progress. An engine without an entry in
+# `_PROGRESS` has no progress signal and is judged by its probe alone.
+_SGLANG_PROGRESS = re.compile(r"\b(?:Decode|Prefill) batch\b")
+_VLLM_PROGRESS = re.compile(
+    r"Avg prompt throughput: ([\d.]+) tokens/s, "
+    r"Avg generation throughput: ([\d.]+) tokens/s"
+)
+
+
+def _sglang_progressed(text: str) -> bool:
+    return _SGLANG_PROGRESS.search(text) is not None
+
+
+def _vllm_progressed(text: str) -> bool:
+    return any(
+        float(prompt) > 0 or float(generation) > 0
+        for prompt, generation in _VLLM_PROGRESS.findall(text)
+    )
+
+
+_PROGRESS: dict[str, Callable[[str], bool]] = {
+    "sglang": _sglang_progressed,
+    "vllm": _vllm_progressed,
+}
 
 ProgressCallback = Callable[[float, str], None]
 
@@ -79,9 +126,10 @@ class EngineExit:
     """How a launched engine was lost while it should have been serving.
 
     *exit_code* reads as ``subprocess.Popen.returncode``: negative for a
-    signal, ``None`` for a process still alive that stopped answering its
-    health check for *unhealthy_for* seconds (*reason* the last probe's).
-    *log* is the role's log block: launch command, path and last lines.
+    signal, ``None`` for a process still alive that for *unhealthy_for*
+    seconds both failed its liveness probe (*reason* the last probe's) and
+    logged no progress. *log* is the role's log block: launch command, path
+    and last lines.
     """
 
     role: str
@@ -96,8 +144,8 @@ class EngineExit:
         who = f"process {self.pid} ({self.role})"
         if self.exit_code is None:
             return (
-                f"{who} failed its health check for {self.unhealthy_for:.0f}s "
-                f"({self.reason or 'unhealthy'})"
+                f"{who} failed its health check and logged no progress for "
+                f"{self.unhealthy_for:.0f}s ({self.reason or 'unhealthy'})"
             )
         if self.exit_code < 0:
             try:
@@ -329,10 +377,30 @@ class LocalDeployer:
             health_url = urlunparse(
                 (parsed.scheme, parsed.netloc, "/health", "", "", "")
             )
+        return await self._probe(str(health_url))
 
+    async def _probe_liveness(self, handle: InferHandle) -> InferCondition | None:
+        """One probe of whether serving *handle* is alive, for :meth:`watch`:
+        the engine's liveness path (``_LIVENESS_PATHS``) on its health URL's
+        host, then the health endpoint itself if that fails, so an engine
+        without the path is probed as before. ``None`` when it has no health
+        endpoint."""
+        path = _LIVENESS_PATHS.get(handle.backend)
+        health_url = str(handle.metadata.get("health_url", ""))
+        if path is not None and health_url:
+            parsed = urlparse(health_url)
+            alive = await self._probe(
+                urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+            )
+            if alive.status:
+                return alive
+        return await self._probe_health(handle)
+
+    async def _probe(self, url: str) -> InferCondition:
+        """GET *url* once: ready on 200, else why not."""
         try:
             async with httpx.AsyncClient() as client:
-                resp = await client.get(str(health_url), timeout=_HEALTH_CHECK_TIMEOUT)
+                resp = await client.get(url, timeout=_HEALTH_CHECK_TIMEOUT)
                 if resp.status_code == 200:
                     return InferCondition(status=True)
                 return InferCondition(status=False, reason="health_check_failed")
@@ -344,8 +412,9 @@ class LocalDeployer:
             return InferCondition(status=False, reason=type(exc).__name__)
 
     async def watch(self, handles: list[InferHandle]) -> EngineExit:
-        """Return once one of *handles* is lost: its process exits, or it fails
-        its health check for ``ENGINE_UNHEALTHY_AFTER`` seconds in a row.
+        """Return once one of *handles* is lost: its process exits, or for
+        ``ENGINE_UNHEALTHY_AFTER`` seconds it neither passes a liveness probe
+        (:meth:`_probe_liveness`) nor logs progress (:func:`_logged_progress`).
 
         Only processes this deployer launched are watched; with none, this
         waits until cancelled. Cancel it before a deliberate stop. An exited
@@ -387,11 +456,18 @@ class LocalDeployer:
             async def probe_health(handle: InferHandle) -> None:
                 # Each engine on its own: a slow probe delays no other check.
                 failing_since: float | None = None
+                log = Path(str(handle.metadata.get("log_file", "")))
+                offset = await _log_size(log)
                 while True:
                     await anyio.sleep(ENGINE_HEALTH_INTERVAL)
-                    ready = await self._probe_health(handle)
+                    ready = await self._probe_liveness(handle)
+                    # Read even after a passing probe, so the next window
+                    # counts only lines logged during it.
+                    progressed, offset = await _logged_progress(
+                        log, offset, handle.backend
+                    )
                     now = anyio.current_time()
-                    if ready is None or ready.status:
+                    if ready is None or ready.status or progressed:
                         failing_since = None
                         continue
                     if failing_since is None:
@@ -678,6 +754,39 @@ class LocalDeployer:
             metrics_url=metrics_url,
             facts=ServingFacts() if facts is None else facts,
         )
+
+
+async def _log_size(path: Path) -> int:
+    """Bytes in *path*; 0 when it cannot be read."""
+    try:
+        return (await anyio.Path(path).stat()).st_size
+    except OSError:
+        return 0
+
+
+async def _logged_progress(path: Path, offset: int, backend: str) -> tuple[bool, int]:
+    """Whether the engine log at *path* shows token progress after byte
+    *offset*, and the offset to read from next.
+
+    Reads at most the last ``_LOG_TAIL_WINDOW_BYTES`` written since *offset*:
+    engines log progress far more often than that fills. A log that shrank
+    (rotated or truncated) is read from its start. A *backend* with no entry in
+    ``_PROGRESS`` never shows progress, and its log is not read.
+    """
+    progressed_in = _PROGRESS.get(backend)
+    if progressed_in is None:
+        return False, offset
+    try:
+        async with await anyio.open_file(path, "rb") as f:
+            size = await f.seek(0, 2)
+            if size < offset:
+                offset = 0
+            start = max(offset, size - _LOG_TAIL_WINDOW_BYTES)
+            await f.seek(start)
+            text = (await f.read(size - start)).decode(errors="replace")
+    except OSError:
+        return False, offset
+    return progressed_in(text), size
 
 
 def unlaunched_deployment(
