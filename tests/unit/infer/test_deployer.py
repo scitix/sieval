@@ -20,6 +20,8 @@ from sieval.infer.backends.translator import BackendCommand
 from sieval.infer.config import InferCondition, InferHandle, InferPhase
 from sieval.infer.deployer import (
     DEFAULT_READY_TIMEOUT,
+    ENGINE_HEALTH_INTERVAL,
+    ENGINE_UNHEALTHY_AFTER,
     DeployError,
     DeployTimeoutError,
     EngineExit,
@@ -1491,39 +1493,33 @@ class TestWatch:
         assert anyio.current_time() - calls[2] >= 0.05
 
     @pytest.mark.anyio
-    async def test_a_nothing_for_180s_engine_is_lost_at_the_default_threshold(
-        self, tmp_path: Path
-    ):
+    async def test_nothing_for_180s_is_lost(self, tmp_path: Path):
+        # The defaults, scaled 1000x down.
+        assert (ENGINE_HEALTH_INTERVAL, ENGINE_UNHEALTHY_AFTER) == (10.0, 180.0)
         log = tmp_path / "full.log"
         log.write_text("")
         deployer = LocalDeployer()
         handle = self._launched(deployer, [None])
         handle.metadata["log_file"] = str(log)
-        # The fake sleep spins the exit poll; a finite poll list would run out.
-        deployer._processes[handle.handle_id].poll.side_effect = None
-        deployer._processes[handle.handle_id].poll.return_value = None
-        clock = [0.0]
-
-        async def sleep(seconds: float) -> None:
-            clock[0] += seconds
-            await anyio.lowlevel.checkpoint()
+        probes: list[float] = []
 
         async def probe(_handle):
+            probes.append(anyio.current_time())
             return InferCondition(status=False, reason="health_check_timeout")
 
         with (
-            patch("sieval.infer.deployer.anyio.sleep", side_effect=sleep),
-            patch(
-                "sieval.infer.deployer.anyio.current_time",
-                side_effect=lambda: clock[0],
-            ),
+            patch("sieval.infer.deployer.ENGINE_POLL_INTERVAL", 0.001),
+            patch("sieval.infer.deployer.ENGINE_HEALTH_INTERVAL", 0.01),
+            patch("sieval.infer.deployer.ENGINE_UNHEALTHY_AFTER", 0.18),
             patch.object(deployer, "_probe_liveness", side_effect=probe),
-            anyio.fail_after(5),
+            anyio.fail_after(10),
         ):
             exit = await deployer.watch([handle])
 
         assert exit.exit_code is None
-        assert exit.unhealthy_for is not None and exit.unhealthy_for >= 180
+        assert exit.unhealthy_for is not None and exit.unhealthy_for >= 0.18
+        # Counted from the first failed probe, not from the watch's start.
+        assert anyio.current_time() - probes[0] >= 0.18
 
     @pytest.mark.anyio
     async def test_vllm_idle_throughput_lines_are_not_progress(self, tmp_path: Path):
