@@ -76,6 +76,7 @@ from sieval.cli.serving import (
     served_window,
 )
 from sieval.cli.session import (
+    DatasetReads,
     config_resumes,
     holds_secret,
     read_persisted_config,
@@ -87,6 +88,7 @@ from sieval.cli.signals import terminate_as_interrupt
 from sieval.core.models import Deployment
 from sieval.core.runners import EngineLoss, RunPlan
 from sieval.core.runners.barriers import BARRIER_STAGES
+from sieval.core.utils.hf_uncached import BuilderRead
 from sieval.core.utils.logging import configure_logging, log_user
 from sieval.infer.backends import get_translator
 from sieval.infer.backends.translator import BackendCommand, inject_user_env
@@ -654,6 +656,8 @@ async def _plan_tasks(
     invocation: str,
     cli_model: CliModel | None,
     serving: SessionServing | None = None,
+    dataset_reads: DatasetReads = "full",
+    builder_reads: dict[str, list[BuilderRead]] | None = None,
 ) -> tuple[dict[str, str], dict[str, RunPlan | Exception]]:
     """Each task's served model and resume plan, with no engine launched.
 
@@ -673,6 +677,8 @@ async def _plan_tasks(
         unlaunched_deployments=_unlaunched(prepared_launches, set(prepared_launches)),
         cli_model=cli_model,
         serving=serving,
+        dataset_reads=dataset_reads,
+        builder_reads=builder_reads,
     )
 
 
@@ -737,6 +743,33 @@ def _launch_json(command: BackendCommand) -> dict[str, object]:
     return out
 
 
+#: What the run checks of a dataset that ``light`` reading does not.
+_LIGHT_UNVERIFIED = ("arrow_cache_write",)
+
+
+def _datasets_json(
+    mode: DatasetReads, builder_reads: Mapping[str, list[BuilderRead]]
+) -> dict[str, object]:
+    """The report's ``datasets``; see ``docs/guide/configuration.md``."""
+    out: dict[str, object] = {"mode": mode}
+    if mode == "full":
+        return out
+    read: dict[str, dict[str, object]] = {}
+    for name, reads in builder_reads.items():
+        paths = {r.path for r in reads}
+        in_memory = "memory" in paths
+        entry: dict[str, object] = {
+            "read": "mixed" if len(paths) > 1 else next(iter(paths), "none"),
+            "unverified": list(_LIGHT_UNVERIFIED) if in_memory else [],
+        }
+        reasons = {f"{r.builder}: {r.reason}" for r in reads if r.path == "cache"}
+        if reasons:
+            entry["cache_reasons"] = sorted(reasons)
+        read[name] = entry
+    out["read"] = read
+    return out
+
+
 def _plan_summary(plans: Mapping[str, RunPlan | Exception]) -> str:
     """One line for the ``resume_plan`` check: what the tasks would do."""
     ok = [p for p in plans.values() if not isinstance(p, Exception)]
@@ -785,14 +818,16 @@ async def _run_dry_run(
     deterministic: bool | None = None,
     cli_model: CliModel | None = None,
     serving_group: str | None = None,
+    dataset_reads: DatasetReads = "light",
 ) -> dict[str, object]:
     """Report what the run would do, launching no engine.
 
     The checks, then each served model's plan and launch argv, each serving
     group (*serving_group* only, when given) and each task's plan; see
     ``docs/guide/configuration.md``. Reads ``--resume`` directories in
-    place and writes no result directory. Planning loads the datasets and
-    starts each vendored service a task declares, as the run does.
+    place and writes no result directory. Planning reads every dataset and
+    starts each vendored service a task declares, as the run does; under
+    *dataset_reads* ``light`` it reads the datasets in memory.
     """
 
     from sieval.cli.validation import run_dry_run, task_report_metrics_json
@@ -820,6 +855,9 @@ async def _run_dry_run(
             )
         )
 
+    # How planning read each dataset, filled in by `_plan_tasks` under `light`.
+    builder_reads: dict[str, list[BuilderRead]] = {}
+
     def unplanned(result: dict[str, object]) -> dict[str, object]:
         # Every report key is present; ``None`` where the dry-run stopped first.
         for key in (
@@ -833,6 +871,7 @@ async def _run_dry_run(
             "launches",
         ):
             result.setdefault(key, None)
+        result["datasets"] = _datasets_json(dataset_reads, builder_reads)
         return result
 
     if not config_path.exists():
@@ -942,9 +981,9 @@ async def _run_dry_run(
         return unplanned(result)
 
     # What the run would do: each task's plan, from the call the run makes.
-    # Planning sets the session up as the run does: it loads every dataset
-    # (downloading one not yet cached) and starts each vendored service a task
-    # declares, writing nothing under the result directory.
+    # Planning sets the session up as the run does: it reads every dataset and
+    # starts each vendored service a task declares, writing nothing under the
+    # result directory.
     task_models: dict[str, str] = {}
     plans: dict[str, RunPlan | Exception] = {}
     launches_by_group: dict[str, set[str]] = {}
@@ -961,6 +1000,8 @@ async def _run_dry_run(
                 invocation=shlex.join(sys.argv),
                 cli_model=cli_model,
                 serving=group.serving(),
+                dataset_reads=dataset_reads,
+                builder_reads=builder_reads,
             )
         except Exception as exc:
             # Raised before any task would start: the run fails the same way.
@@ -1038,6 +1079,7 @@ async def _run_dry_run(
     # Every engine the run starts, judges included: what a caller deciding
     # whether the run needs GPUs at all reads.
     result["launches"] = sorted(set().union(*launches_by_group.values()))
+    result["datasets"] = _datasets_json(dataset_reads, builder_reads)
     return result
 
 
@@ -1744,8 +1786,19 @@ def register_run_command(app: typer.Typer) -> None:
                 "--dry-run",
                 help=(
                     "Validate the config, then report each model's plan and each "
-                    "task's resume plan, launching no engine. Loads the datasets "
-                    "and starts any vendored service, as the run does."
+                    "task's resume plan, launching no engine. Reads every dataset "
+                    "row in memory, writing no Arrow cache, and starts any "
+                    "vendored service, as the run does."
+                ),
+            ),
+        ] = False,
+        full_datasets: Annotated[
+            bool,
+            typer.Option(
+                "--full-datasets",
+                help=(
+                    "With --dry-run, load the datasets as the run does, through "
+                    "the HuggingFace Arrow cache, instead of in memory."
                 ),
             ),
         ] = False,
@@ -1760,6 +1813,11 @@ def register_run_command(app: typer.Typer) -> None:
         cli_model = CliModel.from_options(
             checkpoint=checkpoint, api_base=api_base, model=model
         )
+        if full_datasets and not dry_run:
+            # A run always loads through the cache; the flag would do nothing.
+            raise typer.BadParameter(
+                "applies to --dry-run only", param_hint="--full-datasets"
+            )
         if dry_run:
 
             async def _go_dry() -> dict[str, object]:
@@ -1771,6 +1829,7 @@ def register_run_command(app: typer.Typer) -> None:
                     deterministic=deterministic,
                     cli_model=cli_model,
                     serving_group=serving_group,
+                    dataset_reads="full" if full_datasets else "light",
                 )
 
             try:

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **`sieval run --dry-run` reads datasets in memory.** It used to load them through `load_dataset`, which writes every split and every loader `map`/`filter` as Arrow files under `HF_DATASETS_CACHE`; a dry-run in a job with a fresh cache paid for all of them. It now streams the local source files and writes no cache: the same rows, features and split-size check, across every split. On a 5-dataset local fixture it takes 2.7 s instead of 6.4 s and writes 0 MB instead of 142 MB. `--full-datasets` restores the cached load. The report gains `datasets` (`mode`, and under `light` how each dataset was read). `sieval eval --dry-run` and the run are unchanged.
+
 ## [0.15.1] - 2026-10-28
 
 A patch release: two native dialects, `vllm_native` and `google_interactions`,
