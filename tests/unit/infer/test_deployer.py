@@ -1499,6 +1499,9 @@ class TestWatch:
         deployer = LocalDeployer()
         handle = self._launched(deployer, [None])
         handle.metadata["log_file"] = str(log)
+        # The fake sleep spins the exit poll; a finite poll list would run out.
+        deployer._processes[handle.handle_id].poll.side_effect = None
+        deployer._processes[handle.handle_id].poll.return_value = None
         clock = [0.0]
 
         async def sleep(seconds: float) -> None:
