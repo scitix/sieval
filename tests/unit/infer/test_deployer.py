@@ -1462,9 +1462,19 @@ class TestWatch:
                 fh.write("[2026-11-05 03:12:09] INFO: 127.0.0.1 GET /metrics 200\n")
             return InferCondition(status=False, reason="health_check_timeout")
 
-        exit = await self._watch_with(deployer, handle, probe)
+        reads: list[tuple[bool, int]] = []
+
+        async def recorded(path: Path, offset: int, backend: str):
+            read = await _logged_progress(path, offset, backend)
+            reads.append(read)
+            return read
+
+        with patch("sieval.infer.deployer._logged_progress", side_effect=recorded):
+            exit = await self._watch_with(deployer, handle, probe)
 
         assert exit is not None and exit.exit_code is None
+        # Not even the first window saw the line logged before the watch.
+        assert reads and not any(progressed for progressed, _ in reads)
         assert exit.reason == "health_check_timeout"
         assert exit.unhealthy_for is not None and exit.unhealthy_for >= 0.05
         assert "logged no progress" in exit.summary()
@@ -1586,6 +1596,26 @@ class TestWatch:
             False,
             7,
         )
+
+    @pytest.mark.anyio
+    async def test_only_the_last_window_of_new_bytes_is_read(self, tmp_path: Path):
+        log = tmp_path / "full.log"
+        line = "Decode batch, #running-req: 2\n"
+        with patch("sieval.infer.deployer._LOG_TAIL_WINDOW_BYTES", 1024):
+            # Progress more than a window before the end is not read.
+            log.write_text(line + "x" * 1024)
+            size = log.stat().st_size
+            assert await _logged_progress(log, 0, "sglang") == (False, size)
+            # Inside the window it is.
+            log.write_text("x" * 1023 + "\n" + line)
+            size = log.stat().st_size
+            assert await _logged_progress(log, 0, "sglang") == (True, size)
+
+    @pytest.mark.anyio
+    async def test_an_engine_without_a_progress_signal_shows_none(self, tmp_path: Path):
+        log = tmp_path / "full.log"
+        log.write_text("Decode batch, #running-req: 2\n")
+        assert await _logged_progress(log, 0, "full") == (False, 0)
 
     @pytest.mark.anyio
     async def test_liveness_pings_sglang_and_falls_back_to_health(self):

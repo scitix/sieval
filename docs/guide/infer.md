@@ -189,12 +189,22 @@ lines its log gained:
 SGLang's `/health` runs a one-token generation on the same event loop that
 renders and tokenizes requests, so a busy engine can miss it for minutes while
 it decodes. `/health` still decides readiness at startup. A process exit is
-caught within a second either way. vLLM's `/health` is a flag check and is not
-starved, so its progress lines matter only to an engine also failing it; with
-`--disable-log-stats` it has no progress lines and is judged by `/health`
-alone, as before.
-Every sample still needing it then fails at once: queued ones as
-`engine_died_unsent`, in-flight ones as `engine_died`. Samples on other
+caught within a second either way.
+
+- **SGLang.** `/ping` is the SageMaker check, which must answer within 2 s.
+  Up to 0.5.13 it always answers 200, so a scheduler that hangs behind a live
+  HTTP server is caught only when SGLang's own `--watchdog-timeout` (300 s by
+  default) crashes the process. A run that sets that timeout to 0 or above
+  180 s loses the 180 s bound. Newer SGLang answers `/ping` from a flag that a
+  timed-out `/health` clears until a later one passes, so under load the log
+  lines are what keep the engine alive. With `--log-level warning` it logs no
+  batch lines and is judged by its probe alone.
+- **vLLM.** `/health` is a flag check and is not starved, so its progress
+  lines matter only to an engine also failing it. With `--disable-log-stats`
+  it logs no throughput lines and is judged by `/health` alone, as before.
+
+Once an engine is lost, every sample still needing it fails at once: queued
+ones as `engine_died_unsent`, in-flight ones as `engine_died`. Samples on other
 engines carry on.
 
 Each task still writes `report.json`, the engine is stopped, no later serving
