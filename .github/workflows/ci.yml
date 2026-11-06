@@ -177,8 +177,10 @@ jobs:
           -n auto --cov --cov-report=xml -q
       # The lock pins `datasets` 4, but `>=4.2.0` admits 5, whose builder API
       # `hf_uncached` patches. The locked deps satisfy 5.0.0, so only it swaps.
+      # pdm's venv has no pip.
       - name: hf_uncached on datasets 5
         run: |
+          pdm run python -m ensurepip
           pdm run python -m pip install -q "datasets==5.0.0"
           pdm run python -m pytest tests/unit/core/utils/test_hf_uncached.py -q
       - name: Upload coverage (advisory)
