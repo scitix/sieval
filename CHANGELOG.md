@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.15.4] - 2026-11-06
+
+A patch release: a PPL task and a CLP task can share one model again, since
+the plan's `top_logprobs` minimum is a serving floor, not a per-request one
+(#273). The light dry-run skips work its plan does not use: `map` and
+`filter` run in process, a complete Arrow cache is read rather than streamed
+again, and no download-count request goes to the Hub; a 22-dataset board
+plans in 61 s cold and 22 s warm instead of 8.5 min (#274). Nothing is
+breaking. No on-disk format changes: `meta.json` `identity` stays schema 5,
+`RESULT_SCHEMA_VERSION` stays 1, and 0.15.3 result directories resume.
 
 ### Fixed
 
@@ -687,6 +696,7 @@ Mainstream benchmarks registered in `sieval/meta/index.json`:
 - Project-wide preflight (`scripts/check_preflight.py`): links, deps, tasks, datasets, imports, examples, meta-index sync, version.
 - Tooling: `ruff`, `ty`, `mypy strict`, `pytest`.
 
+[0.15.4]: https://github.com/scitix/sieval/compare/v0.15.3...v0.15.4
 [0.15.3]: https://github.com/scitix/sieval/compare/v0.15.2...v0.15.3
 [0.15.2]: https://github.com/scitix/sieval/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/scitix/sieval/compare/v0.15.0...v0.15.1
