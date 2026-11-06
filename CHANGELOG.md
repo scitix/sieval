@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **A PPL task and a CLP task can share one model.** Since 0.15.0 (`sglang_native`), a binding with a CLP task (top-100) refused every smaller request with `top_logprobs=1 weakens required minimum 100`, so a PPL task on the same SGLang engine failed every sample. The plan's `top_logprobs` minimum is now a serving floor only: requests below it pass, and an `infer_args` breadth below another task's floor joins it by max instead of failing setup with `request_capability_minimum_weakened`. A declared `capabilities.top_logprobs.minimum` below a task's need is still refused.
+
 ## [0.15.3] - 2026-11-06
 
 A patch release: the light dry-run from 0.15.2 works on `datasets` 5, where a

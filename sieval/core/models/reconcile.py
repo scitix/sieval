@@ -817,12 +817,7 @@ def reconcile_binding(binding: BindingReconcileInput) -> BindingReconcileResult:
         return BindingReconcileResult(None, tuple(diagnostics))
 
     task_intents = _task_intents(binding.requirements)
-    required_intents, request_diagnostics = _merge_request_intents(
-        binding,
-        task_intents,
-        binding.request_intents,
-    )
-    diagnostics.extend(request_diagnostics)
+    required_intents = _merge_request_intents(task_intents, binding.request_intents)
     intents, disabled, intent_diagnostics = _merge_declarations(
         binding, normalized, required_intents
     )
@@ -1402,17 +1397,12 @@ def _merge_declarations(
 
 
 def _merge_request_intents(
-    binding: BindingReconcileInput,
     task_intents: Mapping[CapabilityKey, CapabilityIntent],
     request_intents: Mapping[CapabilityKey, CapabilityIntent],
-) -> tuple[
-    dict[CapabilityKey, CapabilityIntent],
-    tuple[ReconcileDiagnostic, ...],
-]:
+) -> dict[CapabilityKey, CapabilityIntent]:
     """Join dynamic legacy request intent without making it a default owner."""
 
     merged_intents = dict(task_intents)
-    diagnostics: list[ReconcileDiagnostic] = []
     for key in CAPABILITY_KEYS:
         request_intent = request_intents.get(key)
         if request_intent is None:
@@ -1421,20 +1411,41 @@ def _merge_request_intents(
         if task_intent is None:
             merged_intents[key] = request_intent
             continue
-        merged, conflict = _merge_two_intents(task_intent, request_intent)
-        if conflict is not None:
-            diagnostics.append(
-                _binding_error(
-                    binding,
-                    "request_capability_minimum_weakened",
-                    conflict,
-                    capability=key,
-                    sources=request_intent.sources,
-                )
+        merged_intents[key] = _join_floor_intents(task_intent, request_intent)
+    return merged_intents
+
+
+def _join_floor_intents(
+    task: CapabilityIntent,
+    request: CapabilityIntent,
+) -> CapabilityIntent:
+    """Join a request floor with a task floor: the larger one serves both.
+
+    Where both set a minimum it is an integer (``top_logprobs``); anything
+    else is refused rather than resolved by picking a side.
+    """
+
+    minimums = dict(task.minimums)
+    for name, value in request.minimums.items():
+        current = minimums.get(name)
+        if current is None:
+            minimums[name] = value
+            continue
+        if not all(
+            isinstance(item, int) and not isinstance(item, bool)
+            for item in (current, value)
+        ):
+            raise TypeError(
+                f"cannot join {task.key} minimum {name!r}: {current!r} and {value!r}"
             )
-        else:
-            merged_intents[key] = merged
-    return merged_intents, tuple(diagnostics)
+        minimums[name] = max(cast(int, current), cast(int, value))
+    return CapabilityIntent(
+        task.key,
+        task.required or request.required,
+        minimums=minimums,
+        request_defaults=request.request_defaults,
+        sources=tuple(sorted(set(task.sources) | set(request.sources))),
+    )
 
 
 def _declaration_intent(
