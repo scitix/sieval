@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- **The light dry-run reads datasets on `datasets` 5.** `datasets` 5.0 removed `run_post_process` and `verification_mode` from `DatasetBuilder.as_dataset`, which the light dry-run's in-memory reader replaces; a split it handed back to the cache then passed them on, and the plan failed with `as_dataset() got an unexpected keyword argument 'run_post_process'` (a 22-task base board on 5.0.0). The reader now passes on only what the caller gave, and reads the verification mode from `download_and_prepare` when `as_dataset` has none. `datasets` 4 is unchanged.
+- **The light dry-run works on `datasets` 5.** 5.0 dropped `run_post_process` and `verification_mode` from `DatasetBuilder.as_dataset`, so a split the dry-run read through the cache failed with `unexpected keyword argument 'run_post_process'`. The cached path now passes on only the caller's arguments, and `verification_mode="no_checks"` is honoured on 5 as on 4.
 
 ## [0.15.2] - 2026-11-06
 

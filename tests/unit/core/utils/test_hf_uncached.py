@@ -272,6 +272,20 @@ class TestChecksKept:
         with pytest.raises(NonMatchingSplitsSizesError), uncached_reads():
             load_dataset(str(repo), split="test")
 
+    def test_no_checks_skips_the_split_size_check_as_the_cached_load_does(
+        self, tmp_path: Path, cache: Path
+    ) -> None:
+        # `datasets` 5 passes the mode to `download_and_prepare` only.
+        # The in-memory read goes first: a cached one records the true counts.
+        repo = _card_repo(tmp_path, test_rows=3, dev_rows=2, dev_card=5)
+        with uncached_reads() as log:
+            rows = ensure_dataset(
+                load_dataset(str(repo), split="test", verification_mode="no_checks")
+            )
+        assert len(rows) == 3
+        assert [r.path for r in log.reads] == ["memory"]
+        load_dataset(str(repo), split="test", verification_mode="no_checks")
+
     def test_an_unrequested_split_is_counted_not_held(
         self, tmp_path: Path, cache: Path
     ) -> None:
@@ -328,8 +342,7 @@ class TestPatching:
     def test_the_cached_path_passes_on_only_what_the_caller_gave(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, forwarded: dict
     ) -> None:
-        # `datasets` 5 dropped `run_post_process` and `verification_mode` from
-        # `as_dataset`; naming them there raises TypeError.
+        # `datasets` 5's `as_dataset` raises TypeError on a 4-only keyword.
         seen: list[dict] = []
 
         def real(_builder: DatasetBuilder, **kwargs: Any) -> str:

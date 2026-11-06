@@ -103,10 +103,9 @@ def _uncached_reads() -> Iterator[ReadLog]:
     def in_memory_as_dataset(
         self: DatasetBuilder, split: Any = None, **options: Any
     ) -> HFDataset | HFDatasetDict:
-        # `datasets` 4 passes `verification_mode` (and `run_post_process`)
-        # here; 5 takes only `split` and `in_memory`, and its verification
-        # mode reaches `download_and_prepare`. Whatever the caller passed goes
-        # back to the real method unchanged.
+        # `datasets` 4 passes `verification_mode` here, 5 only to
+        # `download_and_prepare`; a value here wins. `options` reach the real
+        # method as given.
         prepare_args, prepare_kwargs = getattr(self, _PREPARE_ARGS, ((), {}))
         verification_mode = options.get(
             "verification_mode", prepare_kwargs.get("verification_mode")
