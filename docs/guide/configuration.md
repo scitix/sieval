@@ -612,12 +612,14 @@ An unknown mode, or `--mode` without `--dry-run`, exits 2.
 - `datasets` has one entry per dataset built, by its `datasets:` key
   (`<task>.dataset` for an inline one). `read` is `memory`, `cache`, `mixed`,
   or `none` for a loader that calls no `load_dataset`. In `light`, a call
-  still uses the cache for a loading script, a sliced split (`test[:10]`), a
-  split over 2 GiB or not on local disk, a split that does not stream, or an
-  empty requested split; `cache_reasons` names each.
+  reads a complete Arrow cache (`already cached`), and writes one for a
+  loading script, a sliced split (`test[:10]`), a split over 2 GiB or not on
+  local disk, a split that does not stream, or an empty requested split;
+  `cache_reasons` names each. `map` and `filter` on rows held in memory ignore
+  `num_proc`.
   `verified` is `present`, `rows`, `count`, `schema`, plus `arrow_cache_write`
-  (disk space, permissions) when read through the cache; `unverified` is what
-  the run checks that planning did not.
+  (disk space, permissions) when every read wrote the cache; `unverified` is
+  what the run checks that planning did not.
 - `services` has one entry per vendored service the run would start (none
   when its endpoint variable is set). `verified` is `resolves` (sources,
   commit, digest), `command`, `interpreter` and `port`, plus `starts`,

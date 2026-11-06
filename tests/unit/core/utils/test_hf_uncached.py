@@ -8,14 +8,17 @@ AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from datasets import Dataset as HFDataset
 from datasets import (
     DatasetDict,
+    DatasetInfo,
     Features,
     Value,
     config,
@@ -177,12 +180,13 @@ class TestCachedFallback:
         path = tmp_path / "empty.csv"
         path.write_text("x,y\n")
         features = Features({"x": Value("int64"), "y": Value("string")})
-        with pytest.raises(ValueError, match="corresponds to no data") as full:
-            load_dataset("csv", data_files=str(path), split="train", features=features)
+        # Light first: the cached load leaves a complete cache, read from then.
         with (
             pytest.raises(ValueError, match="corresponds to no data") as light,
             uncached_reads() as log,
         ):
+            load_dataset("csv", data_files=str(path), split="train", features=features)
+        with pytest.raises(ValueError, match="corresponds to no data") as full:
             load_dataset("csv", data_files=str(path), split="train", features=features)
         assert str(light.value) == str(full.value)
         assert [(r.path, r.reason) for r in log.reads] == [
@@ -391,3 +395,117 @@ class TestPatching:
             again = load_dataset(str(repo), data_dir="main", split="test")
         assert ensure_dataset(first).to_list() == ensure_dataset(again).to_list()
         assert calls == [str(repo)]
+
+
+class TestAlreadyCached:
+    def test_a_complete_cache_is_read_from_and_not_rebuilt(
+        self, tmp_path: Path, cache: Path
+    ) -> None:
+        repo = _parquet_repo(tmp_path)
+        full = _load_parquet(repo)
+        before = _arrow_files(cache)
+        with uncached_reads() as log:
+            light = _load_parquet(repo)
+        assert _arrow_files(cache) == before
+        assert [(r.path, r.reason) for r in log.reads] == [("cache", "already cached")]
+        for split in full:
+            assert light[split].to_list() == full[split].to_list()
+            assert light[split].cache_files == full[split].cache_files
+
+    def test_a_forced_redownload_still_reads_in_memory(
+        self, tmp_path: Path, cache: Path
+    ) -> None:
+        repo = _parquet_repo(tmp_path)
+        _load_parquet(repo)
+        with uncached_reads() as log:
+            load_dataset(
+                str(repo / "main"),
+                data_files={"test": "test-*.parquet"},
+                download_mode="force_redownload",
+            )
+        assert [r.path for r in log.reads] == ["memory"]
+
+
+def _pid(_row: dict) -> dict:
+    return {"pid": os.getpid()}
+
+
+def _even(row: dict) -> bool:
+    return row["x"] % 2 == 0
+
+
+class TestCostsDropped:
+    def test_map_on_rows_held_in_memory_runs_in_this_process(
+        self, tmp_path: Path, cache: Path
+    ) -> None:
+        path = _jsonl(tmp_path / "rows.jsonl", [{"x": i} for i in range(8)])
+        with uncached_reads():
+            rows = ensure_dataset(
+                load_dataset("json", data_files=str(path), split="train")
+            )
+            mapped = rows.map(_pid, num_proc=4)
+            kept = rows.filter(_even, num_proc=4)
+        assert set(mapped["pid"]) == {os.getpid()}
+        assert kept["x"] == [0, 2, 4, 6]
+        assert mapped._fingerprint == rows.map(_pid)._fingerprint
+
+    def test_map_on_a_cached_dataset_keeps_num_proc(
+        self, tmp_path: Path, cache: Path
+    ) -> None:
+        path = _jsonl(tmp_path / "rows.jsonl", [{"x": 0}, {"x": 1}])
+        load_dataset("json", data_files=str(path), split="train")
+        with uncached_reads() as log:
+            rows = ensure_dataset(
+                load_dataset("json", data_files=str(path), split="train")
+            )
+            mapped = rows.map(_pid, num_proc=2)
+        assert [r.reason for r in log.reads] == ["already cached"]
+        assert len(set(mapped["pid"])) == 2
+
+    def test_map_keeps_num_proc_after_the_block(
+        self, tmp_path: Path, cache: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: list[Any] = []
+        real = HFDataset.map
+
+        def spy(self: HFDataset, *args: Any, **kwargs: Any) -> Any:
+            seen.append(kwargs.get("num_proc"))
+            return real(self, *args, **kwargs)
+
+        monkeypatch.setattr(HFDataset, "map", spy)
+        with uncached_reads():
+            pass
+        HFDataset.from_list([{"x": 1}]).map(lambda row: row, num_proc=1)
+        assert seen == [1]
+
+    def test_no_download_count_is_sent(
+        self, tmp_path: Path, cache: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sent: list[str] = []
+
+        class Session:
+            def head(self, url: str, **_: Any) -> None:
+                sent.append(url)
+
+        monkeypatch.setattr(config, "HF_HUB_OFFLINE", False)
+        monkeypatch.setattr(config, "HF_UPDATE_DOWNLOAD_COUNTS", True)
+        monkeypatch.setattr(hf_uncached.hf_load, "get_session", lambda: Session())
+        path = _jsonl(tmp_path / "rows.jsonl", [{"x": 1}])
+        with uncached_reads():
+            load_dataset("json", data_files=str(path), split="train")
+        assert sent == []
+        load_dataset("json", data_files=str(path), split="train")
+        assert len(sent) == 1
+
+    def test_each_load_gets_its_own_config_info(self, tmp_path: Path) -> None:
+        repo = _card_repo(tmp_path, test_rows=3, dev_rows=2, dev_card=2)
+        with uncached_reads():
+            first = load_dataset_builder(str(repo))
+            first.info.description = "changed"
+            again = load_dataset_builder(str(repo))
+        assert again.info.description != "changed"
+
+    def test_an_info_read_by_key_is_a_copy(self) -> None:
+        infos = hf_uncached._InfosOnRead({"default": DatasetInfo(description="a")})
+        infos["default"].description = "changed"
+        assert infos["default"].description == "a"

@@ -3,7 +3,6 @@
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
-import os
 from typing import TypedDict, override
 
 from datasets import DatasetDict as HFDatasetDict
@@ -54,7 +53,7 @@ class AIME2026Dataset(Dataset[AIME2026DatasetSample]):
         # `answer: str` contract holds (otherwise `.map` re-infers against the
         # existing int64 feature and silently casts the stripped string back).
         dataset = dataset.cast_column("answer", Value("string"))
-        dataset = dataset.map(self._strip_sample, num_proc=os.cpu_count())
+        dataset = dataset.map(self._strip_sample)
         # the test split is the same as the train split
         return HFDatasetDict(
             {

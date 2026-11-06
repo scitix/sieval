@@ -2877,6 +2877,7 @@ class TestDryRunModes:
         reads = {
             "mem": [BuilderRead("a", "memory"), BuilderRead("a/x", "memory")],
             "script": [BuilderRead("b", "cache", "loading script")],
+            "reused": [BuilderRead("d", "cache", "already cached")],
             "both": [
                 BuilderRead("c/1", "memory"),
                 BuilderRead("c/2", "cache", "split test[:5] is not a split name"),
@@ -2896,6 +2897,13 @@ class TestDryRunModes:
                 "verified": [*base, "arrow_cache_write"],
                 "unverified": [],
                 "cache_reasons": ["b: loading script"],
+            },
+            # Read from a complete cache: nothing was written.
+            "reused": {
+                "read": "cache",
+                "verified": base,
+                "unverified": ["arrow_cache_write"],
+                "cache_reasons": ["d: already cached"],
             },
             "both": {
                 "read": "mixed",

@@ -1,4 +1,3 @@
-import os
 from typing import TypedDict, override
 
 from datasets import DatasetDict as HFDatasetDict
@@ -42,7 +41,7 @@ class AIME2024Dataset(Dataset[AIME2024DatasetSample]):
     def load(self, name_or_path: str, **kwargs) -> HFDatasetDict:
         dataset = load_dataset(name_or_path, split="train", **kwargs)
         dataset = ensure_dataset(dataset)
-        dataset = dataset.map(self._strip_sample, num_proc=os.cpu_count())
+        dataset = dataset.map(self._strip_sample)
         # the test split is the same as the train split
         return HFDatasetDict(
             {

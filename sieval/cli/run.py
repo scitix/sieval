@@ -96,7 +96,7 @@ from sieval.cli.signals import terminate_as_interrupt
 from sieval.core.models import Deployment
 from sieval.core.runners import EngineLoss, RunPlan
 from sieval.core.runners.barriers import BARRIER_STAGES
-from sieval.core.utils.hf_uncached import BuilderRead
+from sieval.core.utils.hf_uncached import ALREADY_CACHED, BuilderRead
 from sieval.core.utils.logging import configure_logging, log_user
 from sieval.infer.backends import get_translator
 from sieval.infer.backends.translator import BackendCommand, inject_user_env
@@ -752,7 +752,7 @@ def _launch_json(command: BackendCommand) -> dict[str, object]:
 
 
 #: What a dataset read verifies, and what only an Arrow cache write adds.
-_MEMORY_UNVERIFIED = ("arrow_cache_write",)
+_WRITE_VERIFIED = ("arrow_cache_write",)
 _DATASET_VERIFIED = ("present", "rows", "count", "schema")
 
 
@@ -765,17 +765,18 @@ def _datasets_json(
         if mode.datasets == "cache":
             out[name] = {
                 "read": "cache",
-                "verified": [*_DATASET_VERIFIED, *_MEMORY_UNVERIFIED],
+                "verified": [*_DATASET_VERIFIED, *_WRITE_VERIFIED],
                 "unverified": [],
             }
             continue
         paths = {r.path for r in reads}
-        in_memory = "memory" in paths
+        # Held in memory or read from a complete cache, a read wrote nothing.
+        wrote = all(r.path == "cache" and r.reason != ALREADY_CACHED for r in reads)
+        written, unwritten = (_WRITE_VERIFIED, ()) if wrote else ((), _WRITE_VERIFIED)
         entry: dict[str, object] = {
             "read": "mixed" if len(paths) > 1 else next(iter(paths), "none"),
-            "verified": list(_DATASET_VERIFIED)
-            + ([] if in_memory else list(_MEMORY_UNVERIFIED)),
-            "unverified": list(_MEMORY_UNVERIFIED) if in_memory else [],
+            "verified": [*_DATASET_VERIFIED, *written],
+            "unverified": list(unwritten),
         }
         reasons = {f"{r.builder}: {r.reason}" for r in reads if r.path == "cache"}
         if reasons:
