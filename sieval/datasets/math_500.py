@@ -1,4 +1,3 @@
-import os
 from typing import TypedDict, override
 
 from datasets import DatasetDict as HFDatasetDict
@@ -40,4 +39,4 @@ class MATH500Dataset(Dataset[MATH500DatasetSample]):
     def load(self, name_or_path: str, **kwargs) -> HFDatasetDict:
         dataset = load_dataset(name_or_path, **kwargs)
         dataset = ensure_dataset_dict(dataset)
-        return dataset.map(self._strip_sample, num_proc=os.cpu_count())
+        return dataset.map(self._strip_sample)

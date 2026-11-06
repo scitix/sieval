@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - **A PPL task and a CLP task can share one model.** Since 0.15.0 (`sglang_native`), a binding with a CLP task (top-100) refused every smaller request with `top_logprobs=1 weakens required minimum 100`, so a PPL task on the same SGLang engine failed every sample. The plan's `top_logprobs` minimum is now a serving floor only: requests below it pass, and an `infer_args` breadth below another task's floor joins it by max instead of failing setup with `request_capability_minimum_weakened`. A declared `capabilities.top_logprobs.minimum` below a task's need is still refused.
+- **The light dry-run skips work its plan does not use.** On a 22-dataset board it took as long as `--mode full` (8.5 min on a fresh cache); it now takes 61 s cold and 22 s warm. Inside the light read:
+    - `map` and `filter` on rows held in memory run in process whatever their `num_proc`. `num_proc=os.cpu_count()` forked one worker per CPU on the node, not per CPU in the job's quota, and pickled the table to each: 250 rows took 18-49 s. `num_proc` is not in the fingerprint, so rows and fingerprints are unchanged.
+    - A source whose Arrow cache is complete is read from it (`cache_reasons`: `already cached`) instead of streamed again. Its `arrow_cache_write` is `unverified`: nothing was written.
+    - No download-count HEAD request goes to the Hub. Each module factory sent one (3 s timeout), local directories included.
+    - The memoized module is no longer deep-copied whole per load; each config's info is copied as it is read.
+- The 12 competition-math loaders (`aime_2024`, `math_500`, `hmmt_feb_2025` and the rest) no longer pass `num_proc=os.cpu_count()` to `map`: each maps a few hundred rows once, and the pool cost more than the map.
 
 ## [0.15.3] - 2026-11-06
 

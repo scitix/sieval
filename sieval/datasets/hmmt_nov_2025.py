@@ -3,7 +3,6 @@
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
-import os
 from typing import TypedDict, override
 
 from datasets import DatasetDict as HFDatasetDict
@@ -57,7 +56,7 @@ class HMMTNov2025Dataset(Dataset[HMMTNov2025DatasetSample]):
         # No dtype cast: `answer` is already `string` in the pinned snapshot and
         # `.map` preserves it. MathArena's answer dtype varies per competition, so a
         # sibling loader's cast is a fact about its own pin, not a family rule.
-        dataset = dataset.map(self._strip_sample, num_proc=os.cpu_count())
+        dataset = dataset.map(self._strip_sample)
         # the test split is the same as the train split
         return HFDatasetDict(
             {
