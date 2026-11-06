@@ -14,7 +14,14 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from datasets import DatasetDict, Features, Value, config, load_dataset
+from datasets import (
+    DatasetDict,
+    Features,
+    Value,
+    config,
+    load_dataset,
+    load_dataset_builder,
+)
 from datasets.builder import DatasetBuilder
 from datasets.exceptions import DatasetGenerationError
 from datasets.utils.info_utils import NonMatchingSplitsSizesError
@@ -265,6 +272,20 @@ class TestChecksKept:
         with pytest.raises(NonMatchingSplitsSizesError), uncached_reads():
             load_dataset(str(repo), split="test")
 
+    def test_no_checks_skips_the_split_size_check_as_the_cached_load_does(
+        self, tmp_path: Path, cache: Path
+    ) -> None:
+        # `datasets` 5 passes the mode to `download_and_prepare` only.
+        # The in-memory read goes first: a cached one records the true counts.
+        repo = _card_repo(tmp_path, test_rows=3, dev_rows=2, dev_card=5)
+        with uncached_reads() as log:
+            rows = ensure_dataset(
+                load_dataset(str(repo), split="test", verification_mode="no_checks")
+            )
+        assert len(rows) == 3
+        assert [r.path for r in log.reads] == ["memory"]
+        load_dataset(str(repo), split="test", verification_mode="no_checks")
+
     def test_an_unrequested_split_is_counted_not_held(
         self, tmp_path: Path, cache: Path
     ) -> None:
@@ -308,6 +329,38 @@ class TestPatching:
             load_dataset("json", data_files=str(tmp_path / "absent.jsonl"))
         after = (DatasetBuilder.download_and_prepare, DatasetBuilder.as_dataset)
         assert after == before
+
+    @pytest.mark.parametrize(
+        "forwarded",
+        [
+            {"in_memory": False},
+            {"verification_mode": "basic_checks", "in_memory": False},
+            {"run_post_process": True, "verification_mode": None, "in_memory": False},
+        ],
+        ids=["datasets-5", "datasets-4", "datasets-4-full"],
+    )
+    def test_the_cached_path_passes_on_only_what_the_caller_gave(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, forwarded: dict
+    ) -> None:
+        # `datasets` 5's `as_dataset` raises TypeError on a 4-only keyword.
+        seen: list[dict] = []
+
+        def real(_builder: DatasetBuilder, **kwargs: Any) -> str:
+            kwargs.pop("split")
+            seen.append(kwargs)
+            return "cached"
+
+        monkeypatch.setattr(DatasetBuilder, "as_dataset", real)
+        monkeypatch.setattr(
+            DatasetBuilder, "download_and_prepare", lambda *a, **k: None
+        )
+        path = _jsonl(tmp_path / "rows.jsonl", [{"x": 0}, {"x": 1}])
+        builder = load_dataset_builder("json", data_files=str(path))
+        with uncached_reads():
+            # A slice always reads through the cache.
+            read = DatasetBuilder.as_dataset(builder, split="train[:1]", **forwarded)
+        assert read == "cached"
+        assert seen == [forwarded]
 
     def test_a_nested_block_is_refused(self) -> None:
         with (

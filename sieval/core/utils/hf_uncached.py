@@ -101,12 +101,15 @@ def _uncached_reads() -> Iterator[ReadLog]:
         setattr(self, _PREPARE_ARGS, (args, kwargs))
 
     def in_memory_as_dataset(
-        self: DatasetBuilder,
-        split: Any = None,
-        run_post_process: bool = True,
-        verification_mode: VerificationMode | str | None = None,
-        in_memory: bool = False,
+        self: DatasetBuilder, split: Any = None, **options: Any
     ) -> HFDataset | HFDatasetDict:
+        # `datasets` 4 passes `verification_mode` here, 5 only to
+        # `download_and_prepare`; a value here wins. `options` reach the real
+        # method as given.
+        prepare_args, prepare_kwargs = getattr(self, _PREPARE_ARGS, ((), {}))
+        verification_mode = options.get(
+            "verification_mode", prepare_kwargs.get("verification_mode")
+        )
         names, reason = _memory_splits(self, split)
         built: dict[str, HFDataset] = {}
         counts: dict[str, int] = {}
@@ -127,15 +130,8 @@ def _uncached_reads() -> Iterator[ReadLog]:
                 names, reason = None, f"split did not stream ({exc})"
         if names is None:
             log.reads.append(BuilderRead(_label(self), "cache", reason))
-            args, kwargs = getattr(self, _PREPARE_ARGS, ((), {}))
-            prepare(self, *args, **kwargs)
-            return as_dataset(
-                self,
-                split=split,
-                run_post_process=run_post_process,
-                verification_mode=verification_mode,
-                in_memory=in_memory,
-            )
+            prepare(self, *prepare_args, **prepare_kwargs)
+            return as_dataset(self, split=split, **options)
         mode = VerificationMode(verification_mode or VerificationMode.BASIC_CHECKS)
         if mode != VerificationMode.NO_CHECKS:
             recorded = SplitDict(dataset_name=self.dataset_name)

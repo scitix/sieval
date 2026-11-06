@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **The light dry-run works on `datasets` 5.** 5.0 dropped `run_post_process` and `verification_mode` from `DatasetBuilder.as_dataset`, so a split the dry-run read through the cache failed with `unexpected keyword argument 'run_post_process'`. The cached path now passes on only the caller's arguments, and `verification_mode="no_checks"` is honoured on 5 as on 4.
+
 ## [0.15.2] - 2026-11-06
 
 A patch release: `sieval run --dry-run` is light by default, with
