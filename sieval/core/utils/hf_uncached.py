@@ -14,24 +14,15 @@ path also checks duplicate keys), a split asked for by slice (``"test[:10]"``),
 a split not on local disk or over :data:`MAX_IN_MEMORY_BYTES`, any failure to
 stream, and an empty requested split; the cached path then raises its own error.
 
-The module factory is memoized within the block, so a loader calling
-``load_dataset`` once per config (C-Eval's 52) parses the card once. Each
-caller gets a copy of the module, its per-config infos copied only as one is
-read.
-
 A source whose Arrow cache is already complete is read from it, as the run
-reads it: mapping those files costs nothing, and they are what the run will
-use. A job that keeps ``HF_DATASETS_CACHE`` between runs plans from it after
-its first run.
+reads it (:data:`ALREADY_CACHED`).
 
-Two costs the read does not need are dropped inside the block. Each module
-factory pings the Hub's download counter (a HEAD request, up to 3 s) even for
-a local directory; nothing is read from it. And ``map``/``filter`` on a
-dataset held in memory run in this process whatever ``num_proc`` says: a
-worker pool forks per call and pickles the whole table to each worker, which
-for a 250-row split under a 4-CPU quota where ``os.cpu_count()`` says 128
-took 18-49 s. The rows, their order and the fingerprint are the same either
-way: HF leaves ``num_proc`` out of the fingerprint.
+Also within the block: the module factory is memoized, so a loader calling
+``load_dataset`` once per config (C-Eval's 52) parses the card once; the Hub's
+download-count ping (a HEAD request per load, local directories included) is
+skipped; and ``map``/``filter`` on a dataset held in memory ignore
+``num_proc``, since forking a pool and pickling the table to each worker costs
+more than a planning read's map. ``num_proc`` is not in the fingerprint.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
@@ -64,6 +55,9 @@ MAX_IN_MEMORY_BYTES = 2 * 1024**3
 _BATCH_ROWS = 10_000
 _lock = threading.Lock()
 _PREPARE_ARGS = "_sieval_uncached_prepare"
+
+#: The ``cache`` reason for a source whose Arrow cache was complete: read, not written.
+ALREADY_CACHED = "already cached"
 
 type ReadPath = Literal["memory", "cache"]
 
@@ -137,7 +131,7 @@ def _uncached_reads() -> Iterator[ReadLog]:
             "verification_mode", prepare_kwargs.get("verification_mode")
         )
         if _cached(self, prepare_kwargs.get("download_mode")):
-            log.reads.append(BuilderRead(_label(self), "cache", "already cached"))
+            log.reads.append(BuilderRead(_label(self), "cache", ALREADY_CACHED))
             prepare(self, *prepare_args, **prepare_kwargs)
             return as_dataset(self, split=split, **options)
         names, reason = _memory_splits(self, split)
@@ -199,17 +193,16 @@ class _InfosOnRead(DatasetInfosDict):
     def __getitem__(self, key: str) -> Any:
         return copy.deepcopy(super().__getitem__(key))
 
-    def get(self, key: str, default: Any = None) -> Any:  # ty: ignore[invalid-method-override]
+    def get(self, key: str, default: Any = None) -> Any:
         return copy.deepcopy(super().get(key, default))
 
 
 def _module_copy(module: Any) -> Any:
-    """*module* for one caller: `load_dataset_builder` pops its builder kwargs
-    and resolves its configs' data files in place; it reads one config's info.
+    """*module* for one caller, which may change it in place.
 
-    C-Eval's card holds 52 configs' infos, and copying them all on each of its
-    52 loads was most of the copy.
+    The infos are copied as read: C-Eval's 52 made up most of a whole copy.
     """
+    # Safe to blank on the shared module: `_lock` admits one block at a time.
     infos = module.dataset_infos
     module.dataset_infos = None
     try:
@@ -229,8 +222,7 @@ def _label(builder: DatasetBuilder) -> str:
 def _cached(builder: DatasetBuilder, download_mode: object) -> bool:
     """Whether *builder*'s Arrow cache is complete and the load would reuse it.
 
-    HF writes ``dataset_info.json`` last, renaming the finished directory into
-    place, so the file stands only beside a complete cache.
+    HF moves the finished directory into place, ``dataset_info.json`` with it.
     """
     mode = DownloadMode(download_mode or DownloadMode.REUSE_DATASET_IF_EXISTS)
     if mode != DownloadMode.REUSE_DATASET_IF_EXISTS:

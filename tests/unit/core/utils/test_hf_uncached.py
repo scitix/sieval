@@ -18,6 +18,7 @@ import pytest
 from datasets import Dataset as HFDataset
 from datasets import (
     DatasetDict,
+    DatasetInfo,
     Features,
     Value,
     config,
@@ -400,8 +401,6 @@ class TestAlreadyCached:
     def test_a_complete_cache_is_read_from_and_not_rebuilt(
         self, tmp_path: Path, cache: Path
     ) -> None:
-        # Harmony keeps one cache per image: after a board's first run, a
-        # check finds every source there.
         repo = _parquet_repo(tmp_path)
         full = _load_parquet(repo)
         before = _arrow_files(cache)
@@ -439,8 +438,6 @@ class TestCostsDropped:
     def test_map_on_rows_held_in_memory_runs_in_this_process(
         self, tmp_path: Path, cache: Path
     ) -> None:
-        # MGSM maps with `num_proc=os.cpu_count()`: under a 4-CPU quota on a
-        # 128-core node, 128 forks for 250 rows took 20-49 s.
         path = _jsonl(tmp_path / "rows.jsonl", [{"x": i} for i in range(8)])
         with uncached_reads():
             rows = ensure_dataset(
@@ -450,8 +447,20 @@ class TestCostsDropped:
             kept = rows.filter(_even, num_proc=4)
         assert set(mapped["pid"]) == {os.getpid()}
         assert kept["x"] == [0, 2, 4, 6]
-        # The fingerprint leaves `num_proc` out, so it is the run's.
         assert mapped._fingerprint == rows.map(_pid)._fingerprint
+
+    def test_map_on_a_cached_dataset_keeps_num_proc(
+        self, tmp_path: Path, cache: Path
+    ) -> None:
+        path = _jsonl(tmp_path / "rows.jsonl", [{"x": 0}, {"x": 1}])
+        load_dataset("json", data_files=str(path), split="train")
+        with uncached_reads() as log:
+            rows = ensure_dataset(
+                load_dataset("json", data_files=str(path), split="train")
+            )
+            mapped = rows.map(_pid, num_proc=2)
+        assert [r.reason for r in log.reads] == ["already cached"]
+        assert len(set(mapped["pid"])) == 2
 
     def test_map_keeps_num_proc_after_the_block(
         self, tmp_path: Path, cache: Path, monkeypatch: pytest.MonkeyPatch
@@ -472,7 +481,6 @@ class TestCostsDropped:
     def test_no_download_count_is_sent(
         self, tmp_path: Path, cache: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Every module factory pings the Hub's counter, a local directory too.
         sent: list[str] = []
 
         class Session:
@@ -490,10 +498,14 @@ class TestCostsDropped:
         assert len(sent) == 1
 
     def test_each_load_gets_its_own_config_info(self, tmp_path: Path) -> None:
-        # One module serves every load of a repo; its infos are copied on read.
         repo = _card_repo(tmp_path, test_rows=3, dev_rows=2, dev_card=2)
         with uncached_reads():
             first = load_dataset_builder(str(repo))
             first.info.description = "changed"
             again = load_dataset_builder(str(repo))
         assert again.info.description != "changed"
+
+    def test_an_info_read_by_key_is_a_copy(self) -> None:
+        infos = hf_uncached._InfosOnRead({"default": DatasetInfo(description="a")})
+        infos["default"].description = "changed"
+        assert infos["default"].description == "a"
