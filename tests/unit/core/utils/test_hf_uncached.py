@@ -14,7 +14,14 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from datasets import DatasetDict, Features, Value, config, load_dataset
+from datasets import (
+    DatasetDict,
+    Features,
+    Value,
+    config,
+    load_dataset,
+    load_dataset_builder,
+)
 from datasets.builder import DatasetBuilder
 from datasets.exceptions import DatasetGenerationError
 from datasets.utils.info_utils import NonMatchingSplitsSizesError
@@ -308,6 +315,39 @@ class TestPatching:
             load_dataset("json", data_files=str(tmp_path / "absent.jsonl"))
         after = (DatasetBuilder.download_and_prepare, DatasetBuilder.as_dataset)
         assert after == before
+
+    @pytest.mark.parametrize(
+        "forwarded",
+        [
+            {"in_memory": False},
+            {"verification_mode": "basic_checks", "in_memory": False},
+            {"run_post_process": True, "verification_mode": None, "in_memory": False},
+        ],
+        ids=["datasets-5", "datasets-4", "datasets-4-full"],
+    )
+    def test_the_cached_path_passes_on_only_what_the_caller_gave(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, forwarded: dict
+    ) -> None:
+        # `datasets` 5 dropped `run_post_process` and `verification_mode` from
+        # `as_dataset`; naming them there raises TypeError.
+        seen: list[dict] = []
+
+        def real(_builder: DatasetBuilder, **kwargs: Any) -> str:
+            kwargs.pop("split")
+            seen.append(kwargs)
+            return "cached"
+
+        monkeypatch.setattr(DatasetBuilder, "as_dataset", real)
+        monkeypatch.setattr(
+            DatasetBuilder, "download_and_prepare", lambda *a, **k: None
+        )
+        path = _jsonl(tmp_path / "rows.jsonl", [{"x": 0}, {"x": 1}])
+        builder = load_dataset_builder("json", data_files=str(path))
+        with uncached_reads():
+            # A slice always reads through the cache.
+            read = DatasetBuilder.as_dataset(builder, split="train[:1]", **forwarded)
+        assert read == "cached"
+        assert seen == [forwarded]
 
     def test_a_nested_block_is_refused(self) -> None:
         with (
