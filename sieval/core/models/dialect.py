@@ -512,17 +512,10 @@ def validate_runtime_binding_plan(plan: RuntimePlanView, req: Request) -> None:
             raise DialectError(
                 f"request leaf {path!r} activates unavailable capability {capability!r}"
             )
-
-    minimum = plan.capability_minimums.get("top_logprobs", {}).get("minimum")
-    if (
-        minimum is not None
-        and req.scoring.top_logprobs > 0
-        and req.scoring.top_logprobs < int(minimum)
-    ):
-        raise DialectError(
-            f"top_logprobs={req.scoring.top_logprobs} weakens required "
-            f"minimum {minimum}"
-        )
+    # ``plan.capability_minimums`` are serving floors: the max over every task
+    # sharing the binding, which reconciliation provisions on the engine. A
+    # request asking for less is not checked against them; one binding serves
+    # a CLP task's top-100 and a PPL task's top-1 alike.
 
 
 def active_request_capabilities(req: Request) -> frozenset[str]:

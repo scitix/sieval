@@ -592,13 +592,26 @@ class TestPlanAndInvariants:
         with pytest.raises(ValueError, match="originated from 'future_dialect'"):
             validate_runtime_binding_plan(plan, req)
 
-    def test_minimum_cannot_be_weakened_per_call(self):
-        plan = _Plan(capability_minimums={"top_logprobs": {"minimum": 10}})
+    def test_binding_minimum_is_a_serving_floor_not_a_per_call_floor(self):
+        # One SGLang binding serves a CLP task (top-100) and a PPL task (top-1);
+        # the plan's minimum is their max, and the PPL call must still pass.
+        plan = _Plan(capability_minimums={"top_logprobs": {"minimum": 100}})
+        for breadth in (1, 5, 100):
+            req = Request(
+                input=CompletionInput("x"),
+                scoring=ScoringParams(
+                    input_scoring=True, sampled_logprobs=True, top_logprobs=breadth
+                ),
+            )
+            validate_runtime_binding_plan(plan, req)
+
+    def test_top_logprobs_on_a_plan_without_it_is_still_refused(self):
+        plan = _Plan(available_capabilities=frozenset({"sampled_logprobs"}))
         req = Request(
             input=CompletionInput("x"),
-            scoring=ScoringParams(sampled_logprobs=True, top_logprobs=5),
+            scoring=ScoringParams(sampled_logprobs=True, top_logprobs=1),
         )
-        with pytest.raises(ValueError, match="weakens"):
+        with pytest.raises(ValueError, match="unavailable capability 'top_logprobs'"):
             validate_runtime_binding_plan(plan, req)
 
     def test_inactive_top_logprobs_is_not_forced_by_binding_minimum(self):

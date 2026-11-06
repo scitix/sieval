@@ -18,6 +18,7 @@ from sieval.core.models import (
     ChoiceLogprobs,
     CompletionInput,
     GenModel,
+    InputScoringResult,
     OpaqueContinuation,
     ReasoningOutput,
     Request,
@@ -166,6 +167,44 @@ class TestArun:
             )
         )
         assert scored.top_logprobs == ((TopKEntry("x", -0.1),),)
+
+    @pytest.mark.anyio
+    async def test_one_plan_serves_clp_top_100_and_ppl_top_1(self):
+        """A CLP task's floor of 100 on a shared binding admits a PPL task's top-1.
+
+        The base-board shape: ``mmlu_kshot_clp`` and a held-out PPL task share
+        one engine, so the plan carries the larger floor, 100.
+        """
+        from tests.conftest import HandlerTransport
+
+        seen: list[int] = []
+
+        async def handler(req: Request) -> Response:
+            seen.append(req.scoring.top_logprobs)
+            token = TokenLogprob("x", -0.1)
+            top = ((TopKEntry("x", -0.1),),)
+            return Response(
+                texts=("x",),
+                logprobs=(token,),
+                top_logprobs=top,
+                input_scoring=(
+                    InputScoringResult((token,), top_logprobs=top)
+                    if req.scoring.input_scoring
+                    else None
+                ),
+            )
+
+        stub = HandlerTransport(handler, "openai_completions")
+        model = GenModel(model="g", api_key="k", transport=stub)
+        model._runtime_plan = dataclasses.replace(
+            model._runtime_plan,
+            capability_minimums={"top_logprobs": {"minimum": 100}},
+        )
+
+        await model.alogprobs("prompt", logprobs=100)
+        await model.alogprobs("prompt", echo=True, logprobs=1, max_tokens=1)
+
+        assert seen == [100, 1]
 
     @pytest.mark.anyio
     async def test_logprob_request_checks_read_choice_logprobs_when_n_gt_one(self):

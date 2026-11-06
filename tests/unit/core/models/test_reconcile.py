@@ -579,7 +579,36 @@ class TestBindingJoin:
         assert diagnostic.capability == "reasoning"
         assert diagnostic.sources == ("tasks.eval.infer_args.reasoning_effort",)
 
-    def test_dynamic_request_minimum_cannot_weaken_task_requirement(self) -> None:
+    def test_smaller_request_breadth_joins_task_floor(self) -> None:
+        # A CLP task needs top-100; another task's infer_args asks for top-1 on
+        # the same binding. Both are served; the floor stays the larger one.
+        binding = _binding(
+            dialect_id="openai_completions",
+            requirements=_requirements(
+                kind=InputKind.COMPLETION,
+                sampled_logprobs=True,
+                minimum=100,
+            ),
+            request_intents={
+                "top_logprobs": CapabilityIntent(
+                    "top_logprobs",
+                    True,
+                    minimums={"minimum": 1},
+                    sources=("tasks.ppl.infer_args.top_logprobs",),
+                )
+            },
+        )
+
+        result = reconcile(_batch(binding), _ConfiguredReconciler())
+
+        assert result.is_valid, result.errors
+        plan = result.binding_plans["binding-a"]
+        assert plan.capability_minimums["top_logprobs"] == {"minimum": 100}
+        assert result.runtime_plans["binding-a"].capability_minimums[
+            "top_logprobs"
+        ] == {"minimum": 100}
+
+    def test_larger_request_breadth_raises_task_floor(self) -> None:
         binding = _binding(
             dialect_id="openai_completions",
             requirements=_requirements(
@@ -591,17 +620,17 @@ class TestBindingJoin:
                 "top_logprobs": CapabilityIntent(
                     "top_logprobs",
                     True,
-                    minimums={"minimum": 4},
+                    minimums={"minimum": 20},
                     sources=("tasks.eval.infer_args.top_logprobs",),
                 )
             },
         )
 
-        result = reconcile(_batch(binding))
+        result = reconcile(_batch(binding), _ConfiguredReconciler())
 
-        assert {item.code for item in result.errors} == {
-            "request_capability_minimum_weakened"
-        }
+        assert result.is_valid, result.errors
+        plan = result.binding_plans["binding-a"]
+        assert plan.capability_minimums["top_logprobs"] == {"minimum": 20}
 
     def test_task_disable_conflict_preserves_source(self) -> None:
         binding = _binding(
