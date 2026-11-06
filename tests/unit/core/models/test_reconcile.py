@@ -56,6 +56,7 @@ from sieval.core.models.reconcile import (
     ServingRequirement,
     ServingUnsupported,
     _declaration_intent,
+    _join_floor_intents,
     _json_sequence,
     reconcile,
 )
@@ -579,21 +580,28 @@ class TestBindingJoin:
         assert diagnostic.capability == "reasoning"
         assert diagnostic.sources == ("tasks.eval.infer_args.reasoning_effort",)
 
-    def test_smaller_request_breadth_joins_task_floor(self) -> None:
-        # A CLP task needs top-100; another task's infer_args asks for top-1 on
-        # the same binding. Both are served; the floor stays the larger one.
+    @pytest.mark.parametrize(
+        ("task_floor", "request_breadth", "joined"),
+        [
+            (100, 1, 100),  # PPL top-1 beside CLP top-100: both served
+            (8, 20, 20),
+        ],
+    )
+    def test_request_breadth_joins_task_floor_by_max(
+        self, task_floor: int, request_breadth: int, joined: int
+    ) -> None:
         binding = _binding(
             dialect_id="openai_completions",
             requirements=_requirements(
                 kind=InputKind.COMPLETION,
                 sampled_logprobs=True,
-                minimum=100,
+                minimum=task_floor,
             ),
             request_intents={
                 "top_logprobs": CapabilityIntent(
                     "top_logprobs",
                     True,
-                    minimums={"minimum": 1},
+                    minimums={"minimum": request_breadth},
                     sources=("tasks.ppl.infer_args.top_logprobs",),
                 )
             },
@@ -602,35 +610,30 @@ class TestBindingJoin:
         result = reconcile(_batch(binding), _ConfiguredReconciler())
 
         assert result.is_valid, result.errors
-        plan = result.binding_plans["binding-a"]
-        assert plan.capability_minimums["top_logprobs"] == {"minimum": 100}
+        assert result.binding_plans["binding-a"].capability_minimums[
+            "top_logprobs"
+        ] == {"minimum": joined}
         assert result.runtime_plans["binding-a"].capability_minimums[
             "top_logprobs"
-        ] == {"minimum": 100}
+        ] == {"minimum": joined}
 
-    def test_larger_request_breadth_raises_task_floor(self) -> None:
-        binding = _binding(
-            dialect_id="openai_completions",
-            requirements=_requirements(
-                kind=InputKind.COMPLETION,
-                sampled_logprobs=True,
-                minimum=8,
-            ),
-            request_intents={
-                "top_logprobs": CapabilityIntent(
-                    "top_logprobs",
-                    True,
-                    minimums={"minimum": 20},
-                    sources=("tasks.eval.infer_args.top_logprobs",),
-                )
-            },
+    def test_request_floor_join_refuses_a_non_integer_minimum(self) -> None:
+        task = CapabilityIntent("top_logprobs", True, minimums={"minimum": 100})
+        request = CapabilityIntent("top_logprobs", True, minimums={"minimum": [1]})
+
+        with pytest.raises(TypeError, match="cannot join top_logprobs minimum"):
+            _join_floor_intents(task, request)
+
+    def test_request_floor_join_adopts_a_minimum_the_task_lacks(self) -> None:
+        task = CapabilityIntent("top_logprobs", True, sources=("task",))
+        request = CapabilityIntent(
+            "top_logprobs", True, minimums={"minimum": 5}, sources=("req",)
         )
 
-        result = reconcile(_batch(binding), _ConfiguredReconciler())
+        joined = _join_floor_intents(task, request)
 
-        assert result.is_valid, result.errors
-        plan = result.binding_plans["binding-a"]
-        assert plan.capability_minimums["top_logprobs"] == {"minimum": 20}
+        assert joined.minimums == {"minimum": 5}
+        assert joined.sources == ("req", "task")
 
     def test_task_disable_conflict_preserves_source(self) -> None:
         binding = _binding(

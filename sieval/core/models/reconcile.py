@@ -1419,29 +1419,26 @@ def _join_floor_intents(
     task: CapabilityIntent,
     request: CapabilityIntent,
 ) -> CapabilityIntent:
-    """Join two floors on one binding: the larger number, the union of a list.
+    """Join a request floor with a task floor: the larger one serves both.
 
-    A task's ``infer_args`` asking for less than another task's floor is that
-    task's own need, not a weakening, so the join never conflicts.
+    Where both set a minimum it is an integer (``top_logprobs``); anything
+    else is refused rather than resolved by picking a side.
     """
 
     minimums = dict(task.minimums)
     for name, value in request.minimums.items():
         current = minimums.get(name)
-        if (
-            isinstance(value, int)
-            and not isinstance(value, bool)
-            and isinstance(current, int)
-            and not isinstance(current, bool)
-        ):
-            minimums[name] = max(current, value)
-        elif isinstance(value, list) and isinstance(current, list):
-            minimums[name] = cast(
-                JSONValue,
-                sorted(set(cast(list[str], current)) | set(cast(list[str], value))),
-            )
-        elif current is None:
+        if current is None:
             minimums[name] = value
+            continue
+        if not all(
+            isinstance(item, int) and not isinstance(item, bool)
+            for item in (current, value)
+        ):
+            raise TypeError(
+                f"cannot join {task.key} minimum {name!r}: {current!r} and {value!r}"
+            )
+        minimums[name] = max(cast(int, current), cast(int, value))
     return CapabilityIntent(
         task.key,
         task.required or request.required,

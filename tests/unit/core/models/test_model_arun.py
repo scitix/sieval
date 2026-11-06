@@ -170,11 +170,7 @@ class TestArun:
 
     @pytest.mark.anyio
     async def test_one_plan_serves_clp_top_100_and_ppl_top_1(self):
-        """A CLP task's floor of 100 on a shared binding admits a PPL task's top-1.
-
-        The base-board shape: ``mmlu_kshot_clp`` and a held-out PPL task share
-        one engine, so the plan carries the larger floor, 100.
-        """
+        """A plan floor of 100 (from a CLP task) admits a PPL task's top-1 call."""
         from tests.conftest import HandlerTransport
 
         seen: list[int] = []

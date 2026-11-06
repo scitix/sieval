@@ -492,6 +492,11 @@ class RuntimePlanView(Protocol):
 
 
 def validate_runtime_binding_plan(plan: RuntimePlanView, req: Request) -> None:
+    """Refuse a request the binding cannot serve.
+
+    ``plan.capability_minimums`` are serving floors (the max over the binding's
+    tasks), not per-request floors, so a top-1 call passes a top-100 plan.
+    """
     if (
         req.dialect_options is not None
         and req.dialect_options.dialect_id != plan.dialect_id
@@ -512,10 +517,6 @@ def validate_runtime_binding_plan(plan: RuntimePlanView, req: Request) -> None:
             raise DialectError(
                 f"request leaf {path!r} activates unavailable capability {capability!r}"
             )
-    # ``plan.capability_minimums`` are serving floors: the max over every task
-    # sharing the binding, which reconciliation provisions on the engine. A
-    # request asking for less is not checked against them; one binding serves
-    # a CLP task's top-100 and a PPL task's top-1 alike.
 
 
 def active_request_capabilities(req: Request) -> frozenset[str]:

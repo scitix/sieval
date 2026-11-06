@@ -593,8 +593,7 @@ class TestPlanAndInvariants:
             validate_runtime_binding_plan(plan, req)
 
     def test_binding_minimum_is_a_serving_floor_not_a_per_call_floor(self):
-        # One SGLang binding serves a CLP task (top-100) and a PPL task (top-1);
-        # the plan's minimum is their max, and the PPL call must still pass.
+        # CLP top-100 and PPL top-1 share one binding; the plan carries 100.
         plan = _Plan(capability_minimums={"top_logprobs": {"minimum": 100}})
         for breadth in (1, 5, 100):
             req = Request(
