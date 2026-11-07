@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.15.5] - 2026-11-07
+
+A patch release: a request's `timeout` bounds the client again, so a
+configured `timeout: 5400` no longer ends at the 600 s `read` default
+(#276). An SGLang engine `sieval run` launches admits requests by the KV cache
+they may hold, and `concurrency_limit: auto` also holds requests back while
+the engine reports itself congested (#277, #278). `context.extrapolate`
+serves a window past native unscaled, and each task records the window it was
+served at (#279). `identity.inference.request_key` records what a task asks,
+the same on every model (#280). A lifecycle that leaves a model down when it
+is called, `from: feedback` included, is refused before launch (#281).
+`identity.inference.parsers` records the engine's reasoning and tool-call
+parsers beside `numerics`, and a resume under different ones is refused (#282).
+
+One change can refuse a resume that 0.15.4 allowed: a directory written before
+this release has its parsers read from its recorded plan, so resuming it under
+a different `reasoning_parser` or `tool_call_parser` is refused; one served by
+an endpoint records none and resumes. No on-disk format changes otherwise:
+`meta.json` `identity` stays schema 5, `RESULT_SCHEMA_VERSION` stays 1, and
+0.15.4 result directories resume under the same serving. A launched SGLang
+engine without a `concurrency_limit` now admits by KV room, which changes its
+throughput, not its answers.
+
 ### Added
 
 - **How the engine parses its output is compared on resume.** A reasoning or tool-call parser changes the text a task grades: a Qwen3-MoE served without `reasoning_parser: qwen3` left `</think>` in every answer. `identity.inference.parsers` records both beside `numerics`, from the plan or an endpoint's `serving.parsers`, and a resume under a different one is refused. A directory written before this release has them read from its recorded plan, so it is refused too; one served by an endpoint stays unknown and resumes. Names are compared as written: a vLLM ↔ SGLang move of one model (`hermes` vs `qwen`) is refused.
@@ -713,6 +736,7 @@ Mainstream benchmarks registered in `sieval/meta/index.json`:
 - Project-wide preflight (`scripts/check_preflight.py`): links, deps, tasks, datasets, imports, examples, meta-index sync, version.
 - Tooling: `ruff`, `ty`, `mypy strict`, `pytest`.
 
+[0.15.5]: https://github.com/scitix/sieval/compare/v0.15.4...v0.15.5
 [0.15.4]: https://github.com/scitix/sieval/compare/v0.15.3...v0.15.4
 [0.15.3]: https://github.com/scitix/sieval/compare/v0.15.2...v0.15.3
 [0.15.2]: https://github.com/scitix/sieval/compare/v0.15.1...v0.15.2
