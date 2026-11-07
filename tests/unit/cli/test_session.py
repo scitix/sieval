@@ -10667,3 +10667,186 @@ class _ParquetDataset(Dataset):
         loaded = load_dataset(name_or_path, **kwargs)
         assert isinstance(loaded, DatasetDict)
         return loaded
+
+
+class TestKvTokenBudget:
+    """A launched engine that said what it holds gets KV admission."""
+
+    @staticmethod
+    def _deployment(launched: bool = True, **facts: Any):
+        from sieval.core.models import (
+            Deployment,
+            DeploymentPlanProjection,
+            Engine,
+            ServingFacts,
+        )
+
+        return Deployment(
+            deployment_id="d" if launched else None,
+            plan=DeploymentPlanProjection("fp", "sglang") if launched else None,
+            engine=Engine("sglang"),
+            engine_source="deployment" if launched else "config",
+            api_base="http://127.0.0.1:1/v1",
+            endpoints={},
+            topology=None,
+            metrics_url=None,
+            facts=ServingFacts(**facts),
+        )
+
+    def test_capacity_is_the_measured_pool_times_replicas(self) -> None:
+        from sieval.cli.session import _kv_token_budget
+
+        budget = _kv_token_budget(
+            self._deployment(
+                kv_capacity_tokens=2266113, context_tokens=32768, replicas=2
+            )
+        )
+        assert budget is not None
+        assert budget.total_tokens == 2 * 2266113
+        # Group A: an n=8 task at max_tokens 28672 holds 8 full windows.
+        assert budget.weight(8, 28672) == 8 * 32768
+
+    def test_no_facts_or_not_launched_gives_none(self) -> None:
+        from sieval.cli.session import _kv_token_budget
+
+        assert _kv_token_budget(self._deployment()) is None
+        assert (
+            _kv_token_budget(
+                self._deployment(
+                    launched=False, kv_capacity_tokens=10, context_tokens=10
+                )
+            )
+            is None
+        )
+
+
+class TestAutoConcurrency:
+    """`concurrency_limit: auto` is for a launched SGLang that reported its KV."""
+
+    def test_auto_on_a_launched_sglang_gets_adaptive_admission(self) -> None:
+        from sieval.cli.session import _kv_token_budget
+        from sieval.core.models.admission import AdaptiveTokenBudget
+
+        deployment = TestKvTokenBudget._deployment(
+            kv_capacity_tokens=1000, context_tokens=100
+        )
+        assert isinstance(
+            _kv_token_budget(deployment, adaptive=True), AdaptiveTokenBudget
+        )
+        assert not isinstance(_kv_token_budget(deployment), AdaptiveTokenBudget)
+
+    def test_auto_without_kv_facts_launch_or_sglang_gets_none(self) -> None:
+        from dataclasses import replace
+
+        from sieval.cli.session import _kv_token_budget
+        from sieval.core.models import Engine
+
+        assert _kv_token_budget(TestKvTokenBudget._deployment(), adaptive=True) is None
+        assert (
+            _kv_token_budget(
+                TestKvTokenBudget._deployment(
+                    launched=False, kv_capacity_tokens=1, context_tokens=1
+                ),
+                adaptive=True,
+            )
+            is None
+        )
+        from sieval.core.models import DeploymentPlanProjection
+
+        vllm = replace(
+            TestKvTokenBudget._deployment(kv_capacity_tokens=1, context_tokens=1),
+            plan=DeploymentPlanProjection("fp", "vllm"),
+            engine=Engine("vllm"),
+        )
+        assert _kv_token_budget(vllm, adaptive=True) is None
+
+    @pytest.mark.parametrize("value", ["auto", 4, None])
+    def test_auto_and_numbers_pass_option_parsing(self, value: object) -> None:
+        config: dict[str, object] = {"name": "m"}
+        if value is not None:
+            config["concurrency_limit"] = value
+        _, _, parsed = EvalSession._connection_options(config, nested_args=False)
+        assert parsed == value
+
+    @pytest.mark.parametrize("value", ["fast", 0, True])
+    def test_other_values_are_refused(self, value: object) -> None:
+        with pytest.raises(ValueError, match="positive integer or 'auto'"):
+            EvalSession._connection_options(
+                {"name": "m", "concurrency_limit": value}, nested_args=False
+            )
+
+    def test_auto_on_an_external_endpoint_is_refused(self, tmp_path: Path) -> None:
+        config_path = _write_yaml_config(
+            tmp_path,
+            "auto.yaml",
+            "models:\n  candidate:\n    name: org/candidate\n"
+            "    api_base: https://candidate.example/v1\n    api_key: k\n"
+            "    concurrency_limit: auto\n"
+            "datasets:\n  ds:\n    class: fake.Dataset\n"
+            "tasks:\n  t:\n    class: fake.MockTask\n    dataset: ds\n"
+            "    model: candidate\n",
+        )
+        from tests.unit.core.runners.test_runner import MockTask
+
+        session = EvalSession(config_path)
+        with (
+            patch("sieval.cli.session.resolve_task_class", return_value=MockTask),
+            patch("sieval.core.models.connection_factory.AsyncOpenAI"),
+            pytest.raises(ValueError, match="'auto' needs an SGLang engine"),
+        ):
+            # Refused at pre-launch, before any engine or client exists.
+            session._setup_prelaunch_reconciliation()
+
+    def test_auto_on_a_derived_model_is_refused(self, tmp_path: Path) -> None:
+        config_path = _write_yaml_config(
+            tmp_path,
+            "auto.yaml",
+            "models:\n  candidate:\n    name: org/candidate\n"
+            "    api_base: https://candidate.example/v1\n    api_key: k\n"
+            "  child:\n    base: candidate\n    args:\n"
+            "      concurrency_limit: auto\n"
+            "datasets:\n  ds:\n    class: fake.Dataset\n"
+            "tasks:\n  t:\n    class: fake.MockTask\n    dataset: ds\n"
+            "    model: child\n",
+        )
+        from tests.unit.core.runners.test_runner import MockTask
+
+        session = EvalSession(config_path)
+        with (
+            patch("sieval.cli.session.resolve_task_class", return_value=MockTask),
+            patch("sieval.core.models.connection_factory.AsyncOpenAI"),
+            pytest.raises(ValueError, match="'auto' is for a root model"),
+        ):
+            session._setup_prelaunch_reconciliation()
+            session._setup_postlaunch_reconciliation()
+            session._setup_models()
+
+    def test_auto_at_the_top_level_is_refused(self, tmp_path: Path) -> None:
+        config_path = _write_yaml_config(
+            tmp_path,
+            "auto.yaml",
+            "concurrency_limit: auto\n"
+            "models:\n  candidate:\n    name: org/candidate\n"
+            "    api_base: https://candidate.example/v1\n    api_key: k\n"
+            "datasets:\n  ds:\n    class: fake.Dataset\n"
+            "tasks:\n  t:\n    class: fake.MockTask\n    dataset: ds\n"
+            "    model: candidate\n",
+        )
+        with pytest.raises(ValueError, match="top level takes a number"):
+            EvalSession(config_path)._init_runner()
+
+    @pytest.mark.anyio
+    async def test_session_close_closes_the_load_probe(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from sieval.core.models.admission import AdaptiveTokenBudget
+
+        session = EvalSession.__new__(EvalSession)
+        probe = AsyncMock()
+        budget = AdaptiveTokenBudget(1, context=1, probe=probe)
+        session._owned_pools = {}
+        session._root_shared_limiters = {}
+        session._root_token_budgets = {"candidate": budget}
+        await session._close_owned_model_resources()
+        probe.aclose.assert_awaited_once()
+        assert session._root_token_budgets == {}

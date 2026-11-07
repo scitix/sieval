@@ -1715,3 +1715,164 @@ class TestWatch:
         handle = await deployer._launch_one(cmd, log_file=tmp_path / "x.log")
         process = deployer._processes[handle.handle_id]
         assert process.wait(timeout=10) == 0
+
+
+class TestKvFacts:
+    """What a ready SGLang engine says it holds."""
+
+    @staticmethod
+    async def _facts(payload: object, status: int = 200, backend: str = "sglang"):
+        from unittest.mock import patch as _patch
+
+        import httpx as _httpx
+
+        from sieval.infer.deployer import kv_facts
+
+        seen: list[str] = []
+
+        def handler(request: _httpx.Request) -> _httpx.Response:
+            seen.append(str(request.url))
+            return _httpx.Response(status, json=payload)
+
+        real = _httpx.AsyncClient
+
+        def client(*_args, **_kwargs):
+            return real(transport=_httpx.MockTransport(handler))
+
+        with _patch("sieval.infer.deployer.httpx.AsyncClient", client):
+            facts = await kv_facts(backend, "http://127.0.0.1:30000/v1")
+        return facts, seen
+
+    @pytest.mark.anyio
+    async def test_reads_the_kv_pool_context_and_replicas(self) -> None:
+        facts, seen = await self._facts(
+            {"max_total_num_tokens": 2266113, "context_length": 32768, "dp_size": 2}
+        )
+        assert seen == ["http://127.0.0.1:30000/get_server_info"]
+        assert (facts.kv_capacity_tokens, facts.context_tokens, facts.replicas) == (
+            2266113,
+            32768,
+            2,
+        )
+
+    @pytest.mark.anyio
+    async def test_dp_attention_ranks_each_hold_a_pool(self) -> None:
+        # SGLang runs one scheduler, and sizes one pool, per DP rank either way.
+        facts, _ = await self._facts(
+            {
+                "max_total_num_tokens": 100,
+                "context_length": 10,
+                "dp_size": 4,
+                "enable_dp_attention": True,
+            }
+        )
+        assert (facts.kv_capacity_tokens, facts.replicas) == (100, 4)
+
+    @pytest.mark.anyio
+    async def test_an_unpinned_window_is_the_longest_input(self) -> None:
+        facts, _ = await self._facts(
+            {
+                "max_total_num_tokens": 100,
+                "context_length": None,
+                "max_req_input_len": 40955,
+            }
+        )
+        assert (facts.kv_capacity_tokens, facts.context_tokens) == (100, 40955)
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("payload", "status"),
+        [
+            ({}, 200),
+            ({"max_total_num_tokens": 5}, 200),  # no window: no admission
+            ({"context_length": 5}, 200),
+            ({"max_total_num_tokens": 5, "context_length": 5}, 500),
+            ([], 200),
+        ],
+    )
+    async def test_no_answer_gives_no_facts(self, payload: object, status: int) -> None:
+        facts, _ = await self._facts(payload, status)
+        assert facts == ServingFacts()
+
+    @pytest.mark.anyio
+    async def test_other_backends_are_not_asked(self) -> None:
+        facts, seen = await self._facts({}, backend="vllm")
+        assert seen == [] and facts.kv_capacity_tokens is None
+
+
+class TestSglangLoadProbe:
+    @staticmethod
+    async def _probe(routes: dict[str, object]):
+        from unittest.mock import patch as _patch
+
+        import httpx as _httpx
+
+        from sieval.infer.deployer import SglangLoadProbe
+
+        seen: list[str] = []
+
+        def handler(request: _httpx.Request) -> _httpx.Response:
+            seen.append(str(request.url))
+            body = routes.get(request.url.path)
+            if body is None:
+                return _httpx.Response(404)
+            return _httpx.Response(200, json=body)
+
+        real = _httpx.AsyncClient
+
+        def client(*_args, **kwargs):
+            return real(transport=_httpx.MockTransport(handler), **kwargs)
+
+        with _patch("sieval.infer.deployer.httpx.AsyncClient", client):
+            probe = SglangLoadProbe("http://127.0.0.1:30000/v1")
+            try:
+                return await probe(), seen
+            finally:
+                await probe.aclose()
+
+    @pytest.mark.anyio
+    async def test_sums_waiting_and_takes_the_fullest_rank(self) -> None:
+        load, seen = await self._probe(
+            {
+                "/v1/loads": {
+                    "loads": [
+                        {"num_waiting_reqs": 2, "token_usage": 0.4},
+                        {"num_waiting_reqs": 1, "token_usage": 0.97},
+                    ]
+                }
+            }
+        )
+        assert load is not None
+        assert (load.waiting, load.token_usage) == (3, 0.97)
+        assert seen == ["http://127.0.0.1:30000/v1/loads?include=core"]
+
+    @pytest.mark.anyio
+    async def test_the_deprecated_get_load_is_not_read(self) -> None:
+        # Its num_tokens is used + pending prefill, not the pool: a 1%-used
+        # pool would read as 100% full.
+        load, seen = await self._probe(
+            {
+                "/get_load": [
+                    {"num_waiting_reqs": 0, "num_tokens": 1000, "num_pending_tokens": 0}
+                ]
+            }
+        )
+        assert load is None
+        assert [url.split("?")[0] for url in seen] == [
+            "http://127.0.0.1:30000/v1/loads"
+        ]
+
+    @pytest.mark.parametrize(
+        "body",
+        [{}, {"loads": []}, {"loads": ["x"]}, ["not", "a", "mapping"]],
+        ids=["no-loads", "empty", "no-ranks", "list"],
+    )
+    @pytest.mark.anyio
+    async def test_an_unusable_answer_is_none(self, body: object) -> None:
+        load, _ = await self._probe({"/v1/loads": body})
+        assert load is None
+
+    @pytest.mark.anyio
+    async def test_no_answer_is_none(self) -> None:
+        load, _ = await self._probe({})
+        assert load is None

@@ -34,6 +34,7 @@ from sieval.core.models import (
     Engine,
     ServingFacts,
 )
+from sieval.core.models.admission import EngineLoad
 from sieval.infer.backends.process import (
     kill_orphaned_group,
     kill_process_group,
@@ -808,6 +809,101 @@ def unlaunched_deployment(
         for cmd in commands
     ]
     return LocalDeployer().build_deployment(plan, handles)
+
+
+#: How long a ready engine is given to say what it holds.
+_KV_FACTS_TIMEOUT = 10.0
+
+
+async def kv_facts(backend: str, endpoint: str) -> ServingFacts:
+    """The KV tokens per replica, context window and replica count a ready
+    SGLang engine reports at ``/get_server_info``.
+
+    ``max_total_num_tokens`` is the pool the scheduler sized after loading.
+    Every data-parallel rank, with or without DP attention, runs its own
+    scheduler and pool. The window is ``context_length`` when it was passed,
+    else ``max_req_input_len``, the longest input the engine accepts. Without
+    a pool and a window there are no facts, so no KV admission.
+    """
+    if backend != "sglang":
+        return ServingFacts()
+    parsed = urlparse(endpoint)
+    url = urlunparse((parsed.scheme, parsed.netloc, "/get_server_info", "", "", ""))
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=_KV_FACTS_TIMEOUT)
+            response.raise_for_status()
+            info = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.debug("No KV facts from {}: {}", url, exc)
+        return ServingFacts()
+    if not isinstance(info, Mapping):
+        return ServingFacts()
+
+    def _positive(value: object) -> int | None:
+        return (
+            value
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0
+            else None
+        )
+
+    capacity = _positive(info.get("max_total_num_tokens"))
+    context = _positive(info.get("context_length")) or _positive(
+        info.get("max_req_input_len")
+    )
+    if capacity is None or context is None:
+        return ServingFacts()
+    return ServingFacts(
+        kv_capacity_tokens=capacity,
+        context_tokens=context,
+        replicas=_positive(info.get("dp_size")) or 1,
+    )
+
+
+class SglangLoadProbe:
+    """Reads an SGLang engine's load from ``/v1/loads``: waiting requests over
+    its data-parallel ranks, and the fullest rank's ``token_usage``.
+
+    ``None`` when the engine does not answer. The deprecated ``/get_load`` is
+    not read: its ``num_tokens`` counts used plus pending prefill tokens, not
+    the pool, so it gives no share of the pool.
+    """
+
+    def __init__(self, endpoint: str) -> None:
+        parsed = urlparse(endpoint)
+        self._client = httpx.AsyncClient(
+            base_url=urlunparse((parsed.scheme, parsed.netloc, "", "", "", "")),
+            timeout=_LOAD_PROBE_TIMEOUT,
+        )
+
+    async def __call__(self) -> EngineLoad | None:
+        try:
+            response = await self._client.get("/v1/loads", params={"include": "core"})
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        ranks = payload.get("loads") if isinstance(payload, Mapping) else None
+        if not isinstance(ranks, list):
+            return None
+        ranks = [r for r in ranks if isinstance(r, Mapping)]
+        if not ranks:
+            return None
+        waiting, usage = 0, 0.0
+        for rank in ranks:
+            w, u = rank.get("num_waiting_reqs"), rank.get("token_usage")
+            if isinstance(w, int) and not isinstance(w, bool):
+                waiting += w
+            if isinstance(u, int | float) and not isinstance(u, bool):
+                usage = max(usage, float(u))
+        return EngineLoad(waiting=waiting, token_usage=usage)
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+
+#: A load read is cheap; one slower than this is treated as no answer.
+_LOAD_PROBE_TIMEOUT = 2.0
 
 
 def command_endpoint(cmd: BackendCommand) -> str | None:

@@ -58,7 +58,8 @@ tasks:
   and uses `with_dialect()` to reuse a compatible root pool; a model never
   invents or converts that plan locally
 - **Quota allocation**: `concurrency_limit` in `args` adds a local cap while
-  retaining the root's shared cap
+  retaining the root's shared cap. A root on a launched SGLang engine may set
+  `auto` instead (see [concurrency](concurrency.md#concurrency_limit-auto))
 - **Reserved task name**: `logs` (`<result_dir>/logs/` holds engine and service logs)
 - **Services**: code tasks start the vendored evaluator unless
   `SIEVAL_CODE_EVAL_API` is set; see [Services a task needs](infer.md#services-a-task-needs)
