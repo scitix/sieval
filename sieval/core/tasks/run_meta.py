@@ -186,11 +186,13 @@ type Numerics = dict[str, JSONValue]
 class InferenceIdentity(TypedDict):
     """``digest`` covers what is asked; ``requests`` what was sent;
     ``numerics`` what the served model computes with (:func:`served_numerics`),
-    absent when none of it is known."""
+    absent when none of it is known; ``request_key`` (:func:`request_key`) is
+    for readers comparing across models."""
 
     digest: str
     requests: NotRequired[DigestedStage]
     numerics: NotRequired[Numerics]
+    request_key: NotRequired[str]
 
 
 class ServingFingerprint(TypedDict):
@@ -562,7 +564,7 @@ def request_definition(params: Mapping[Any, object]) -> dict[str, object]:
     extra = body.get("extra_body")
     if isinstance(extra, Mapping) and "timeout" in extra:
         # The OpenAI SDK dialects sent ``timeout`` here before 0.15.5.
-        trimmed = {k: v for k, v in extra.items() if k != "timeout"}
+        trimmed = {k: v for k, v in extra.items() if k not in _TRANSPORT_KEYS}
         if trimmed:
             body["extra_body"] = trimmed
         else:
@@ -624,6 +626,22 @@ def model_request_args(model: Model) -> dict[str, JSONValue]:
     return args
 
 
+def request_key(*, model: Model, task_args: Mapping[str, JSONValue]) -> str:
+    """Digest what a task asks, the same for every model under one dialect.
+
+    :func:`model_request_args` and the task's inference arguments, without the
+    model's ``extra`` or the transport keys a request digest also drops
+    (``timeout``, ``stream``). Unlike the ``inference`` digest it leaves out
+    the window, numerics and runner keys, so no resume compares it.
+    """
+    args = model_request_args(model)
+    args.pop("extra", None)
+    params = args.get("params")
+    if isinstance(params, dict):
+        args["params"] = {k: v for k, v in params.items() if k not in _TRANSPORT_KEYS}
+    return digest({"model_args": args, "task_args": dict(task_args)})
+
+
 def inference_identity(
     *,
     model: Model,
@@ -637,7 +655,7 @@ def inference_identity(
     *context_limit* is its context window in tokens, ``None`` when unknown.
     *numerics* is :func:`served_numerics`, kept beside the digest as values,
     since a key may be unknown. What was actually sent is folded per sample
-    into ``requests`` at the end.
+    into ``requests`` at the end. ``request_key`` is not part of ``digest``.
     """
     payload = {
         "model_args": model_request_args(model),
@@ -645,7 +663,10 @@ def inference_identity(
         "runner": {key: runner_keys.get(key) for key in INFERENCE_RUNNER_KEYS},
         "context_limit": context_limit,
     }
-    identity: InferenceIdentity = {"digest": digest(payload)}
+    identity: InferenceIdentity = {
+        "digest": digest(payload),
+        "request_key": request_key(model=model, task_args=task_args),
+    }
     if numerics:
         identity["numerics"] = dict(numerics)
     return identity

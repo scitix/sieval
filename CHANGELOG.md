@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **`concurrency_limit: auto` for a launched SGLang engine.** On top of KV admission, waiting requests are held back while the engine's `/v1/loads` (read once a second while requests wait) reports waiting requests or a KV pool 95% full. `auto` anywhere else is refused before a request is sent.
 - **`context.extrapolate` serves past native unscaled.** With `context: {native, max, extrapolate: true}`, a task needing more than `native` and at most `max` runs in its own `<model>@<window>` group with no scaling parameters (SGLang, `SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1`) instead of being refused. vLLM, and `extrapolate` with `scaling`, are refused.
 - **Each task records the window it was served at.** `meta.json` `runs[].serving.context` (and `--dry-run` `serving.<key>.contexts`) holds `window`, `method` (`native`, `scaling` or `extrapolate`) and the model's `native` / `max`. A window above native counts as non-native however it was reached, `infer.overrides` included. It is not compared; 0.15.4 directories resume.
+- **`identity.inference.request_key`: what a task asks, the same on every model.** Digests the request arguments, the plan's request defaults and dialect, and the task's `n`, `stop` and `logprobs`; leaves out the model's `extra`, the window, numerics and transport keys (`timeout`, `stream`). For readers comparing across models; no resume compares it, so 0.15.4 directories resume and gain it. `TaskRunner.request_identity()` computes it without an engine.
 
 ### Fixed
 

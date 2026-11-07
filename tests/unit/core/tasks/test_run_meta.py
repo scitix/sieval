@@ -65,13 +65,14 @@ from sieval.core.tasks.run_meta import (
     read_recorded_numerics,
     request_definition,
     request_digest,
+    request_key,
     served_numerics,
     serving_fingerprint,
     stage_key,
     validate_judge_model_ref,
     warn_unmatched_judge_refs,
 )
-from tests.conftest import MockChatModel, MockJudgeModel
+from tests.conftest import MockChatModel, MockGenModel, MockJudgeModel
 
 
 # ===================================================================
@@ -597,6 +598,111 @@ class TestServedNumerics:
             "dtype": "bfloat16",
             "kv_cache_dtype": "fp8_e4m3",
         }
+
+
+class TestRequestKey:
+    """What a task asks, the same on every model: no extra, window or numerics."""
+
+    KEYS = {"deterministic": False, "max_iterations": None, "max_retries": None}
+
+    def _identity(self, model, task_args=None, **overrides):
+        return inference_identity(
+            model=model,
+            task_args={"n": 8} if task_args is None else task_args,
+            runner_keys=self.KEYS,
+            context_limit=overrides.pop("context_limit", None),
+            **overrides,
+        )
+
+    def test_it_sits_beside_the_digest_and_is_not_in_it(self):
+        """The 0.15.4 digest is unchanged, so directories resume."""
+        model = MockChatModel(temperature=0.6, max_tokens=48000)
+        identity = self._identity(model)
+        assert identity["request_key"] == request_key(model=model, task_args={"n": 8})
+        payload = {
+            "model_args": {"params": {"temperature": 0.6, "max_tokens": 48000}},
+            "task_args": {"n": 8},
+            "runner": self.KEYS,
+            "context_limit": None,
+        }
+        from sieval.core.tasks.run_meta import digest, model_request_args
+
+        payload["model_args"] = model_request_args(model)
+        assert identity["digest"] == digest(payload)
+
+    def test_the_window_and_numerics_change_the_digest_not_the_key(self):
+        model = MockChatModel(temperature=0.6, max_tokens=48000)
+        native = self._identity(model, context_limit=32768)
+        extrapolated = self._identity(
+            model, context_limit=52096, numerics={"dtype": "bfloat16"}
+        )
+        assert native["digest"] != extrapolated["digest"]
+        assert native["request_key"] == extrapolated["request_key"]
+
+    def test_the_models_extra_is_left_out(self):
+        plain = MockChatModel(temperature=0.6)
+        wrapped = plain.with_args(
+            extra={"sequence_wrappers": {"protein": "<p>{seq}</p>"}}
+        )
+        assert self._identity(plain)["digest"] != self._identity(wrapped)["digest"]
+        assert (
+            self._identity(plain)["request_key"]
+            == self._identity(wrapped)["request_key"]
+        )
+
+    def test_the_model_and_its_endpoint_are_left_out(self):
+        a = MockChatModel(temperature=0.6)
+        b = MockChatModel(temperature=0.6)
+        b._model = "another-model"
+        b._api_base = "http://elsewhere:9000/v1"
+        assert self._identity(a)["request_key"] == self._identity(b)["request_key"]
+
+    @pytest.mark.parametrize(
+        "transport",
+        [
+            {"timeout": 5400},
+            {"stream": True},
+            {"stream_options": {"include_usage": True}},
+        ],
+    )
+    def test_transport_keys_are_left_out(self, transport):
+        a = MockChatModel(temperature=0.6)
+        b = a.with_args(**transport)
+        assert self._identity(a)["request_key"] == self._identity(b)["request_key"]
+
+    def test_the_dialect_changes_it(self):
+        chat = MockChatModel(temperature=0.6)
+        gen = MockGenModel(temperature=0.6)
+        assert chat.runtime_plan is not None and gen.runtime_plan is not None
+        assert chat.runtime_plan.dialect_id != gen.runtime_plan.dialect_id
+        assert self._identity(chat)["request_key"] != self._identity(gen)["request_key"]
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"max_tokens": 32768},
+            {"temperature": 0.0},
+            {"top_p": 0.8},
+            {"top_k": 50},
+            {"chat_template_kwargs": {"enable_thinking": False}},
+        ],
+    )
+    def test_each_request_argument_changes_it(self, change):
+        base = MockChatModel(temperature=0.6, top_p=0.95, top_k=20, max_tokens=48000)
+        assert (
+            self._identity(base)["request_key"]
+            != self._identity(base.with_args(**change))["request_key"]
+        )
+
+    @pytest.mark.parametrize(
+        "change", [{"n": 16}, {"n": 8, "stop": ["\n\n"]}, {"n": 8, "logprobs": 5}]
+    )
+    def test_the_tasks_own_arguments_change_it(self, change):
+        model = MockChatModel(temperature=0.6)
+        assert (
+            self._identity(model, {"n": 8})["request_key"]
+            != self._identity(model, change)["request_key"]
+        )
 
 
 class TestNumericsInTheInferenceIdentity:
