@@ -378,6 +378,42 @@ class TestInferenceIdentityFromRunner:
             == _meta(await self._root(tmp_path / "b"))["identity"]["inference"]
         )
 
+    @pytest.mark.anyio
+    async def test_the_window_method_is_recorded_but_not_identity(self, tmp_path):
+        """Extrapolated and native runs at one window answer alike: the method
+        labels the run, and the window alone is compared (``context_limit``)."""
+        context = {
+            "window": 52096,
+            "method": "extrapolate",
+            "native": 32768,
+            "max": 65536,
+        }
+        task = RecordTask(dataset=MockDataset(SAMPLES), model=MockChatModel(), name="t")
+        runner = TaskRunner(
+            task,
+            make_config(tmp_path / "a"),
+            context_limit=52096,
+            served_context=context,
+        )
+        await runner.arun()
+        native = RecordTask(
+            dataset=MockDataset(SAMPLES), model=MockChatModel(), name="t"
+        )
+        other = TaskRunner(
+            native,
+            make_config(tmp_path / "b"),
+            context_limit=52096,
+            served_context={"window": 52096, "method": "native"},
+        )
+        await other.arun()
+
+        meta = _meta(runner.root_dir)
+        assert meta["runs"][-1]["serving"]["context"] == context
+        assert (
+            meta["identity"]["inference"]
+            == _meta(other.root_dir)["identity"]["inference"]
+        )
+
     async def _root(self, tmp_path):
         runner = _runner(tmp_path)
         await runner.arun()

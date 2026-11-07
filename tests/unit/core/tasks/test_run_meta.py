@@ -711,6 +711,13 @@ class TestLifecycleAndJudgeWeights:
         assert fingerprint["lifecycles"]["judge"] is not lifecycles["judge"]
         assert "lifecycles" not in serving_fingerprint(MockChatModel(), None)
 
+    def test_the_served_window_and_its_method_are_recorded(self):
+        context = {"window": 52096, "method": "extrapolate", "max": 65536}
+        fingerprint = serving_fingerprint(MockChatModel(), None, context=context)
+        assert fingerprint["context"] == context
+        assert fingerprint["context"] is not context
+        assert "context" not in serving_fingerprint(MockChatModel(), None)
+
     def test_a_judge_stated_by_weights_is_compared_by_them_not_its_name(self):
         judge = MockJudgeModel()
         (named,) = judge_identities({"grader": judge}, {})

@@ -261,6 +261,9 @@ tasks:
   `SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1`, so `max` is the only bound:
   SGLang no longer checks the window against the scaling. `infer.env`
   overrides it.
+- Within `max` with `extrapolate: true` instead of `scaling`: the same
+  group and variable, with no scaling parameters. SGLang only; exclusive with
+  `scaling`.
 - Otherwise, or beyond a window pinned by `infer.overrides` / `context_limit`:
   refused before launch, naming the task, its need and the model's limit. An
   unknown native window refuses any raise (set `context.native`).
@@ -278,7 +281,10 @@ start; an engine starts only for a group with tasks on it. `--serving-group
 KEY` (keys as `--dry-run` lists them under `serving`) runs one group, so groups
 can run as separate jobs into one `result_dir`. Each group writes
 `infer_plans[.<key>].yaml` and records its key in `meta.json`
-`runs[].serving.group`.
+`runs[].serving.group`. Each task records its window in
+`runs[].serving.context` (`--dry-run`: `serving.<key>.contexts`): `window`,
+`method` (`native`, `scaling` or `extrapolate`), and `native` / `max` when
+known. It is a label, not compared on resume.
 
 A `gen` model served by SGLang with no `dialect:` gets `sglang_native` when a
 task scores input: SGLang's `/v1/completions` cannot. `/generate` has no

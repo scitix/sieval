@@ -552,6 +552,7 @@ class TaskRunner:
         unserved_candidate: bool = False,
         serving_group: str | None = None,
         engine_guard: EngineGuard | None = None,
+        served_context: dict[str, JSONValue] | None = None,
     ):
         """*inference_recipe* is the serving plan of the model under test,
         without its checkpoint (``None`` when SiEval does not serve it), and
@@ -571,6 +572,7 @@ class TaskRunner:
         its name. *lifecycles* are the launched models' lifecycles, recorded in
         ``runs[].serving``. *checkpoint_numerics* is the launched
         checkpoint's own ``dtype`` and ``quantization`` (:func:`served_numerics`).
+        *served_context* is recorded as ``runs[].serving.context``.
         """
         # A malformed judge reference would leave every grader identity
         # unknown; refuse it before any work.
@@ -589,6 +591,7 @@ class TaskRunner:
         self._unserved_candidate = unserved_candidate
         self._serving_group = serving_group
         self._engine_guard = engine_guard
+        self._served_context = served_context
         # Per-stage resume: what was copied in, and what the comparison chose.
         self._run_from: RunFrom | None = None
         # Why `plan_run` planned without the task's `setup()`; see it.
@@ -2933,6 +2936,7 @@ class TaskRunner:
                 self._stated_serving,
                 group=self._serving_group,
                 lifecycles=self._lifecycles,
+                context=self._served_context,
             )
         except (TypeError, ValueError, AttributeError) as exc:
             logger.warning("Serving fingerprint unavailable: {}", exc)

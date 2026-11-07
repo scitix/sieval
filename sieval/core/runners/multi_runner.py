@@ -144,13 +144,14 @@ class MultiTaskRunner:
         unserved_candidate: bool = False,
         serving_group: str | None = None,
         engine_guard: EngineGuard | None = None,
+        served_context: dict[str, JSONValue] | None = None,
     ) -> Self:
         """Register a task for parallel execution.
 
         *inference_recipe*, *context_limit*, *weights*, *judge_weights*,
         *lifecycles*, *stated_serving*, *checkpoint_numerics*, *serving_group*,
-        *resume_config_diff*, *legacy_match*, *unserved_candidate* and
-        *engine_guard* pass through to :class:`TaskRunner`.
+        *resume_config_diff*, *legacy_match*, *unserved_candidate*,
+        *engine_guard* and *served_context* pass through to :class:`TaskRunner`.
 
         Auto-sets ``result_dir`` to ``<base_result_dir>/<task.name>`` when
         a base was provided and the task's config lacks its own.
@@ -200,6 +201,7 @@ class MultiTaskRunner:
             unserved_candidate=unserved_candidate,
             serving_group=serving_group,
             engine_guard=engine_guard,
+            served_context=served_context,
         )
 
         if runner.root_dir in self._output_dirs:

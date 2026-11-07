@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **An SGLang engine `sieval run` launches admits requests by the KV cache they may hold.** Each request reserves `n × min(context, max_tokens + 4096)` tokens of the pool the engine reports once ready (`max_total_num_tokens` per data-parallel rank) and waits, before it is sent, until that fits, first come first served. Per-task `concurrency_limits` had no engine-wide bound: on the 9-task board in the `timeout` fix below, 124–148 requests and 640 sequences went to a cache that holds 72 full-context ones. A root `concurrency_limit` keeps its fixed cap instead; vLLM and external endpoints are unchanged. Throughput only; no stage identity changes.
 
 - **`concurrency_limit: auto` for a launched SGLang engine.** On top of KV admission, waiting requests are held back while the engine's `/v1/loads` (read once a second while requests wait) reports waiting requests or a KV pool 95% full. `auto` anywhere else is refused before a request is sent.
+- **`context.extrapolate` serves past native unscaled.** With `context: {native, max, extrapolate: true}`, a task needing more than `native` and at most `max` runs in its own `<model>@<window>` group with no scaling parameters (SGLang, `SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1`) instead of being refused. vLLM, and `extrapolate` with `scaling`, are refused.
+- **Each task records the window it was served at.** `meta.json` `runs[].serving.context` (and `--dry-run` `serving.<key>.contexts`) holds `window`, `method` (`native`, `scaling` or `extrapolate`) and the model's `native` / `max`. A window above native counts as non-native however it was reached, `infer.overrides` included. It is not compared; 0.15.4 directories resume.
 
 ### Fixed
 

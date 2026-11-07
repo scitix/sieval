@@ -2331,6 +2331,56 @@ class TestServingGroups:
         (default_command,) = default.prepared["m"][1]
         assert key not in default_command.env
 
+    def test_an_extrapolated_engine_gets_the_window_and_no_scaling(self) -> None:
+        """Unscaled extrapolation: the scaled group's env lets SGLang serve past
+        its derived window, and no rope override reaches the engine."""
+        from sieval.cli.run import _serving_groups
+        from sieval.cli.session import unwrap_proxies
+
+        config = {
+            "models": {
+                "m": {
+                    "path": "/tmp/ckpt",
+                    "context": {"native": 32768, "max": 65536, "extrapolate": True},
+                }
+            },
+            "datasets": {"d": {"class": "GSM8KDataset"}},
+            "tasks": {
+                "short": {"class": "GSM8KZeroShotGenTask", "dataset": "d"},
+                "long": {
+                    "class": "GSM8KZeroShotGenTask",
+                    "dataset": "d",
+                    "infer_args": {"max_tokens": 48000},
+                },
+            },
+        }
+        plan = _sglang_plan(32768)
+        translator = MagicMock()
+        translator.translate.side_effect = lambda _: [
+            BackendCommand(cli_args=["sglang"], backend="sglang", role="full")
+        ]
+        base = translator.translate(plan)
+        with patch("sieval.cli.run.get_translator", return_value=translator):
+            default, extrapolated = _serving_groups(
+                config, {"m": unwrap_proxies(plan)}, {"m": (plan, base)}
+            )
+
+        assert extrapolated.key == "m@52096"
+        params = extrapolated.prepared["m"][0].assignments[0].engine_params
+        assert params["context_length"] == 52096
+        assert "json_model_override_args" not in params
+        (command,) = extrapolated.prepared["m"][1]
+        assert command.env["SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN"] == "1"
+        assert extrapolated.serving().windows == {
+            "long": {
+                "window": 52096,
+                "method": "extrapolate",
+                "native": 32768,
+                "max": 65536,
+            }
+        }
+        assert default.serving().windows["short"]["method"] == "native"
+
     @pytest.mark.anyio
     async def test_one_group_runs_alone_and_an_unknown_key_is_refused(
         self, tmp_path: Path
@@ -2398,6 +2448,8 @@ class TestServingGroups:
         assert serving["default"]["tasks"] == ["short"]
         assert serving["m@100000"]["tasks"] == ["long"]
         assert serving["m@100000"]["windows"] == {"long": 100000}
+        assert serving["m@100000"]["contexts"]["long"]["window"] == 100000
+        assert serving["m@100000"]["contexts"]["long"]["method"] == "scaling"
         engine = serving["m@100000"]["engines"]["m@100000"]
         assert engine["model"] == "m"
         assert engine["window"] == 100000

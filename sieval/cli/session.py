@@ -5013,6 +5013,11 @@ class EvalSession:
                     else None
                 ),
                 engine_guard=self._engine_guard_for(task_name, context),
+                served_context=(
+                    dict(self._serving.windows[task_name])
+                    if task_name in self._serving.windows
+                    else None
+                ),
             )
             logger.info("Added task '{}' with class '{}'", task_name, task_spec)
 

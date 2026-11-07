@@ -201,7 +201,9 @@ class ServingFingerprint(TypedDict):
     endpoint (:data:`STATED_SERVING_KEYS`), as given. ``group`` is the key of
     the serving group the orchestration layer launched that engine for.
     ``lifecycles`` maps each launched model that declares one to its
-    ``lifecycle`` (``from`` / ``until`` a barrier stage).
+    ``lifecycle`` (``from`` / ``until`` a barrier stage). ``context`` labels the
+    window the task was served at; it is not compared (the window is already
+    ``context_limit``, a scaling ``model_overrides``).
     """
 
     engine: str
@@ -211,6 +213,7 @@ class ServingFingerprint(TypedDict):
     stated: NotRequired[dict[str, JSONValue]]
     group: NotRequired[str]
     lifecycles: NotRequired[dict[str, dict[str, str]]]
+    context: NotRequired[dict[str, JSONValue]]
 
 
 #: What a caller may state about how an external endpoint serves the model.
@@ -869,6 +872,7 @@ def serving_fingerprint(
     *,
     group: str | None = None,
     lifecycles: Mapping[str, Mapping[str, str]] | None = None,
+    context: Mapping[str, JSONValue] | None = None,
 ) -> ServingFingerprint:
     """How *model* is served. A *stated* ``engine_version`` fills one the
     deployment did not report."""
@@ -890,6 +894,8 @@ def serving_fingerprint(
         fingerprint["lifecycles"] = {
             name: dict(lifecycles[name]) for name in sorted(lifecycles)
         }
+    if context:
+        fingerprint["context"] = dict(context)
     return fingerprint
 
 
