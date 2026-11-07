@@ -10702,7 +10702,7 @@ class TestKvTokenBudget:
             )
         )
         assert budget is not None
-        assert budget.capacity == 2 * 2266113
+        assert budget.total_tokens == 2 * 2266113
         # Group A: an n=8 task at max_tokens 28672 holds 8 full windows.
         assert budget.weight(8, 28672) == 8 * 32768
 

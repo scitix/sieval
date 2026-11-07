@@ -131,7 +131,17 @@ class RequestSink(Protocol):
         ...
 
 
-def limiter_snapshot(limiter: anyio.CapacityLimiter) -> dict[str, JSONValue]:
+class LimiterLoad(Protocol):
+    """What a request record reads off a limiter."""
+
+    @property
+    def borrowed_tokens(self) -> int: ...
+
+    @property
+    def total_tokens(self) -> float: ...
+
+
+def limiter_snapshot(limiter: LimiterLoad) -> dict[str, JSONValue]:
     """``{"borrowed", "total"}``; an unbounded total is ``None``."""
 
     total = limiter.total_tokens
@@ -153,7 +163,7 @@ class StageScope:
     iteration: int
     repeat_index: int | None
     #: Limiters the stage holds, by name.
-    limiters: Mapping[str, anyio.CapacityLimiter]
+    limiters: Mapping[str, LimiterLoad]
     #: The run's ``time.monotonic()`` start, the base of ``offset_s``.
     run_start: float
     _calls: int = 0
@@ -202,7 +212,7 @@ class CallScope:
     phase: str
     model: dict[str, JSONValue]
     n: int
-    limiters: Mapping[str, anyio.CapacityLimiter]
+    limiters: Mapping[str, LimiterLoad]
     entered: float
     queue_s: float | None = None
     usage: UsageStats | None = None
@@ -367,7 +377,7 @@ def observe_call(
     model_meta: Callable[[], Mapping[str, object]],
     model: Mapping[str, JSONValue],
     n: int,
-    limiters: Mapping[str, anyio.CapacityLimiter],
+    limiters: Mapping[str, LimiterLoad],
 ) -> Iterator[CallScope | None]:
     """Open one call in the current stage; ``None`` outside a run.
 

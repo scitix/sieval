@@ -1741,7 +1741,7 @@ async def _launch(
         "  KV: {} tokens x {} replica(s), context {}",
         facts.kv_capacity_tokens,
         facts.replicas,
-        facts.context_tokens or "?",
+        facts.context_tokens,
     )
     return dataclasses.replace(
         deployment,

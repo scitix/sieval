@@ -1756,25 +1756,43 @@ class TestKvFacts:
         )
 
     @pytest.mark.anyio
-    async def test_dp_attention_shares_one_pool(self) -> None:
+    async def test_dp_attention_ranks_each_hold_a_pool(self) -> None:
+        # SGLang runs one scheduler, and sizes one pool, per DP rank either way.
         facts, _ = await self._facts(
             {
-                "internal_states": [{"max_total_num_tokens": 100}],
+                "max_total_num_tokens": 100,
                 "context_length": 10,
                 "dp_size": 4,
                 "enable_dp_attention": True,
             }
         )
-        assert (facts.kv_capacity_tokens, facts.replicas) == (100, 1)
+        assert (facts.kv_capacity_tokens, facts.replicas) == (100, 4)
+
+    @pytest.mark.anyio
+    async def test_an_unpinned_window_is_the_longest_input(self) -> None:
+        facts, _ = await self._facts(
+            {
+                "max_total_num_tokens": 100,
+                "context_length": None,
+                "max_req_input_len": 40955,
+            }
+        )
+        assert (facts.kv_capacity_tokens, facts.context_tokens) == (100, 40955)
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(
         ("payload", "status"),
-        [({}, 200), ({"max_total_num_tokens": 5}, 500), ([], 200)],
+        [
+            ({}, 200),
+            ({"max_total_num_tokens": 5}, 200),  # no window: no admission
+            ({"context_length": 5}, 200),
+            ({"max_total_num_tokens": 5, "context_length": 5}, 500),
+            ([], 200),
+        ],
     )
     async def test_no_answer_gives_no_facts(self, payload: object, status: int) -> None:
         facts, _ = await self._facts(payload, status)
-        assert facts.kv_capacity_tokens is None
+        assert facts == ServingFacts()
 
     @pytest.mark.anyio
     async def test_other_backends_are_not_asked(self) -> None:

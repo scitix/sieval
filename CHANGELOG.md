@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **An engine `sieval run` launches admits requests by the KV cache they may hold.** Each request reserves `n × min(context, max_tokens + 4096)` tokens of the engine's KV pool, which SGLang reports once ready (`max_total_num_tokens`, times data-parallel replicas), and waits before it is sent until that fits, first come first served. Per-task `concurrency_limits` summed with no engine-wide bound before: on the board above, 124–148 requests and 640 sequences went to an engine whose cache holds 72 full-context sequences. A root `concurrency_limit` keeps its fixed cap instead; vLLM and external endpoints are unchanged. Throughput only; no stage identity changes.
+- **An SGLang engine `sieval run` launches admits requests by the KV cache they may hold.** Each request reserves `n × min(context, max_tokens + 4096)` tokens of the pool the engine reports once ready (`max_total_num_tokens` per data-parallel rank) and waits, before it is sent, until that fits, first come first served. Per-task `concurrency_limits` had no engine-wide bound: on the 9-task board in the `timeout` fix below, 124–148 requests and 640 sequences went to a cache that holds 72 full-context ones. A root `concurrency_limit` keeps its fixed cap instead; vLLM and external endpoints are unchanged. Throughput only; no stage identity changes.
 
 ### Fixed
 

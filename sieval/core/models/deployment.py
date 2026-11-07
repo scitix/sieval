@@ -65,12 +65,11 @@ class ServingFacts:
     tokenizer_available: bool | None = None
     prefix_cache_enabled: bool | None = None
     max_top_logprobs: int | None = None
-    #: KV tokens each replica holds and its context window, as the engine
-    #: reports them once ready; ``None`` when it does not say.
+    #: KV tokens per replica and the context window, as a ready engine
+    #: reports them; ``None`` when it does not.
     kv_capacity_tokens: int | None = None
     context_tokens: int | None = None
-    #: Replicas serving behind the endpoint (data parallel), each holding
-    #: ``kv_capacity_tokens``.
+    #: Data-parallel replicas, each holding ``kv_capacity_tokens``.
     replicas: int = 1
 
 
@@ -445,9 +444,7 @@ class ConnectionPool[ConnectionT]:
     ) -> AsyncIterator[ConnectionT]:
         """Admit one request, enter shared/local limits, and yield the client.
 
-        *tokens* is the KV room the request may hold, reserved from
-        :attr:`token_budget` after the request limits, so a request waiting for
-        room holds its request slot and no other request jumps it.
+        *tokens* is reserved from :attr:`token_budget` after those limits.
         """
 
         async with self._state_lock:

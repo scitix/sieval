@@ -18,23 +18,18 @@ model = ChatModel("gpt-4o", concurrency_limit=32)
 
 ## KV Admission
 
-An engine `sieval run` launches also admits requests by the KV cache they
-may hold, unless its root model sets `concurrency_limit`. Requests are
-counted by size, not number: one `n: 8` request at `max_tokens: 28672` holds
-what eight `n: 1` ones do.
+An SGLang engine `sieval run` launches also admits requests by the KV cache
+they may hold, unless its root model sets `concurrency_limit`.
 
-- **Capacity.** The engine's own KV pool once it is ready, times its data
-  parallel replicas. SGLang reports it at `/get_server_info`
-  (`max_total_num_tokens`); the launch prints `KV: <tokens> x <replicas>`.
-  An engine that does not report it, and vLLM, get no KV admission.
-- **A request's size.** `n × min(context, max_tokens + 4096)`, the 4096 being
-  the prompt headroom serving sizes windows with; unset `max_tokens` counts
-  the whole context.
-- **Order.** First come, first served. A request that does not fit waits
-  before it is sent, holding its request slot, so no client timeout runs
-  while it waits. One larger than the whole pool runs alone.
-- **Effect.** Short tasks keep their throughput (a 1024-token request holds
-  5120 tokens); long ones stop overfilling the cache, which made SGLang
-  retract running requests and queue the rest.
-- The other limits still apply first. Throughput only: no stage identity
-  changes. A request record names the budget `kv_tokens` under `in_flight`.
+- **Capacity.** `max_total_num_tokens` from `/get_server_info` once the
+  engine is ready, times its data-parallel ranks. The launch prints
+  `KV: <tokens> x <replicas>`. vLLM, external endpoints and an engine that
+  does not report it get none.
+- **Size.** `n × min(context, max_tokens + 4096)`, a whole context per
+  sequence when `max_tokens` is unset. One `n: 8` request holds what eight
+  `n: 1` ones do; a 1024-token request holds 5120.
+- **Order.** First come, first served, after the other limits. A request
+  waits before it is sent, so no client timeout runs meanwhile. One larger
+  than the whole pool runs alone.
+- Throughput only: no stage identity changes. Request records show the
+  budget as `kv_tokens` under `in_flight`.

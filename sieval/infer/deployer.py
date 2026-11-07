@@ -815,13 +815,14 @@ _KV_FACTS_TIMEOUT = 10.0
 
 
 async def kv_facts(backend: str, endpoint: str) -> ServingFacts:
-    """What a ready engine at *endpoint* holds: KV tokens per replica, its
-    context window and how many replicas serve behind it.
+    """The KV tokens per replica, context window and replica count a ready
+    SGLang engine reports at ``/get_server_info``.
 
-    SGLang only, read from ``/get_server_info``: ``max_total_num_tokens`` is
-    the KV pool the scheduler sized after loading, a measurement rather than
-    an estimate. An engine that does not answer gives no facts, and admission
-    falls back to the estimate the plan was sized with.
+    ``max_total_num_tokens`` is the pool the scheduler sized after loading.
+    Every data-parallel rank, with or without DP attention, runs its own
+    scheduler and pool. The window is ``context_length`` when it was passed,
+    else ``max_req_input_len``, the longest input the engine accepts. Without
+    a pool and a window there are no facts, so no KV admission.
     """
     if backend != "sglang":
         return ServingFacts()
@@ -846,18 +847,15 @@ async def kv_facts(backend: str, endpoint: str) -> ServingFacts:
         )
 
     capacity = _positive(info.get("max_total_num_tokens"))
-    if capacity is None:
-        states = info.get("internal_states")
-        if isinstance(states, list) and states and isinstance(states[0], Mapping):
-            capacity = _positive(states[0].get("max_total_num_tokens"))
-    dp = _positive(info.get("dp_size")) or 1
-    if info.get("enable_dp_attention") is True:
-        # One scheduler sizes one pool for every attention rank.
-        dp = 1
+    context = _positive(info.get("context_length")) or _positive(
+        info.get("max_req_input_len")
+    )
+    if capacity is None or context is None:
+        return ServingFacts()
     return ServingFacts(
         kv_capacity_tokens=capacity,
-        context_tokens=_positive(info.get("context_length")),
-        replicas=dp,
+        context_tokens=context,
+        replicas=_positive(info.get("dp_size")) or 1,
     )
 
 

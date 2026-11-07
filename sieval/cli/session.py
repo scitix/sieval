@@ -1253,13 +1253,8 @@ def _default_client_timeout(deployment: Deployment | None) -> httpx.Timeout:
 
 
 def _kv_token_budget(deployment: Deployment) -> TokenBudget | None:
-    """The KV admission for an engine ``sieval run`` launched, when it said
-    what it holds; ``None`` otherwise, or when a ``concurrency_limit`` is set.
-
-    The engine's measured KV pool, times its replicas, is the capacity; each
-    request reserves ``n`` sequences of its ``max_tokens`` plus the prompt
-    headroom serving sizes windows with, capped at the context.
-    """
+    """KV admission for an engine ``sieval run`` launched that reported
+    its pool; ``None`` otherwise."""
     facts = deployment.facts
     if (
         deployment.plan is None
