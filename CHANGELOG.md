@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **An engine `sieval run` launches admits requests by the KV cache they may hold.** Each request reserves `n × min(context, max_tokens + 4096)` tokens of the engine's KV pool, which SGLang reports once ready (`max_total_num_tokens`, times data-parallel replicas), and waits before it is sent until that fits, first come first served. Per-task `concurrency_limits` summed with no engine-wide bound before: on the board above, 124–148 requests and 640 sequences went to an engine whose cache holds 72 full-context sequences. A root `concurrency_limit` keeps its fixed cap instead; vLLM and external endpoints are unchanged. Throughput only; no stage identity changes.
+
 ### Fixed
 
 - **A request's `timeout` bounds the client.** `timeout` in a model's `args` or a task's `infer_args` now overrides the client's `read`, `write` and `pool` phases (`connect` stays), every retry included, and is no longer sent. The OpenAI SDK dialects used to send it in the body, so the 600 s `read` default still ended longer requests (51 queued samples lost on one SGLang engine at `timeout: 5400`); `sglang_native`, `vllm_native` and `anthropic_messages` refused it as an unknown option and now accept it. A non-positive or non-numeric `timeout` fails before any engine starts. The inference identity is unchanged and the request digest ignores the copy older runs sent, so an OpenAI SDK directory from 0.15.4 resumes under the same `timeout`.

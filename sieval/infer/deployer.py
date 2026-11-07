@@ -810,6 +810,57 @@ def unlaunched_deployment(
     return LocalDeployer().build_deployment(plan, handles)
 
 
+#: How long a ready engine is given to say what it holds.
+_KV_FACTS_TIMEOUT = 10.0
+
+
+async def kv_facts(backend: str, endpoint: str) -> ServingFacts:
+    """What a ready engine at *endpoint* holds: KV tokens per replica, its
+    context window and how many replicas serve behind it.
+
+    SGLang only, read from ``/get_server_info``: ``max_total_num_tokens`` is
+    the KV pool the scheduler sized after loading, a measurement rather than
+    an estimate. An engine that does not answer gives no facts, and admission
+    falls back to the estimate the plan was sized with.
+    """
+    if backend != "sglang":
+        return ServingFacts()
+    parsed = urlparse(endpoint)
+    url = urlunparse((parsed.scheme, parsed.netloc, "/get_server_info", "", "", ""))
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=_KV_FACTS_TIMEOUT)
+            response.raise_for_status()
+            info = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.debug("No KV facts from {}: {}", url, exc)
+        return ServingFacts()
+    if not isinstance(info, Mapping):
+        return ServingFacts()
+
+    def _positive(value: object) -> int | None:
+        return (
+            value
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0
+            else None
+        )
+
+    capacity = _positive(info.get("max_total_num_tokens"))
+    if capacity is None:
+        states = info.get("internal_states")
+        if isinstance(states, list) and states and isinstance(states[0], Mapping):
+            capacity = _positive(states[0].get("max_total_num_tokens"))
+    dp = _positive(info.get("dp_size")) or 1
+    if info.get("enable_dp_attention") is True:
+        # One scheduler sizes one pool for every attention rank.
+        dp = 1
+    return ServingFacts(
+        kv_capacity_tokens=capacity,
+        context_tokens=_positive(info.get("context_length")),
+        replicas=dp,
+    )
+
+
 def command_endpoint(cmd: BackendCommand) -> str | None:
     """The OpenAI-compatible endpoint *cmd* serves once launched, from its
     health URL; ``None`` without one."""

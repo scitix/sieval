@@ -1715,3 +1715,68 @@ class TestWatch:
         handle = await deployer._launch_one(cmd, log_file=tmp_path / "x.log")
         process = deployer._processes[handle.handle_id]
         assert process.wait(timeout=10) == 0
+
+
+class TestKvFacts:
+    """What a ready SGLang engine says it holds."""
+
+    @staticmethod
+    async def _facts(payload: object, status: int = 200, backend: str = "sglang"):
+        from unittest.mock import patch as _patch
+
+        import httpx as _httpx
+
+        from sieval.infer.deployer import kv_facts
+
+        seen: list[str] = []
+
+        def handler(request: _httpx.Request) -> _httpx.Response:
+            seen.append(str(request.url))
+            return _httpx.Response(status, json=payload)
+
+        real = _httpx.AsyncClient
+
+        def client(*_args, **_kwargs):
+            return real(transport=_httpx.MockTransport(handler))
+
+        with _patch("sieval.infer.deployer.httpx.AsyncClient", client):
+            facts = await kv_facts(backend, "http://127.0.0.1:30000/v1")
+        return facts, seen
+
+    @pytest.mark.anyio
+    async def test_reads_the_kv_pool_context_and_replicas(self) -> None:
+        facts, seen = await self._facts(
+            {"max_total_num_tokens": 2266113, "context_length": 32768, "dp_size": 2}
+        )
+        assert seen == ["http://127.0.0.1:30000/get_server_info"]
+        assert (facts.kv_capacity_tokens, facts.context_tokens, facts.replicas) == (
+            2266113,
+            32768,
+            2,
+        )
+
+    @pytest.mark.anyio
+    async def test_dp_attention_shares_one_pool(self) -> None:
+        facts, _ = await self._facts(
+            {
+                "internal_states": [{"max_total_num_tokens": 100}],
+                "context_length": 10,
+                "dp_size": 4,
+                "enable_dp_attention": True,
+            }
+        )
+        assert (facts.kv_capacity_tokens, facts.replicas) == (100, 1)
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("payload", "status"),
+        [({}, 200), ({"max_total_num_tokens": 5}, 500), ([], 200)],
+    )
+    async def test_no_answer_gives_no_facts(self, payload: object, status: int) -> None:
+        facts, _ = await self._facts(payload, status)
+        assert facts.kv_capacity_tokens is None
+
+    @pytest.mark.anyio
+    async def test_other_backends_are_not_asked(self) -> None:
+        facts, seen = await self._facts({}, backend="vllm")
+        assert seen == [] and facts.kv_capacity_tokens is None

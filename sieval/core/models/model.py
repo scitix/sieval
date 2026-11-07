@@ -719,7 +719,15 @@ class Model:
             n=projected.sampling.n,
             limiters=self._request_log_limiters(),
         ) as call:
-            async with self._pool.acquire(self._limiter):
+            budget = self._pool.token_budget
+            async with self._pool.acquire(
+                self._limiter,
+                tokens=(
+                    budget.weight(projected.sampling.n, projected.sampling.max_tokens)
+                    if budget is not None
+                    else None
+                ),
+            ):
                 if call is not None:
                     call.admitted()
                 response = await self._dialect.execute(prepared)
@@ -751,6 +759,10 @@ class Model:
             limiters["model_shared"] = shared
         if self._limiter is not None and self._limiter is not shared:
             limiters["model_local"] = self._limiter
+        budget = self._pool.token_budget
+        if budget is not None:
+            # Read as a limiter: tokens held against the KV room.
+            limiters["kv_tokens"] = cast(anyio.CapacityLimiter, budget)
         return limiters
 
     def _run_request_checks(

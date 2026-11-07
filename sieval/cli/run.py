@@ -106,6 +106,7 @@ from sieval.infer.deployer import (
     ENGINE_POLL_INTERVAL,
     EngineExit,
     LocalDeployer,
+    kv_facts,
     unlaunched_deployment,
 )
 from sieval.infer.introspect import (
@@ -1732,7 +1733,25 @@ async def _launch(
             env.gpu_model or "?",
             env.gpu_count,
         )
-    return deployer.build_deployment(plan, new_handles)
+    deployment = deployer.build_deployment(plan, new_handles)
+    facts = await kv_facts(plan.backend, deployment.api_base)
+    if facts.kv_capacity_tokens is None:
+        return deployment
+    log_user(
+        "  KV: {} tokens x {} replica(s), context {}",
+        facts.kv_capacity_tokens,
+        facts.replicas,
+        facts.context_tokens or "?",
+    )
+    return dataclasses.replace(
+        deployment,
+        facts=dataclasses.replace(
+            deployment.facts,
+            kv_capacity_tokens=facts.kv_capacity_tokens,
+            context_tokens=facts.context_tokens,
+            replicas=facts.replicas,
+        ),
+    )
 
 
 def register_run_command(app: typer.Typer) -> None:
