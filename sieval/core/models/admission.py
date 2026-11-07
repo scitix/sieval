@@ -5,13 +5,15 @@ request count does not bound an engine's KV cache. Past it, the engine
 retracts running requests and queues the rest. :class:`TokenBudget` admits by
 tokens instead, before the request is sent, so no client timeout runs while
 it waits. :class:`AdaptiveTokenBudget` also holds requests back while the
-engine reports it is congested.
+engine reports it is congested. :class:`PendingTokenBudget` stands for either
+until the engine it gates is up and has said what it holds.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
 import math
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Protocol, Self
@@ -206,3 +208,38 @@ class AdaptiveTokenBudget(TokenBudget):
                 "KV admission: the engine turned congested {} time(s)", self.held_back
             )
         await self._probe.aclose()
+
+
+class PendingTokenBudget:
+    """The KV admission of an engine not up yet, resolved at its first request.
+
+    Planning binds a root to the deployment its launch will realize, before
+    the engine exists, so it knows nothing of its pool; a root started at a
+    barrier stays bound that way for the run. *resolve* reads the engine once,
+    at the first request through it, which is after the engine is up, and
+    returns the :class:`TokenBudget` to use, or ``None`` for no admission.
+    Planning sends no request, so it never resolves.
+    """
+
+    def __init__(self, resolve: Callable[[], Awaitable[TokenBudget | None]]) -> None:
+        self._resolve = resolve
+        self._lock = anyio.Lock()
+        self._done = False
+        self._budget: TokenBudget | None = None
+
+    @property
+    def resolved(self) -> TokenBudget | None:
+        """The resolved budget; ``None`` before resolution or for none."""
+        return self._budget
+
+    async def resolve(self) -> TokenBudget | None:
+        if not self._done:
+            async with self._lock:
+                if not self._done:
+                    self._budget = await self._resolve()
+                    self._done = True
+        return self._budget
+
+    async def aclose(self) -> None:
+        if isinstance(self._budget, AdaptiveTokenBudget):
+            await self._budget.aclose()

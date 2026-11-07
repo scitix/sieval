@@ -77,7 +77,11 @@ from sieval.cli.serving import (
 from sieval.core.datasets import Dataset, TFilterKey
 from sieval.core.datasets.meta import get_dataset_meta
 from sieval.core.models import ChatModel, GenModel, Model
-from sieval.core.models.admission import AdaptiveTokenBudget, TokenBudget
+from sieval.core.models.admission import (
+    AdaptiveTokenBudget,
+    PendingTokenBudget,
+    TokenBudget,
+)
 from sieval.core.models.capabilities import (
     CAPABILITY_KEYS,
     CapabilityIntent,
@@ -163,7 +167,7 @@ from sieval.core.utils.hf_uncached import uncached_reads
 from sieval.core.utils.paths import resolve_data_dir
 from sieval.datasets.downloaders.staged import probe_source, staged_dir
 from sieval.infer import deployment_plan_projection
-from sieval.infer.deployer import SglangLoadProbe
+from sieval.infer.deployer import SglangLoadProbe, kv_facts
 from sieval.infer.introspect import checkpoint_numerics
 from sieval.infer.params import merge_params
 from sieval.infer.topology.models import DETERMINISTIC_DEFAULT_SEED
@@ -1264,7 +1268,40 @@ def _kv_token_budget(
     """KV admission for an engine ``sieval run`` launched that reported
     its pool; ``None`` otherwise. *adaptive* also reads an SGLang engine's
     load, and is ``None`` on any other engine."""
-    facts = deployment.facts
+    return _budget_from_facts(deployment, deployment.facts, adaptive=adaptive)
+
+
+def _pending_kv_token_budget(
+    deployment: Deployment, *, root: str, adaptive: bool
+) -> PendingTokenBudget:
+    """KV admission for an SGLang engine ``sieval run`` launches later.
+
+    Planning binds the root before its engine exists, and a root started at a
+    barrier stays bound so for the run; the engine's pool is read at the first
+    request through it, once it is up. ``auto`` on an engine that reports no
+    pool and window fails that request, naming the root, rather than run
+    without the admission it asked for; a number or no limit runs without KV
+    admission, as it does on a launched engine that reports none.
+    """
+
+    async def resolve() -> TokenBudget | None:
+        facts = await kv_facts(deployment.engine.engine_id, deployment.api_base)
+        budget = _budget_from_facts(deployment, facts, adaptive=adaptive)
+        if adaptive and budget is None:
+            raise RuntimeError(
+                f"Model root '{root}': concurrency_limit '{AUTO_CONCURRENCY}' "
+                "needs the engine's KV pool and context window, and the SGLang "
+                "engine sieval run launched reported none at /get_server_info; "
+                "set a number here"
+            )
+        return budget
+
+    return PendingTokenBudget(resolve)
+
+
+def _budget_from_facts(
+    deployment: Deployment, facts: ServingFacts, *, adaptive: bool
+) -> TokenBudget | None:
     if (
         deployment.plan is None
         or facts.kv_capacity_tokens is None
@@ -1284,6 +1321,11 @@ def _kv_token_budget(
         headroom=PROMPT_HEADROOM,
         probe=SglangLoadProbe(deployment.api_base),
     )
+
+
+def _launches_sglang(deployment: Deployment) -> bool:
+    """Whether *deployment* is an SGLang engine ``sieval run`` launches."""
+    return deployment.plan is not None and deployment.engine.engine_id == "sglang"
 
 
 def _client_credential(
@@ -1770,6 +1812,9 @@ class EvalSession:
         # deployment its launch will realize: up by the time a stage calls it.
         self._unlaunched_roots = frozenset(unlaunched) - deferred_roots
         self._launched_roots = frozenset(realized_deployment_map) | deferred_roots
+        # Bound to a deployment no engine realized yet: its KV pool is read
+        # at the first request through it (`_pending_kv_token_budget`).
+        self._not_up_roots = frozenset(unlaunched)
         self._realized_deployments = {**realized_deployment_map, **unlaunched}
         for root_name, deployment in self._realized_deployments.items():
             if not isinstance(root_name, str) or not root_name:
@@ -4166,6 +4211,13 @@ class EvalSession:
         args.pop("extra", None)
         return args, extra
 
+    def _not_up_yet(self, root_key: str) -> bool:
+        """Whether the engine of root deployment *root_key* is not up while
+        this session binds it: planning before any launch, or a root started
+        at a barrier. An engine up already has been read for its KV pool."""
+        name = root_key.removeprefix("model:")
+        return name in getattr(self, "_not_up_roots", frozenset())
+
     def _create_owned_pool(
         self,
         root_key: str,
@@ -4223,17 +4275,26 @@ class EvalSession:
             self._root_token_budgets = token_budgets
         if root_key not in token_budgets:
             auto = concurrency_limit == AUTO_CONCURRENCY
-            budget = (
+            budget: TokenBudget | PendingTokenBudget | None = (
                 _kv_token_budget(deployment, adaptive=auto)
                 if auto or concurrency_limit is None
                 else None
             )
-            if auto and budget is None:
-                raise ValueError(
-                    f"Model root '{root_key}': concurrency_limit "
-                    f"'{AUTO_CONCURRENCY}' needs an SGLang engine sieval run "
-                    "launched that reported its KV pool; set a number here"
-                )
+            if budget is None and (auto or concurrency_limit is None):
+                # Not up yet (planning, or a root started at a barrier): its
+                # pool is read once it is. Prelaunch already refused `auto`
+                # on anything but an SGLang engine sieval run launches.
+                if _launches_sglang(deployment) and self._not_up_yet(root_key):
+                    budget = _pending_kv_token_budget(
+                        deployment, root=root_key, adaptive=auto
+                    )
+                elif auto:
+                    raise ValueError(
+                        f"Model root '{root_key}': concurrency_limit "
+                        f"'{AUTO_CONCURRENCY}' needs the KV pool and context "
+                        "window of an SGLang engine sieval run launched, and this "
+                        "one reported none at /get_server_info; set a number here"
+                    )
             token_budgets[root_key] = budget
         connection = CONNECTION_FACTORY_REGISTRY.create(
             connection_family,
@@ -5619,7 +5680,9 @@ class EvalSession:
         token_budgets = getattr(self, "_root_token_budgets", {})
         pools = tuple({id(pool): pool for pool in owned_pools.values()}.values())
         adaptive = [
-            b for b in token_budgets.values() if isinstance(b, AdaptiveTokenBudget)
+            b
+            for b in token_budgets.values()
+            if isinstance(b, AdaptiveTokenBudget | PendingTokenBudget)
         ]
         owned_pools.clear()
         root_shared_limiters.clear()

@@ -714,13 +714,15 @@ class Model:
         prepared = self._dialect.prepare(projected, audit)
         audit.finish(prepared)
 
+        # Resolved before the record reads the limiters, so a KV budget that
+        # waited for its engine is recorded from the first request on.
+        budget = await self._pool.admission()
         with observe_call(
             model_meta=self.meta,
             model=self._request_log_model(),
             n=projected.sampling.n,
             limiters=self._request_log_limiters(),
         ) as call:
-            budget = self._pool.token_budget
             tokens = (
                 budget.weight(projected.sampling.n, projected.sampling.max_tokens)
                 if budget is not None

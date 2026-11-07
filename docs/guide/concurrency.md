@@ -51,6 +51,9 @@ models:
             checkpoint: /models/candidate
 ```
 
-Anywhere else (external API, vLLM, an engine that did not report its KV pool,
-a derived model, the run's top level) `auto` is refused before any request is
-sent. Per-task `concurrency_limits` still apply.
+Planning (`--dry-run`, and a run before it launches) accepts `auto` for such a
+root before the engine exists; the pool is read at the first request through
+it, once it is up, which also covers a model started at a barrier. An engine
+that reports no KV pool fails that request, naming the root, before anything is
+sent. Anywhere else (external API, vLLM, a derived model, the run's top level)
+`auto` is refused before launch. Per-task `concurrency_limits` still apply.
