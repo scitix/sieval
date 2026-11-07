@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.15.6] - 2026-11-08
+
+A patch release: `concurrency_limit: auto` (#278) works again. 0.15.5's
+`--dry-run` refused it on every SGLang engine `sieval run` launches, so a
+config check that runs the dry-run could not use it, and a run refused it on a
+model started at a barrier. Such a root now reads the engine's KV pool at its
+first request (#284). A model started at a barrier also gets the KV admission
+one started up front has. Nothing is breaking. No on-disk format changes:
+`meta.json` `identity` stays schema 5, `RESULT_SCHEMA_VERSION` stays 1, and
+0.15.5 result directories resume.
+
+Upgrading from 0.15.4 straight to 0.15.6 also brings every 0.15.5 change
+below (#276–#282), including its one resume refusal: a directory resumed under
+a different `reasoning_parser` or `tool_call_parser` is refused.
+
 ### Fixed
 
 - **`concurrency_limit: auto` is accepted before its engine is up.** 0.15.5 refused it in `--dry-run` on every SGLang engine `sieval run` launches, and at run time on a model started at a barrier. Such a root now reads the engine's KV pool at its first request; if the engine reports none, `auto` fails those requests naming the root (read once, not per request).
@@ -741,6 +756,7 @@ Mainstream benchmarks registered in `sieval/meta/index.json`:
 - Project-wide preflight (`scripts/check_preflight.py`): links, deps, tasks, datasets, imports, examples, meta-index sync, version.
 - Tooling: `ruff`, `ty`, `mypy strict`, `pytest`.
 
+[0.15.6]: https://github.com/scitix/sieval/compare/v0.15.5...v0.15.6
 [0.15.5]: https://github.com/scitix/sieval/compare/v0.15.4...v0.15.5
 [0.15.4]: https://github.com/scitix/sieval/compare/v0.15.3...v0.15.4
 [0.15.3]: https://github.com/scitix/sieval/compare/v0.15.2...v0.15.3
