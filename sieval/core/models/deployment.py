@@ -21,6 +21,7 @@ from sieval.core.utils.concurrency import CompositeLimiter
 
 from ._engine_source import EngineSource
 from ._fingerprint import fingerprint_mapping
+from .admission import TokenBudget
 
 # These names select or mutate binding resources; they are never provider wire
 # extensions.  Composition layers and the legacy ``Model`` bridge share this
@@ -64,6 +65,12 @@ class ServingFacts:
     tokenizer_available: bool | None = None
     prefix_cache_enabled: bool | None = None
     max_top_logprobs: int | None = None
+    #: KV tokens per replica and the context window, as a ready engine
+    #: reports them; ``None`` when it does not.
+    kv_capacity_tokens: int | None = None
+    context_tokens: int | None = None
+    #: Data-parallel replicas, each holding ``kv_capacity_tokens``.
+    replicas: int = 1
 
 
 @dataclass(frozen=True)
@@ -345,10 +352,12 @@ class ConnectionPool[ConnectionT]:
         connection: ConnectionT,
         identity: ConnectionIdentity,
         shared_limiter: Limiter | None = None,
+        token_budget: TokenBudget | None = None,
     ) -> None:
         self._connection = connection
         self._identity = identity
         self._shared_limiter = shared_limiter
+        self._token_budget = token_budget
         self._state_lock = anyio.Lock()
         self._drained = anyio.Event()
         self._close_complete = anyio.Event()
@@ -379,6 +388,12 @@ class ConnectionPool[ConnectionT]:
         """Return the pool-owned root quota for read-only diagnostics."""
 
         return self._shared_limiter
+
+    @property
+    def token_budget(self) -> TokenBudget | None:
+        """The engine's KV admission, ``None`` when it has none."""
+
+        return self._token_budget
 
     @property
     def is_closing(self) -> bool:
@@ -424,8 +439,13 @@ class ConnectionPool[ConnectionT]:
     async def acquire(
         self,
         local_limiter: Limiter | None = None,
+        *,
+        tokens: int | None = None,
     ) -> AsyncIterator[ConnectionT]:
-        """Admit one request, enter shared/local limits, and yield the client."""
+        """Admit one request, enter shared/local limits, and yield the client.
+
+        *tokens* is reserved from :attr:`token_budget` after those limits.
+        """
 
         async with self._state_lock:
             if self._closing:
@@ -435,7 +455,14 @@ class ConnectionPool[ConnectionT]:
         try:
             if local_limiter is self._shared_limiter:
                 local_limiter = None
-            async with CompositeLimiter(self._shared_limiter, local_limiter):
+            reservation = (
+                self._token_budget.reserve(tokens)
+                if self._token_budget is not None and tokens is not None
+                else None
+            )
+            async with CompositeLimiter(
+                self._shared_limiter, local_limiter, reservation
+            ):
                 yield self._connection
         finally:
             with anyio.CancelScope(shield=True):

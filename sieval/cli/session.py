@@ -68,10 +68,16 @@ from sieval.cli.services import (
     checked_services_for,
     vendored_services_for,
 )
-from sieval.cli.serving import SessionServing, check_context_fits, plan_window
+from sieval.cli.serving import (
+    PROMPT_HEADROOM,
+    SessionServing,
+    check_context_fits,
+    plan_window,
+)
 from sieval.core.datasets import Dataset, TFilterKey
 from sieval.core.datasets.meta import get_dataset_meta
 from sieval.core.models import ChatModel, GenModel, Model
+from sieval.core.models.admission import TokenBudget
 from sieval.core.models.capabilities import (
     CAPABILITY_KEYS,
     CapabilityIntent,
@@ -1243,6 +1249,23 @@ def _default_client_timeout(deployment: Deployment | None) -> httpx.Timeout:
         MANAGED_ENGINE_REQUEST_TIMEOUT
         if deployment is not None and deployment.plan is not None
         else DEFAULT_REQUEST_TIMEOUT
+    )
+
+
+def _kv_token_budget(deployment: Deployment) -> TokenBudget | None:
+    """KV admission for an engine ``sieval run`` launched that reported
+    its pool; ``None`` otherwise."""
+    facts = deployment.facts
+    if (
+        deployment.plan is None
+        or facts.kv_capacity_tokens is None
+        or facts.context_tokens is None
+    ):
+        return None
+    return TokenBudget(
+        facts.kv_capacity_tokens * facts.replicas,
+        context=facts.context_tokens,
+        headroom=PROMPT_HEADROOM,
     )
 
 
@@ -4159,6 +4182,14 @@ class EvalSession:
                 if concurrency_limit is not None
                 else None
             )
+        token_budgets = getattr(self, "_root_token_budgets", None)
+        if token_budgets is None:
+            token_budgets = {}
+            self._root_token_budgets = token_budgets
+        if root_key not in token_budgets:
+            token_budgets[root_key] = (
+                _kv_token_budget(deployment) if concurrency_limit is None else None
+            )
         connection = CONNECTION_FACTORY_REGISTRY.create(
             connection_family,
             ConnectionRequest(
@@ -4173,7 +4204,12 @@ class EvalSession:
                 ),
             ),
         )
-        pool = ConnectionPool(connection, identity, root_limiters[root_key])
+        pool = ConnectionPool(
+            connection,
+            identity,
+            root_limiters[root_key],
+            token_budget=token_budgets[root_key],
+        )
         identity_payload = {
             "endpoint": identity.endpoint,
             "connection_family": identity.connection_family,

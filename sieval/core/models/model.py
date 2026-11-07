@@ -81,6 +81,7 @@ from .overflow import (
 )
 from .reconcile import CheckStage, DeferredCheck, RuntimeBindingPlan
 from .request_log import (
+    LimiterLoad,
     observe_call,
     request_timeout_scope,
     request_timeout_seconds,
@@ -719,7 +720,13 @@ class Model:
             n=projected.sampling.n,
             limiters=self._request_log_limiters(),
         ) as call:
-            async with self._pool.acquire(self._limiter):
+            budget = self._pool.token_budget
+            tokens = (
+                budget.weight(projected.sampling.n, projected.sampling.max_tokens)
+                if budget is not None
+                else None
+            )
+            async with self._pool.acquire(self._limiter, tokens=tokens):
                 if call is not None:
                     call.admitted()
                 response = await self._dialect.execute(prepared)
@@ -742,15 +749,18 @@ class Model:
             "deployment": self._deployment.deployment_id,
         }
 
-    def _request_log_limiters(self) -> dict[str, anyio.CapacityLimiter]:
-        """The pool's shared quota, and the model-local cap when it differs."""
+    def _request_log_limiters(self) -> dict[str, LimiterLoad]:
+        """The pool's shared quota, the model-local cap when it differs, and
+        the KV budget."""
 
         shared = self._pool.shared_limiter
-        limiters: dict[str, anyio.CapacityLimiter] = {}
+        limiters: dict[str, LimiterLoad] = {}
         if isinstance(shared, anyio.CapacityLimiter):
             limiters["model_shared"] = shared
         if self._limiter is not None and self._limiter is not shared:
             limiters["model_local"] = self._limiter
+        if self._pool.token_budget is not None:
+            limiters["kv_tokens"] = self._pool.token_budget
         return limiters
 
     def _run_request_checks(

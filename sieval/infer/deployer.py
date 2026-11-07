@@ -810,6 +810,55 @@ def unlaunched_deployment(
     return LocalDeployer().build_deployment(plan, handles)
 
 
+#: How long a ready engine is given to say what it holds.
+_KV_FACTS_TIMEOUT = 10.0
+
+
+async def kv_facts(backend: str, endpoint: str) -> ServingFacts:
+    """The KV tokens per replica, context window and replica count a ready
+    SGLang engine reports at ``/get_server_info``.
+
+    ``max_total_num_tokens`` is the pool the scheduler sized after loading.
+    Every data-parallel rank, with or without DP attention, runs its own
+    scheduler and pool. The window is ``context_length`` when it was passed,
+    else ``max_req_input_len``, the longest input the engine accepts. Without
+    a pool and a window there are no facts, so no KV admission.
+    """
+    if backend != "sglang":
+        return ServingFacts()
+    parsed = urlparse(endpoint)
+    url = urlunparse((parsed.scheme, parsed.netloc, "/get_server_info", "", "", ""))
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=_KV_FACTS_TIMEOUT)
+            response.raise_for_status()
+            info = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.debug("No KV facts from {}: {}", url, exc)
+        return ServingFacts()
+    if not isinstance(info, Mapping):
+        return ServingFacts()
+
+    def _positive(value: object) -> int | None:
+        return (
+            value
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0
+            else None
+        )
+
+    capacity = _positive(info.get("max_total_num_tokens"))
+    context = _positive(info.get("context_length")) or _positive(
+        info.get("max_req_input_len")
+    )
+    if capacity is None or context is None:
+        return ServingFacts()
+    return ServingFacts(
+        kv_capacity_tokens=capacity,
+        context_tokens=context,
+        replicas=_positive(info.get("dp_size")) or 1,
+    )
+
+
 def command_endpoint(cmd: BackendCommand) -> str | None:
     """The OpenAI-compatible endpoint *cmd* serves once launched, from its
     health URL; ``None`` without one."""

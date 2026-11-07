@@ -10667,3 +10667,54 @@ class _ParquetDataset(Dataset):
         loaded = load_dataset(name_or_path, **kwargs)
         assert isinstance(loaded, DatasetDict)
         return loaded
+
+
+class TestKvTokenBudget:
+    """A launched engine that said what it holds gets KV admission."""
+
+    @staticmethod
+    def _deployment(launched: bool = True, **facts: Any):
+        from sieval.core.models import (
+            Deployment,
+            DeploymentPlanProjection,
+            Engine,
+            ServingFacts,
+        )
+
+        return Deployment(
+            deployment_id="d" if launched else None,
+            plan=DeploymentPlanProjection("fp", "sglang") if launched else None,
+            engine=Engine("sglang"),
+            engine_source="deployment" if launched else "config",
+            api_base="http://127.0.0.1:1/v1",
+            endpoints={},
+            topology=None,
+            metrics_url=None,
+            facts=ServingFacts(**facts),
+        )
+
+    def test_capacity_is_the_measured_pool_times_replicas(self) -> None:
+        from sieval.cli.session import _kv_token_budget
+
+        budget = _kv_token_budget(
+            self._deployment(
+                kv_capacity_tokens=2266113, context_tokens=32768, replicas=2
+            )
+        )
+        assert budget is not None
+        assert budget.total_tokens == 2 * 2266113
+        # Group A: an n=8 task at max_tokens 28672 holds 8 full windows.
+        assert budget.weight(8, 28672) == 8 * 32768
+
+    def test_no_facts_or_not_launched_gives_none(self) -> None:
+        from sieval.cli.session import _kv_token_budget
+
+        assert _kv_token_budget(self._deployment()) is None
+        assert (
+            _kv_token_budget(
+                self._deployment(
+                    launched=False, kv_capacity_tokens=10, context_tokens=10
+                )
+            )
+            is None
+        )
