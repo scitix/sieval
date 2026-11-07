@@ -44,6 +44,7 @@ from sieval.core.tasks.run_meta import (
     legacy_inference_digest,
     preprocess_identity,
     preprocess_key,
+    request_key,
 )
 from sieval.core.tasks.saver import TaskSaver
 from sieval.core.tasks.task import Task
@@ -418,6 +419,52 @@ class TestInferenceIdentityFromRunner:
         runner = _runner(tmp_path)
         await runner.arun()
         return runner.root_dir
+
+
+class TestRequestKey:
+    """``inference.request_key``: recorded for readers, never compared."""
+
+    @pytest.mark.anyio
+    async def test_recorded_beside_the_digest_and_equal_across_windows(self, tmp_path):
+        task, _ = _counting_task()
+        a = TaskRunner(task, make_config(tmp_path / "a"), context_limit=32768)
+        await a.arun()
+        task, _ = _counting_task()
+        b = TaskRunner(task, make_config(tmp_path / "b"), context_limit=52096)
+        await b.arun()
+
+        first = _meta(a.root_dir)["identity"]["inference"]
+        second = _meta(b.root_dir)["identity"]["inference"]
+        assert first["request_key"].startswith("sha256:")
+        assert first["request_key"] == second["request_key"]
+        assert first["digest"] != second["digest"]
+
+    @pytest.mark.anyio
+    async def test_a_directory_without_it_resumes(self, tmp_path):
+        """A 0.15.4 directory records no key; it resumes, and gains one."""
+        task, _ = _counting_task()
+        await TaskRunner(task, make_config(tmp_path)).arun()
+        root = tmp_path / "results"
+        meta_path = root / "meta.json"
+        meta = orjson.loads(meta_path.read_bytes())
+        del meta["identity"]["inference"]["request_key"]
+        meta_path.write_bytes(orjson.dumps(meta))
+        _forget_last_sample(root)
+
+        task, model = _counting_task()
+        await TaskRunner(task, make_config(tmp_path, resume=True)).arun()
+
+        assert model.call_count == 1
+        assert "request_key" in _meta(root)["identity"]["inference"]
+
+    def test_a_reader_computes_it_without_running(self, tmp_path):
+        """What a board planner reads beside data and preprocess: no engine."""
+        task, model = _counting_task()
+        runner = TaskRunner(task, make_config(tmp_path))
+        assert runner.request_identity() == request_key(
+            model=task.model, task_args=task.inference_args()
+        )
+        assert model.call_count == 0
 
 
 def _counting_task(model_cls=MockCountingChatModel):
@@ -808,7 +855,10 @@ class TestUnavailableFingerprints:
         assert identity["schema"] == IDENTITY_SCHEMA
         current = runner._inference_identity()
         assert current is not None
-        assert identity["inference"] == {"digest": current["digest"]}
+        assert identity["inference"] == {
+            "digest": current["digest"],
+            "request_key": current["request_key"],
+        }
 
 
 class TestStatedWeights:

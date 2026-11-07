@@ -186,11 +186,14 @@ type Numerics = dict[str, JSONValue]
 class InferenceIdentity(TypedDict):
     """``digest`` covers what is asked; ``requests`` what was sent;
     ``numerics`` what the served model computes with (:func:`served_numerics`),
-    absent when none of it is known."""
+    absent when none of it is known. ``request_key`` is :func:`request_key`:
+    what the task asks, without the model's own ``extra`` or the window, for a
+    reader comparing results across models; no resume compares it."""
 
     digest: str
     requests: NotRequired[DigestedStage]
     numerics: NotRequired[Numerics]
+    request_key: NotRequired[str]
 
 
 class ServingFingerprint(TypedDict):
@@ -624,6 +627,33 @@ def model_request_args(model: Model) -> dict[str, JSONValue]:
     return args
 
 
+#: Request arguments that say how a request is sent, not what it asks.
+_REQUEST_KEY_EXCLUDED = frozenset({"timeout"})
+
+
+def request_key(*, model: Model, task_args: Mapping[str, JSONValue]) -> str:
+    """Digest what a task asks the model under test, the same for every model.
+
+    The model's resolved request arguments (``max_tokens``, ``temperature``,
+    ``top_p``, ``top_k``, chat-template switches, and the task's
+    ``infer_args`` that :meth:`Model.with_args` folds into them), its plan's
+    request defaults and dialect, and the task's own inference arguments
+    (``n``, ``stop``, ``logprobs``). Left out: the model's ``extra``, which is
+    the model's own (sequence wrappers), the window and numerics, which say how
+    it is served, the runner keys, and ``timeout``. Two runs of one task on
+    different models share it when they asked the same questions the same way;
+    the ``inference`` digest, which adds those, decides a resume.
+    """
+    args = model_request_args(model)
+    args.pop("extra", None)
+    params = args.get("params")
+    if isinstance(params, dict):
+        args["params"] = {
+            k: v for k, v in params.items() if k not in _REQUEST_KEY_EXCLUDED
+        }
+    return digest({"model_args": args, "task_args": dict(task_args)})
+
+
 def inference_identity(
     *,
     model: Model,
@@ -637,7 +667,8 @@ def inference_identity(
     *context_limit* is its context window in tokens, ``None`` when unknown.
     *numerics* is :func:`served_numerics`, kept beside the digest as values,
     since a key may be unknown. What was actually sent is folded per sample
-    into ``requests`` at the end.
+    into ``requests`` at the end. ``request_key`` (:func:`request_key`) sits
+    beside them and is not part of ``digest``.
     """
     payload = {
         "model_args": model_request_args(model),
@@ -645,7 +676,10 @@ def inference_identity(
         "runner": {key: runner_keys.get(key) for key in INFERENCE_RUNNER_KEYS},
         "context_limit": context_limit,
     }
-    identity: InferenceIdentity = {"digest": digest(payload)}
+    identity: InferenceIdentity = {
+        "digest": digest(payload),
+        "request_key": request_key(model=model, task_args=task_args),
+    }
     if numerics:
         identity["numerics"] = dict(numerics)
     return identity

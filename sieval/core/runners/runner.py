@@ -101,6 +101,7 @@ from sieval.core.tasks.run_meta import (
     prompt_of,
     read_recorded_numerics,
     request_digest,
+    request_key,
     served_numerics,
     serving_fingerprint,
     stage_code,
@@ -2893,6 +2894,22 @@ class TaskRunner:
             )
         except (TypeError, ValueError, AttributeError) as exc:
             logger.warning("Inference identity unavailable: {}", exc)
+            return None
+
+    def request_identity(self) -> str | None:
+        """This task's :func:`request_key`: what it asks the model under test,
+        without the model's ``extra``, the window or numerics.
+
+        Needs no engine and calls no model, so a reader planning a board can
+        compute it beside ``data`` and ``preprocess``. ``None`` when the
+        model's arguments cannot be read.
+        """
+        try:
+            return request_key(
+                model=self._task.model, task_args=self._task.inference_args()
+            )
+        except (TypeError, ValueError, AttributeError) as exc:
+            logger.warning("Request key unavailable: {}", exc)
             return None
 
     def _legacy_inference_digest(self) -> str | None:
