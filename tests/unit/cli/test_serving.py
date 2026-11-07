@@ -23,6 +23,7 @@ from sieval.cli.serving import (
     plan_serving_groups,
     plan_window,
     reserve_scoring_headroom,
+    served_contexts,
     task_context_needs,
     with_window,
 )
@@ -226,7 +227,7 @@ class TestPlanServingGroups:
         assert group.key == DEFAULT_GROUP
         assert group.plans == {"m": plan}
         assert group.tasks == ("a", "b")
-        assert group.windows["a"] == ServedWindow(DEFAULT_GROUP, 32768, False)
+        assert group.windows["a"] == ServedWindow(DEFAULT_GROUP, 32768)
 
     def test_need_within_native_raises_the_shared_plan(self) -> None:
         config = _config(
@@ -265,7 +266,9 @@ class TestPlanServingGroups:
 
         assert group.tasks == ("t",)
         assert plan_window(group.plans["m"]) == 40960
-        assert group.windows["t"] == ServedWindow(DEFAULT_GROUP, 40960, False)
+        assert group.windows["t"] == ServedWindow(
+            DEFAULT_GROUP, 40960, "native", 40960, 131072
+        )
 
     def test_max_tokens_at_or_above_native_gets_headroom_and_scales(self) -> None:
         config = _config(
@@ -282,7 +285,7 @@ class TestPlanServingGroups:
         assert scaled.key == "m@64096"
         assert scaled.tasks == ("at", "above")
         assert scaled.windows["at"] == ServedWindow(
-            "m@64096", 64096, True, "scaling", 131072
+            "m@64096", 64096, "scaling", 40960, 131072
         )
 
     def test_pinned_window_below_native_refuses_at_the_native_need(self) -> None:
@@ -327,7 +330,7 @@ class TestPlanServingGroups:
         *_, group = plan_serving_groups(config, {"m": _plan(32768)})
 
         assert group.windows["t"].window == window
-        assert group.windows["t"].scaled is scaled
+        assert (group.windows["t"].method != "native") is scaled
         assert plan_window(group.plans["m"]) == window
 
     def test_unknown_native_keeps_max_tokens_plus_headroom(self) -> None:
@@ -378,7 +381,7 @@ class TestPlanServingGroups:
         assert params["context_length"] == 124096
         assert params["json_model_override_args"] == scaling["json_model_override_args"]
         assert scaled.windows["long"] == ServedWindow(
-            "m@124096", 124096, True, "scaling", 131072
+            "m@124096", 124096, "scaling", 32768, 131072
         )
         assert (default.launches, scaled.launches) == ({"m"}, {"m"})
 
@@ -398,32 +401,59 @@ class TestPlanServingGroups:
         assert extrapolated.key == "m@52096"
         params = extrapolated.plans["m"].assignments[0].engine_params
         assert params == {"context_length": 52096}
-        assert extrapolated.windows["long"] == ServedWindow(
-            "m@52096", 52096, True, "extrapolate", 65536
-        )
         assert extrapolated.windows["long"].record() == {
             "window": 52096,
             "method": "extrapolate",
+            "native": 32768,
             "max": 65536,
         }
         assert default.windows["short"].record() == {
             "window": 32768,
             "method": "native",
+            "native": 32768,
+            "max": 65536,
         }
 
-    def test_a_scaled_window_records_its_method(self) -> None:
+    @pytest.mark.parametrize(
+        ("model", "engine", "method"),
+        [
+            (
+                {"infer": {"overrides": {"context_length": 65536}}},
+                {},
+                "extrapolate",
+            ),
+            ({}, {}, "extrapolate"),
+            ({}, {"json_model_override_args": '{"rope_scaling": {}}'}, "scaling"),
+        ],
+        ids=["pinned-override", "recipe-window", "recipe-scaling"],
+    )
+    def test_a_default_window_above_native_records_how_it_serves(
+        self, model: dict[str, Any], engine: dict[str, Any], method: str
+    ) -> None:
+        """A window above native the user configured, not planned, still says
+        so: unscaled unless the plan carries a model override."""
         config = _config(
-            {"long": _gen(100000)},
-            model={
-                "path": "/models/m",
-                "context": {"native": 32768, "max": 131072, "scaling": {"x": 1}},
-            },
+            {"long": _gen(48000)},
+            model={"path": "/models/m", "context": {"native": 32768}, **model},
         )
 
-        _, scaled = plan_serving_groups(config, {"m": _plan(32768)})
+        (group,) = plan_serving_groups(config, {"m": _plan(65536, **engine)})
 
-        assert scaled.windows["long"].method == "scaling"
-        assert scaled.windows["long"].max == 131072
+        assert group.windows["long"].record() == {
+            "window": 65536,
+            "method": method,
+            "native": 32768,
+        }
+
+    def test_an_unknown_window_is_not_recorded(self) -> None:
+        windows = {
+            "known": ServedWindow(DEFAULT_GROUP, 32768),
+            "unknown": ServedWindow(DEFAULT_GROUP, None),
+        }
+
+        assert served_contexts(windows) == {
+            "known": {"window": 32768, "method": "native"}
+        }
 
     def test_extrapolate_still_stops_at_max(self) -> None:
         config = _config(
@@ -451,6 +481,22 @@ class TestPlanServingGroups:
             match=r"served by vllm, and context.extrapolate is supported on sglang",
         ):
             plan_serving_groups(config, {"m": _plan(32768, backend="vllm")})
+
+    @pytest.mark.parametrize(
+        ("backend", "hint"), [("sglang", True), ("vllm", False)], ids=str
+    )
+    def test_no_scaling_suggests_extrapolate_where_it_is_supported(
+        self, backend: str, hint: bool
+    ) -> None:
+        config = _config(
+            {"long": _gen(48000)},
+            model={"path": "/models/m", "context": {"native": 32768, "max": 65536}},
+        )
+
+        with pytest.raises(ServingShortfallError, match="no scaling parameters") as exc:
+            plan_serving_groups(config, {"m": _plan(32768, backend=backend)})
+
+        assert ("extrapolate: true" in str(exc.value)) is hint
 
     def test_root_with_every_task_scaled_launches_only_in_its_group(self) -> None:
         config = _config(

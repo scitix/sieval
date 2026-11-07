@@ -572,8 +572,7 @@ class TaskRunner:
         its name. *lifecycles* are the launched models' lifecycles, recorded in
         ``runs[].serving``. *checkpoint_numerics* is the launched
         checkpoint's own ``dtype`` and ``quantization`` (:func:`served_numerics`).
-        *served_context* is the window it is served at and how, recorded in
-        ``runs[].serving.context``.
+        *served_context* is recorded as ``runs[].serving.context``.
         """
         # A malformed judge reference would leave every grader identity
         # unknown; refuse it before any work.

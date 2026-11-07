@@ -82,6 +82,7 @@ from sieval.cli.serving import (
     ServingGroup,
     SessionServing,
     plan_serving_groups,
+    served_contexts,
     served_window,
 )
 from sieval.cli.session import (
@@ -464,11 +465,7 @@ class _GroupLaunch:
                 else f"infer_plans.{self.key}.yaml"
             ),
             recipes=self.recipes,
-            windows={
-                task: window.record()
-                for task, window in self.group.windows.items()
-                if window.window is not None
-            },
+            windows=served_contexts(self.group.windows),
         )
 
 
@@ -1195,9 +1192,7 @@ def _serving_json(
         "windows": {
             task: window.window for task, window in group.group.windows.items()
         },
-        "contexts": {
-            task: window.record() for task, window in group.group.windows.items()
-        },
+        "contexts": served_contexts(group.group.windows),
         "engines": engines,
         "needs_inference": None,
     }

@@ -2372,7 +2372,12 @@ class TestServingGroups:
         (command,) = extrapolated.prepared["m"][1]
         assert command.env["SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN"] == "1"
         assert extrapolated.serving().windows == {
-            "long": {"window": 52096, "method": "extrapolate", "max": 65536}
+            "long": {
+                "window": 52096,
+                "method": "extrapolate",
+                "native": 32768,
+                "max": 65536,
+            }
         }
         assert default.serving().windows["short"]["method"] == "native"
 

@@ -13,6 +13,7 @@ from typing import Any, Literal
 
 from sieval.cli.resolution import config_task_candidates, validate_named_config_map
 from sieval.core.runners.barriers import BarrierHook
+from sieval.core.tasks.run_meta import NUMERICS_PARAMS
 from sieval.core.types import JSONValue
 from sieval.infer.config import ParamValue
 from sieval.infer.introspect import logit_shape, native_context_window
@@ -29,6 +30,10 @@ CONTEXT_PARAMS: dict[str, str] = {"sglang": "context_length", "vllm": "max_model
 SCALING_ENV: dict[str, dict[str, str]] = {
     "sglang": {"SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN": "1"}
 }
+
+#: The backends ``context.extrapolate`` is wired and measured on. vLLM's
+#: ``VLLM_ALLOW_LONG_MAX_MODEL_LEN`` path is neither.
+EXTRAPOLATE_BACKENDS = frozenset({"sglang"})
 
 #: The serving group that holds every recipe plan and every task an
 #: external endpoint serves.
@@ -88,11 +93,8 @@ class ContextNeed:
 
 @dataclass(frozen=True, slots=True)
 class ModelContext:
-    """What a root model's ``context:`` block states.
-
-    *extrapolate* serves a window above *native*, up to *max*, with no
-    scaling: the engine runs positions past the trained ones as they are.
-    """
+    """What a root model's ``context:`` block states. *extrapolate* serves a
+    window above *native*, up to *max*, with no scaling."""
 
     native: int | None = None
     max: int | None = None
@@ -100,32 +102,54 @@ class ModelContext:
     extrapolate: bool = False
 
 
-#: How a window serves a task: within the native window, beyond it with the
-#: model's ``context.scaling``, or beyond it unscaled (``context.extrapolate``).
+#: How a window serves a task: within native, or above it scaled or unscaled.
 type WindowMethod = Literal["native", "scaling", "extrapolate"]
 
 
 @dataclass(frozen=True, slots=True)
 class ServedWindow:
-    """The window a task's plan serves, reported by ``--dry-run`` and recorded
-    in ``runs[].serving.context``.
-
-    *scaled* says the window is above native, served by a group of its own;
-    *method* says how, and *max* is the model's ``context.max`` then.
-    """
+    """The window a task's plan serves; *native* and *max* as known."""
 
     group: str
     window: int | None
-    scaled: bool
     method: WindowMethod = "native"
+    native: int | None = None
     max: int | None = None
 
     def record(self) -> dict[str, JSONValue]:
-        """``runs[].serving.context``: the window, how it serves, the declared max."""
+        """``runs[].serving.context`` and ``--dry-run``'s ``contexts``."""
         out: dict[str, JSONValue] = {"window": self.window, "method": self.method}
+        if self.native is not None:
+            out["native"] = self.native
         if self.max is not None:
             out["max"] = self.max
         return out
+
+
+def served_contexts(
+    windows: Mapping[str, ServedWindow],
+) -> dict[str, dict[str, JSONValue]]:
+    """Each task's :meth:`ServedWindow.record`, for a known window only."""
+    return {
+        task: served.record()
+        for task, served in windows.items()
+        if served.window is not None
+    }
+
+
+def _window_method(
+    plan: DeploymentPlan, window: int | None, native: int | None
+) -> WindowMethod:
+    """How *plan* serves *window*: above *native*, scaled when it carries a
+    model override (``inference.numerics.model_overrides``), else unscaled."""
+    if window is None or native is None or window <= native:
+        return "native"
+    scaled = any(
+        assignment.engine_params.get(key)
+        for assignment in plan.assignments
+        for key in NUMERICS_PARAMS["model_overrides"]
+    )
+    return "scaling" if scaled else "extrapolate"
 
 
 @dataclass(frozen=True)
@@ -190,8 +214,8 @@ class SessionServing:
     *barriers* and *on_barrier* are the stage barriers the session waits at and
     the hook awaited at each (:mod:`sieval.core.runners.barriers`); *stop_after*
     replaces the config's ``runner_config.stop_after`` when set. *lifecycles*
-    are the launched models' lifecycles, recorded in ``runs[].serving``, and so
-    is each task's window (*windows*, :meth:`ServedWindow.record`).
+    (the launched models') and *windows* (:func:`served_contexts`) are
+    recorded in ``runs[].serving``.
     """
 
     tasks: frozenset[str] | None = None
@@ -434,15 +458,20 @@ def plan_serving_groups(
                 limit = f"supports at most its native {native} (no context.max)"
             elif need.tokens > context.max:
                 limit = f"supports at most {context.max} (context.max)"
-            elif context.extrapolate and plan.backend not in SCALING_ENV:
+            elif context.extrapolate and plan.backend not in EXTRAPOLATE_BACKENDS:
                 limit = (
                     f"is served by {plan.backend}, and context.extrapolate "
                     "is supported on sglang only"
                 )
             elif not context.scaling and not context.extrapolate:
+                hint = (
+                    " (or extrapolate: true)"
+                    if plan.backend in EXTRAPOLATE_BACKENDS
+                    else ""
+                )
                 limit = (
                     f"needs scaling beyond its native {native}, but context "
-                    "has no scaling parameters (or extrapolate: true)"
+                    f"has no scaling parameters{hint}"
                 )
             else:
                 scaled.append(task_name)
@@ -458,21 +487,26 @@ def plan_serving_groups(
             default_headroom[root] = headroom
         if stays or not scaled:
             launched.add(root)
+        stay_served = ServedWindow(
+            DEFAULT_GROUP,
+            default_window,
+            _window_method(default_plan, default_window, native),
+            native,
+            context.max,
+        )
         for task_name in stays:
-            windows[task_name] = ServedWindow(DEFAULT_GROUP, default_window, False)
+            windows[task_name] = stay_served
         if scaled:
             scaled_window = max(needs[task].tokens for task in scaled)
             key = f"{root}@{scaled_window}"
-            # An extrapolated window carries no scaling parameters: only the
-            # window and the engine's override of its length guard (SCALING_ENV).
             scaled_plan, headroom = with_headroom(
                 root, with_window(plan, scaled_window, context.scaling), scaled
             )
             scaled_served = ServedWindow(
                 key,
                 scaled_window,
-                True,
                 "extrapolate" if context.extrapolate else "scaling",
+                native,
                 context.max,
             )
             scaled_groups.append(

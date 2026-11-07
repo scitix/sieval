@@ -382,7 +382,12 @@ class TestInferenceIdentityFromRunner:
     async def test_the_window_method_is_recorded_but_not_identity(self, tmp_path):
         """Extrapolated and native runs at one window answer alike: the method
         labels the run, and the window alone is compared (``context_limit``)."""
-        context = {"window": 52096, "method": "extrapolate", "max": 65536}
+        context = {
+            "window": 52096,
+            "method": "extrapolate",
+            "native": 32768,
+            "max": 65536,
+        }
         task = RecordTask(dataset=MockDataset(SAMPLES), model=MockChatModel(), name="t")
         runner = TaskRunner(
             task,
