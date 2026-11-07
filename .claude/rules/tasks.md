@@ -78,6 +78,13 @@ separate registered tasks (full rationale in `sieval/tasks/CLAUDE.md`).
   shared base. The *behaviour* behind it (a timeout still scores wrong, every
   other class propagates, and the headline does not move either way) is asserted
   over the pass@k math family in `tests/unit/tasks/test_math_pass_at_k_family.py`.
+- **Call the model under test in `infer` and a `grader` in `feedback`.** `sieval
+  run` plans each engine's `lifecycle` on that (`_ROLE_STAGE` in
+  `sieval/cli/lifecycle.py`) and refuses, before launch, one that leaves either
+  down then. A grader called in `postprocess` would make that check pass a
+  lifecycle that fails every sample with a connection error. Enforced tree-wide
+  by `tests/unit/tasks/test_model_call_stage_convention.py`; a task that needs
+  another stage teaches `check_lifecycles_cover_calls` that stage in the same PR.
     - The one thing that *does* move is a published interval: it is estimated
       over the units that came back while scaled to the requested denominator, so
       dropping one shifts the bound (in either direction), and a survivor set that

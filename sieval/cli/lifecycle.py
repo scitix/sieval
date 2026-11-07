@@ -30,6 +30,17 @@ PORT_STEP = 10
 
 _LIFECYCLE_KEYS = frozenset({"from", "until"})
 
+#: Barrier stages after which no stage calls a model: ``report`` calls none,
+#: and only ``report`` follows ``feedback``.
+_NO_CALL_AFTER = frozenset({"feedback", "report"})
+
+#: The stage each role's model is called in: the model under test answers in
+#: ``inference``, a grader judges in ``feedback``. A convention of the tasks,
+#: kept true by an AST survey of every call site
+#: (``tests/unit/tasks/test_model_call_stage_convention.py``). An ``extractor``
+#: is not listed: a task may call it in ``infer`` (agieval) or a grading stage.
+_ROLE_STAGE: Mapping[str, str] = {"model": "inference", "grader": "feedback"}
+
 
 class LifecycleError(ValueError):
     """A lifecycle, or the barriers it implies, cannot run as configured."""
@@ -58,7 +69,10 @@ class Lifecycle:
 
 def parse_lifecycle(name: str, raw: object) -> Lifecycle:
     """*raw* as a :class:`Lifecycle`, refusing an unknown key or stage, ``from:
-    report`` (nothing runs after it), and ``from`` at or after ``until``."""
+    feedback`` or ``from: report`` (the barrier opens once every sample has
+    finished that stage, and no stage after it calls a model), and ``from`` at
+    or after ``until``. The first two are checked first, so ``{from: report,
+    until: feedback}`` is refused for its ``from``."""
     where = f"Model '{name}': 'lifecycle'"
     if not isinstance(raw, Mapping):
         raise LifecycleError(f"{where} must be a mapping of from/until")
@@ -79,9 +93,14 @@ def parse_lifecycle(name: str, raw: object) -> Lifecycle:
         )
     except ValueError as exc:
         raise LifecycleError(str(exc)) from None
-    if start == "report":
+    if start in _NO_CALL_AFTER:
+        # The barrier on S opens once every sample has finished S, so an
+        # engine started there would serve only the stages after it. Checked
+        # before the ordering: whatever `until` says, this `from` is the fault.
         raise LifecycleError(
-            f"{where}.from is 'report': no stage after it calls a model"
+            f"{where}.from is {start!r}: the engine would start once every sample "
+            f"has finished {start}, and no stage after it calls a model. A judge "
+            "graded in feedback starts at 'inference' or 'postprocess'"
         )
     if (
         start is not None
@@ -146,6 +165,64 @@ def check_lifecycles_launched(
         raise LifecycleError(
             "'lifecycle' applies to a model `sieval run` launches (a 'path' or "
             "'infer' without 'api_base'): " + ", ".join(stray)
+        )
+
+
+def alive_in(life: Lifecycle | None, stage: str) -> bool:
+    """Whether an engine with *life* serves while *stage* runs: started at a
+    barrier before *stage* (or at the run's start), stopped at *stage*'s own
+    barrier or later (or at the run's end).
+
+    The same rule as :func:`_alive`, asked by stage rather than by phase index:
+    :func:`plan_phases` decides who is launched, this decides who is checked,
+    so the two must agree on which side of a barrier an engine is on."""
+    if life is None:
+        return True
+    index = stage_index(stage)
+    started = life.start is None or stage_index(life.start) < index
+    serving = life.stop is None or stage_index(life.stop) >= index
+    return started and serving
+
+
+def check_lifecycles_cover_calls(
+    config: Mapping[str, Any], lifecycles: Mapping[str, Lifecycle]
+) -> None:
+    """Refuse a lifecycle that leaves a task's model down in the stage that
+    calls it: the model under test in ``inference``, a grader in ``feedback``.
+
+    Without this a sample's call reaches no engine and fails with a connection
+    error, one per sample, after the engine has been started too late or
+    stopped too early. A task without ``model:`` in a config with one model
+    runs on that model, as the session resolves it, and is checked the same.
+    """
+    if not lifecycles:
+        return
+    models = validate_named_config_map("models", config.get("models", {}))
+    tasks = validate_named_config_map("tasks", config.get("tasks", {}))
+    only = next(iter(models)) if len(models) == 1 else None
+    problems = []
+    for task_name, task in sorted(tasks.items()):
+        args = task.get("args") or {}
+        named = {"model": task.get("model") or only}
+        if isinstance(args, Mapping):
+            named["grader"] = args.get("grader")
+        for role, name in named.items():
+            if not isinstance(name, str) or name not in models:
+                continue
+            root = root_model(config, name)
+            life = lifecycles.get(root)
+            stage = _ROLE_STAGE[role]
+            if life is not None and not alive_in(life, stage):
+                what = "model under test" if role == "model" else role
+                problems.append(
+                    f"task '{task_name}' calls its {what} '{name}' in {stage}, but "
+                    f"'{root}' lifecycle {life.to_json()} has no engine then"
+                )
+    if problems:
+        raise LifecycleError(
+            "; ".join(problems)
+            + ". 'from: S' starts an engine once every sample has finished S; "
+            "'until: S' stops it then"
         )
 
 
@@ -440,7 +517,9 @@ __all__ = [
     "LifecycleFitError",
     "Phase",
     "Placement",
+    "alive_in",
     "check_iteration_barriers",
+    "check_lifecycles_cover_calls",
     "check_lifecycles_launched",
     "effective_barriers",
     "model_lifecycles",
