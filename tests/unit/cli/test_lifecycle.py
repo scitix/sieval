@@ -10,7 +10,9 @@ from sieval.cli.lifecycle import (
     LifecycleError,
     LifecycleFitError,
     Placement,
+    alive_in,
     check_iteration_barriers,
+    check_lifecycles_cover_calls,
     check_lifecycles_launched,
     effective_barriers,
     model_lifecycles,
@@ -43,6 +45,7 @@ class TestParseLifecycle:
             ({"from": "inference", "until": "preprocess"}, "is not before until"),
             ({"from": "inference", "until": "inference"}, "is not before until"),
             ({"from": "report"}, "no stage after it"),
+            ({"from": "feedback"}, "no stage after it"),
             ({"start": "inference"}, "unknown key"),
         ],
     )
@@ -79,6 +82,75 @@ class TestEffectiveBarriers:
 
     def test_none_without_stop_after_or_lifecycle(self) -> None:
         assert effective_barriers({"models": {"m": {"path": "/m"}}}) == {}
+
+
+class TestCallsCovered:
+    """A lifecycle must keep each task's model up in the stage that calls it."""
+
+    @staticmethod
+    def _config(subject: dict, judge: dict) -> dict:
+        return {
+            "models": {
+                "subject": {"path": "/s", **subject},
+                "judge": {"path": "/j", **judge},
+                "judge_alias": {"base": "judge"},
+            },
+            "tasks": {
+                "judged": {"model": "subject", "args": {"grader": "judge_alias"}}
+            },
+        }
+
+    @pytest.mark.parametrize(
+        ("life", "stage", "alive"),
+        [
+            (Lifecycle(), "inference", True),
+            (Lifecycle(None, "inference"), "inference", True),
+            (Lifecycle(None, "inference"), "feedback", False),
+            (Lifecycle("inference"), "inference", False),
+            (Lifecycle("inference"), "feedback", True),
+            (Lifecycle("postprocess"), "feedback", True),
+            (Lifecycle("inference", "postprocess"), "feedback", False),
+        ],
+    )
+    def test_alive_in(self, life: Lifecycle, stage: str, alive: bool) -> None:
+        assert alive_in(life, stage) is alive
+
+    @pytest.mark.parametrize(
+        ("subject", "judge"),
+        [
+            ({"until": "inference"}, {"from": "inference"}),
+            ({"until": "inference"}, {"from": "postprocess"}),
+            ({}, {"until": "feedback"}),
+        ],
+    )
+    def test_a_lifecycle_up_when_called_passes(
+        self, subject: dict, judge: dict
+    ) -> None:
+        config = self._config({"lifecycle": subject}, {"lifecycle": judge})
+        check_lifecycles_cover_calls(config, model_lifecycles(config))
+
+    @pytest.mark.parametrize(
+        ("subject", "judge", "message"),
+        [
+            (
+                {"until": "inference"},
+                {"from": "inference", "until": "postprocess"},
+                "calls its grader 'judge_alias' in feedback, but 'judge'",
+            ),
+            (
+                {"until": "preprocess"},
+                {"from": "preprocess"},
+                "calls its model under test 'subject' in inference",
+            ),
+            ({"from": "inference"}, {}, "model under test 'subject' in inference"),
+        ],
+    )
+    def test_a_model_down_when_called_is_refused(
+        self, subject: dict, judge: dict, message: str
+    ) -> None:
+        config = self._config({"lifecycle": subject}, {"lifecycle": judge})
+        with pytest.raises(LifecycleError, match=message):
+            check_lifecycles_cover_calls(config, model_lifecycles(config))
 
 
 class TestChecks:

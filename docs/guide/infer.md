@@ -343,6 +343,12 @@ tasks:
       grader: judge
 ```
 
+- **Up when called.** A barrier opens once every sample has finished its
+  stage, so `from: S` starts an engine after `S`. The model under test must be
+  up in `inference` and a `grader` in `feedback`; a lifecycle that leaves either
+  down then is refused before any engine starts. A judge starts at `inference`
+  or `postprocess`, never `feedback`, and `from: feedback` or `from: report` is
+  refused: nothing after them calls a model.
 - **Stopping early.** With `stop_after: inference` the judge never starts; a
   later resume starts only the judge. A `stop_after` before a model's `until`
   just stops it with the run.

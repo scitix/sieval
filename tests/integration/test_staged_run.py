@@ -421,6 +421,9 @@ class TestRuleTable:
             ({"from": "feedback", "until": "inference"}, "is not before until"),
             ({"from": "inference", "until": "inference"}, "is not before until"),
             ({"after": "inference"}, "unknown key"),
+            # Opens once every sample has graded: the judge would never be asked.
+            ({"from": "feedback"}, "no stage after it calls a model"),
+            ({"from": "inference", "until": "postprocess"}, "calls its grader"),
         ],
     )
     async def test_a_malformed_lifecycle_is_refused_before_launch(
