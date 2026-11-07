@@ -630,7 +630,8 @@ def _engine(**params) -> dict:
 
 class TestServedParsersAreIdentity:
     """A reasoning or tool-call parser changes the text a task grades, so a
-    resume under another one is refused; a directory without them resumes."""
+    resume under another one is refused, read from the plan where a directory
+    recorded none."""
 
     BF16 = {"dtype": "bfloat16"}
 
@@ -674,12 +675,12 @@ class TestServedParsersAreIdentity:
         assert model.call_count == 1
 
     @pytest.mark.anyio
-    async def test_a_directory_written_before_parsers_resumes(self, tmp_path):
+    async def test_a_directory_written_before_parsers_reads_its_plan(self, tmp_path):
         task, _ = _counting_task()
         await TaskRunner(
             task,
             make_config(tmp_path),
-            inference_recipe=_engine(tp=1),
+            inference_recipe=_engine(tp=1, reasoning_parser="qwen3"),
             checkpoint_numerics=self.BF16,
         ).arun()
         root = tmp_path / "results"
@@ -689,6 +690,15 @@ class TestServedParsersAreIdentity:
         _forget_last_sample(root)
 
         task, model = _counting_task()
+        with pytest.raises(StageResumeError, match="reasoning_parser: 'qwen3'"):
+            await TaskRunner(
+                task,
+                make_config(tmp_path, resume=True),
+                inference_recipe=_engine(tp=1),
+                checkpoint_numerics=self.BF16,
+            ).arun()
+        assert model.call_count == 0
+
         await TaskRunner(
             task,
             make_config(tmp_path, resume=True),

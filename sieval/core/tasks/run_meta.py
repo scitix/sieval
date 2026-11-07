@@ -40,9 +40,8 @@ else by ``model``.
 
 What the served model computes with is compared, though: ``inference``
 keeps ``numerics`` (:func:`served_numerics`) beside the digest, not in it,
-since a key may be unknown, and an unknown key is no difference. So is how
-the engine splits its output into the text a task grades: ``parsers``
-(:func:`served_parsers`), kept and compared the same way.
+since a key may be unknown, and an unknown key is no difference. So are
+``parsers`` (:func:`served_parsers`), which change the text a task grades.
 
 ``preprocess`` is code, not the prompts it renders: a prompt is code,
 arguments, data and the model's ``extra``, and ``extra`` reaches the request,
@@ -185,11 +184,11 @@ class DigestedStage(TypedDict):
 type Numerics = dict[str, JSONValue]
 
 
-#: How an engine splits what the model generates into the response's fields,
-#: by the ``inference.parsers`` key it sets. A reasoning parser moves the
-#: ``<think>`` span out of the text a task reads into ``reasoning``; a
-#: tool-call parser moves calls out of it into ``tool_calls``. The tokens are
-#: the same; the text a task extracts and grades is not.
+#: The engine parameters that change the text a task grades, by
+#: ``inference.parsers`` key: a reasoning parser moves ``<think>`` into
+#: ``reasoning``, a tool-call parser moves calls into ``tool_calls``. Compared
+#: by name and for every task: engines name one parser differently, and a task
+#: may send tools without declaring ``function_tools``.
 PARSER_PARAMS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         "reasoning_parser": ("reasoning_parser",),
@@ -197,17 +196,16 @@ PARSER_PARAMS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     }
 )
 
-#: How the served engine splits its output, by :data:`PARSER_PARAMS` key; a
-#: key set to ``None`` is known to be no parser.
+#: By :data:`PARSER_PARAMS` key; ``None`` is known to be no parser.
 type Parsers = dict[str, JSONValue]
 
 
 class InferenceIdentity(TypedDict):
     """``digest`` covers what is asked; ``requests`` what was sent;
-    ``numerics`` what the served model computes with (:func:`served_numerics`),
-    absent when none of it is known; ``parsers`` how the engine splits what it
-    generates (:func:`served_parsers`), likewise; ``request_key``
-    (:func:`request_key`) is for readers comparing across models."""
+    ``numerics`` what the served model computes with (:func:`served_numerics`)
+    and ``parsers`` how its output is split (:func:`served_parsers`), each
+    absent when none of it is known; ``request_key`` (:func:`request_key`) is
+    for readers comparing across models."""
 
     digest: str
     requests: NotRequired[DigestedStage]
@@ -870,6 +868,20 @@ def served_numerics(
     return out or None
 
 
+def _latest_own_recipe(meta: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The plan of *meta*'s latest run with its own model; ``None`` when that
+    run recorded no serving or served an endpoint."""
+    runs = meta.get("runs")
+    own = (
+        run
+        for run in reversed(runs if isinstance(runs, list) else [])
+        if isinstance(run, Mapping) and "model" not in run
+    )
+    serving = next(own, {}).get("serving")
+    recipe = serving.get("recipe") if isinstance(serving, Mapping) else None
+    return recipe if isinstance(recipe, Mapping) else None
+
+
 def read_recorded_numerics(
     meta: Mapping[str, Any] | None,
     checkpoint: Mapping[str, JSONValue] | None = None,
@@ -877,9 +889,8 @@ def read_recorded_numerics(
     """The numerics a recorded ``meta.json``'s inference ran with; ``None``
     when unknown.
 
-    Schema 4 recorded none: they are read from the plan of its latest run with
-    this model, resolved against this run's *checkpoint*; unknown when that
-    run recorded no serving. Schemas 1 to 3 compare the plan whole instead.
+    Schema 4 recorded none: they are read from its latest run's plan, resolved
+    against this run's *checkpoint*. Schemas 1 to 3 compare the plan whole.
     """
     block = (meta or {}).get("identity")
     if not isinstance(block, Mapping):
@@ -891,18 +902,8 @@ def read_recorded_numerics(
         return dict(numerics) if isinstance(numerics, Mapping) else None
     if schema != 4:
         return None
-    runs = cast(Mapping[str, Any], meta).get("runs")
-    own = (
-        run
-        for run in reversed(runs if isinstance(runs, list) else [])
-        if isinstance(run, Mapping) and "model" not in run
-    )
-    serving = next(own, {}).get("serving")
-    if not isinstance(serving, Mapping):
-        return None
-    recipe = serving.get("recipe")
     return served_numerics(
-        recipe if isinstance(recipe, Mapping) else None, None, checkpoint
+        _latest_own_recipe(cast(Mapping[str, Any], meta)), None, checkpoint
     )
 
 
@@ -926,11 +927,9 @@ def served_parsers(
 ) -> Parsers | None:
     """How the served engine splits its output, keyed by :data:`PARSER_PARAMS`.
 
-    A launched engine's come from every role's ``engine_params`` in *recipe*:
-    a key no role sets is known to be no parser (``None``); roles that
-    disagree give their distinct values, sorted. An endpoint's (no *recipe*)
-    are the ``parsers`` the caller *stated*; a key left out is unknown.
-    ``None`` when all are unknown.
+    A launched engine's come from its plan: a key no role sets is ``None``
+    (no parser), roles that disagree give their values, sorted. An endpoint's
+    are what *stated* says; an unstated key is unknown.
     """
     if recipe is None:
         given = (stated or {}).get("parsers")
@@ -967,14 +966,22 @@ def served_parsers(
 
 def read_recorded_parsers(meta: Mapping[str, Any] | None) -> Parsers | None:
     """The parsers a recorded ``meta.json``'s inference ran with; ``None``
-    when it recorded none (written before they were, or an endpoint that
-    stated none): unknown, so no difference."""
+    when unknown.
+
+    One that recorded none (schema 4, or 5 before 0.15.5) has them read from
+    its latest run's plan; an endpoint's stay unknown.
+    """
     block = (meta or {}).get("identity")
-    if not isinstance(block, Mapping) or block.get("schema") != IDENTITY_SCHEMA:
+    if not isinstance(block, Mapping) or block.get("schema") not in (
+        4,
+        IDENTITY_SCHEMA,
+    ):
         return None
     stage = block.get("inference")
     parsers = stage.get("parsers") if isinstance(stage, Mapping) else None
-    return dict(parsers) if isinstance(parsers, Mapping) else None
+    if isinstance(parsers, Mapping):
+        return dict(parsers)
+    return served_parsers(_latest_own_recipe(cast(Mapping[str, Any], meta)))
 
 
 def parsers_differences(

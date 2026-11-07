@@ -191,13 +191,11 @@ def _check_stated_serving(
                 f"{where}.parsers has unknown key(s) {', '.join(unknown)}; "
                 f"expected {', '.join(PARSER_PARAMS)}"
             )
-        bad = sorted(
-            k for k, v in parsers.items() if v is not None and not _is_nonempty_str(v)
-        )
-        if bad:
-            result.errors.append(
-                f"{where}.parsers {', '.join(bad)} must be a parser name or null"
-            )
+        for key in sorted(set(parsers) & set(PARSER_PARAMS)):
+            if parsers[key] is not None and not _is_nonempty_str(parsers[key]):
+                result.errors.append(
+                    f"{where}.parsers.{key} must be a parser name or null"
+                )
 
 
 def _validate_models(cfg: dict, result: ValidationResult) -> None:

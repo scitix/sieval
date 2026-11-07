@@ -330,7 +330,7 @@ class TestValidateModels:
             )
         )
         assert any(
-            "parsers reasoning_parser must be a parser name or null" in e
+            "parsers.reasoning_parser must be a parser name or null" in e
             for e in errors(
                 {"name": "x", "serving": {"parsers": {"reasoning_parser": 1}}}
             )

@@ -811,11 +811,39 @@ class TestServedParsers:
         assert parsers_differences(None, off) == []
         assert parsers_differences(on, off) == ["reasoning_parser: 'qwen3' -> None"]
 
-    def test_only_this_schema_records_them(self):
+    def test_the_recorded_block_is_read_first(self):
         inference = {"digest": "x", "parsers": {"reasoning_parser": "qwen3"}}
-        meta = {"identity": {"schema": IDENTITY_SCHEMA, "inference": inference}}
+        meta = {
+            "identity": {"schema": IDENTITY_SCHEMA, "inference": inference},
+            "runs": [{"serving": {"recipe": _plan({})}}],
+        }
         assert read_recorded_parsers(meta) == {"reasoning_parser": "qwen3"}
-        assert read_recorded_parsers({"identity": {"schema": 4}}) is None
+
+    @pytest.mark.parametrize("schema", [4, IDENTITY_SCHEMA])
+    def test_one_written_before_them_reads_its_latest_plan(self, schema):
+        meta = {
+            "identity": {"schema": schema, "inference": {"digest": "x"}},
+            "runs": [
+                {"serving": {"recipe": _plan({})}},
+                {"model": "judge", "serving": {"recipe": _plan({})}},
+                {"serving": {"recipe": _plan({"reasoning_parser": "qwen3"})}},
+            ],
+        }
+        assert read_recorded_parsers(meta) == {
+            "reasoning_parser": "qwen3",
+            "tool_call_parser": None,
+        }
+
+    def test_an_endpoint_or_an_older_schema_is_unknown(self):
+        endpoint = {
+            "identity": {"schema": IDENTITY_SCHEMA, "inference": {"digest": "x"}},
+            "runs": [{"serving": {"recipe": None}}],
+        }
+        assert read_recorded_parsers(endpoint) is None
+        no_serving = {"identity": {"schema": 4}, "runs": [{}]}
+        assert read_recorded_parsers(no_serving) is None
+        old = {"identity": {"schema": 3}, "runs": [{"serving": {"recipe": _plan({})}}]}
+        assert read_recorded_parsers(old) is None
         assert read_recorded_parsers(None) is None
 
 
