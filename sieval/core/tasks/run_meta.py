@@ -186,9 +186,8 @@ type Numerics = dict[str, JSONValue]
 class InferenceIdentity(TypedDict):
     """``digest`` covers what is asked; ``requests`` what was sent;
     ``numerics`` what the served model computes with (:func:`served_numerics`),
-    absent when none of it is known. ``request_key`` is :func:`request_key`:
-    what the task asks, without the model's own ``extra`` or the window, for a
-    reader comparing results across models; no resume compares it."""
+    absent when none of it is known; ``request_key`` (:func:`request_key`) is
+    for readers comparing across models."""
 
     digest: str
     requests: NotRequired[DigestedStage]
@@ -565,7 +564,7 @@ def request_definition(params: Mapping[Any, object]) -> dict[str, object]:
     extra = body.get("extra_body")
     if isinstance(extra, Mapping) and "timeout" in extra:
         # The OpenAI SDK dialects sent ``timeout`` here before 0.15.5.
-        trimmed = {k: v for k, v in extra.items() if k != "timeout"}
+        trimmed = {k: v for k, v in extra.items() if k not in _TRANSPORT_KEYS}
         if trimmed:
             body["extra_body"] = trimmed
         else:
@@ -627,30 +626,19 @@ def model_request_args(model: Model) -> dict[str, JSONValue]:
     return args
 
 
-#: Request arguments that say how a request is sent, not what it asks.
-_REQUEST_KEY_EXCLUDED = frozenset({"timeout"})
-
-
 def request_key(*, model: Model, task_args: Mapping[str, JSONValue]) -> str:
-    """Digest what a task asks the model under test, the same for every model.
+    """Digest what a task asks, the same for every model under one dialect.
 
-    The model's resolved request arguments (``max_tokens``, ``temperature``,
-    ``top_p``, ``top_k``, chat-template switches, and the task's
-    ``infer_args`` that :meth:`Model.with_args` folds into them), its plan's
-    request defaults and dialect, and the task's own inference arguments
-    (``n``, ``stop``, ``logprobs``). Left out: the model's ``extra``, which is
-    the model's own (sequence wrappers), the window and numerics, which say how
-    it is served, the runner keys, and ``timeout``. Two runs of one task on
-    different models share it when they asked the same questions the same way;
-    the ``inference`` digest, which adds those, decides a resume.
+    :func:`model_request_args` and the task's inference arguments, without the
+    model's ``extra`` or the transport keys a request digest also drops
+    (``timeout``, ``stream``). Unlike the ``inference`` digest it leaves out
+    the window, numerics and runner keys, so no resume compares it.
     """
     args = model_request_args(model)
     args.pop("extra", None)
     params = args.get("params")
     if isinstance(params, dict):
-        args["params"] = {
-            k: v for k, v in params.items() if k not in _REQUEST_KEY_EXCLUDED
-        }
+        args["params"] = {k: v for k, v in params.items() if k not in _TRANSPORT_KEYS}
     return digest({"model_args": args, "task_args": dict(task_args)})
 
 
@@ -667,8 +655,7 @@ def inference_identity(
     *context_limit* is its context window in tokens, ``None`` when unknown.
     *numerics* is :func:`served_numerics`, kept beside the digest as values,
     since a key may be unknown. What was actually sent is folded per sample
-    into ``requests`` at the end. ``request_key`` (:func:`request_key`) sits
-    beside them and is not part of ``digest``.
+    into ``requests`` at the end. ``request_key`` is not part of ``digest``.
     """
     payload = {
         "model_args": model_request_args(model),

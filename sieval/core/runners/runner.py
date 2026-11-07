@@ -2897,13 +2897,8 @@ class TaskRunner:
             return None
 
     def request_identity(self) -> str | None:
-        """This task's :func:`request_key`: what it asks the model under test,
-        without the model's ``extra``, the window or numerics.
-
-        Needs no engine and calls no model, so a reader planning a board can
-        compute it beside ``data`` and ``preprocess``. ``None`` when the
-        model's arguments cannot be read.
-        """
+        """This task's :func:`request_key`, computed with no engine; ``None``
+        when the model's arguments cannot be read."""
         try:
             return request_key(
                 model=self._task.model, task_args=self._task.inference_args()

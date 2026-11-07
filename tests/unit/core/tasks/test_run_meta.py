@@ -72,7 +72,7 @@ from sieval.core.tasks.run_meta import (
     validate_judge_model_ref,
     warn_unmatched_judge_refs,
 )
-from tests.conftest import MockChatModel, MockJudgeModel
+from tests.conftest import MockChatModel, MockGenModel, MockJudgeModel
 
 
 # ===================================================================
@@ -615,7 +615,7 @@ class TestRequestKey:
         )
 
     def test_it_sits_beside_the_digest_and_is_not_in_it(self):
-        """Adding the key leaves the 0.15.4 digest as it was, so directories resume."""
+        """The 0.15.4 digest is unchanged, so directories resume."""
         model = MockChatModel(temperature=0.6, max_tokens=48000)
         identity = self._identity(model)
         assert identity["request_key"] == request_key(model=model, task_args={"n": 8})
@@ -640,8 +640,6 @@ class TestRequestKey:
         assert native["request_key"] == extrapolated["request_key"]
 
     def test_the_models_extra_is_left_out(self):
-        """Sequence wrappers are the model's own; two models with different
-        ones still ask the task's questions the same way."""
         plain = MockChatModel(temperature=0.6)
         wrapped = plain.with_args(
             extra={"sequence_wrappers": {"protein": "<p>{seq}</p>"}}
@@ -659,10 +657,25 @@ class TestRequestKey:
         b._api_base = "http://elsewhere:9000/v1"
         assert self._identity(a)["request_key"] == self._identity(b)["request_key"]
 
-    def test_timeout_is_left_out(self):
+    @pytest.mark.parametrize(
+        "transport",
+        [
+            {"timeout": 5400},
+            {"stream": True},
+            {"stream_options": {"include_usage": True}},
+        ],
+    )
+    def test_transport_keys_are_left_out(self, transport):
         a = MockChatModel(temperature=0.6)
-        b = a.with_args(timeout=5400)
+        b = a.with_args(**transport)
         assert self._identity(a)["request_key"] == self._identity(b)["request_key"]
+
+    def test_the_dialect_changes_it(self):
+        chat = MockChatModel(temperature=0.6)
+        gen = MockGenModel(temperature=0.6)
+        assert chat.runtime_plan is not None and gen.runtime_plan is not None
+        assert chat.runtime_plan.dialect_id != gen.runtime_plan.dialect_id
+        assert self._identity(chat)["request_key"] != self._identity(gen)["request_key"]
 
     @pytest.mark.parametrize(
         "change",
@@ -681,11 +694,14 @@ class TestRequestKey:
             != self._identity(base.with_args(**change))["request_key"]
         )
 
-    def test_the_tasks_own_arguments_change_it(self):
+    @pytest.mark.parametrize(
+        "change", [{"n": 16}, {"n": 8, "stop": ["\n\n"]}, {"n": 8, "logprobs": 5}]
+    )
+    def test_the_tasks_own_arguments_change_it(self, change):
         model = MockChatModel(temperature=0.6)
         assert (
             self._identity(model, {"n": 8})["request_key"]
-            != self._identity(model, {"n": 16})["request_key"]
+            != self._identity(model, change)["request_key"]
         )
 
 

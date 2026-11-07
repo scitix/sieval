@@ -436,14 +436,12 @@ models:
 
 None of the three is allowed on a derived model.
 
-`identity.inference.request_key` digests what the task asks, the same for
-every model: the resolved request arguments (`max_tokens`, `temperature`,
-`top_p`, `top_k`, chat-template switches, the task's `infer_args`), the plan's
-request defaults and dialect, and the task's `n`, `stop` and `logprobs`. It
-leaves out the model's `extra`, the context limit, numerics, runner keys and
-`timeout`. Two results of one task on different models, or one model served
-two ways, share it when they asked the same questions the same way. No resume
-compares it; `digest` and `numerics` decide.
+`identity.inference.request_key` digests what the task asks: the model's
+request arguments (with the task's `infer_args`), the plan's request defaults
+and dialect, and the task's `n`, `stop` and `logprobs`. It leaves out the
+model's `extra`, the window, numerics, runner keys and transport keys
+(`timeout`, `stream`), so results of one task on different models under the
+same dialect share it. No resume compares it.
 
 Each grading stage's identity holds the code its Task method reaches, the task
 class and `grader_args()`; `feedback` also holds every judge and service.
