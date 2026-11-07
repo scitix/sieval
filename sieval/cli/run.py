@@ -54,6 +54,7 @@ from sieval.cli.lifecycle import (
     LifecycleError,
     Placement,
     check_iteration_barriers,
+    check_lifecycles_cover_calls,
     check_lifecycles_launched,
     effective_barriers,
     model_lifecycles,
@@ -575,10 +576,12 @@ def _staged_plan(
     gpu: GPUInfo | None,
 ) -> _StagedPlan:
     """Barriers, phases and placements for *config*; refuses, before launch, a
-    malformed lifecycle, one on a model the run does not launch, a barrier an
+    malformed lifecycle, one on a model the run does not launch, one that
+    leaves a task's model down in the stage that calls it, a barrier an
     iterating task cannot pass, and models alive together that do not fit."""
     lifecycles = model_lifecycles(config)
     check_lifecycles_launched(lifecycles, prepared_launches)
+    check_lifecycles_cover_calls(config, lifecycles)
     barriers = effective_barriers(config, lifecycles)
     check_iteration_barriers(config, barriers)
     stop = session_stop_after(config)

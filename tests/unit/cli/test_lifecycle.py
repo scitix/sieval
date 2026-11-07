@@ -6,11 +6,14 @@ AI-Generated Code - Claude Opus 5.5 (Anthropic)
 import pytest
 
 from sieval.cli.lifecycle import (
+    BARRIER_STAGES,
     Lifecycle,
     LifecycleError,
     LifecycleFitError,
     Placement,
+    alive_in,
     check_iteration_barriers,
+    check_lifecycles_cover_calls,
     check_lifecycles_launched,
     effective_barriers,
     model_lifecycles,
@@ -43,6 +46,10 @@ class TestParseLifecycle:
             ({"from": "inference", "until": "preprocess"}, "is not before until"),
             ({"from": "inference", "until": "inference"}, "is not before until"),
             ({"from": "report"}, "no stage after it"),
+            ({"from": "feedback"}, "no stage after it"),
+            # The `from` is the fault whatever `until` says.
+            ({"from": "report", "until": "feedback"}, "no stage after it"),
+            ({"from": "feedback", "until": "postprocess"}, "no stage after it"),
             ({"start": "inference"}, "unknown key"),
         ],
     )
@@ -79,6 +86,127 @@ class TestEffectiveBarriers:
 
     def test_none_without_stop_after_or_lifecycle(self) -> None:
         assert effective_barriers({"models": {"m": {"path": "/m"}}}) == {}
+
+
+class TestCallsCovered:
+    """A lifecycle must keep each task's model up in the stage that calls it."""
+
+    @staticmethod
+    def _config(subject: dict, judge: dict) -> dict:
+        return {
+            "models": {
+                "subject": {"path": "/s", **subject},
+                "judge": {"path": "/j", **judge},
+                "judge_alias": {"base": "judge"},
+            },
+            "tasks": {
+                "judged": {"model": "subject", "args": {"grader": "judge_alias"}}
+            },
+        }
+
+    @pytest.mark.parametrize(
+        ("life", "stage", "alive"),
+        [
+            (Lifecycle(), "inference", True),
+            (Lifecycle(None, "inference"), "inference", True),
+            (Lifecycle(None, "inference"), "feedback", False),
+            (Lifecycle("inference"), "inference", False),
+            (Lifecycle("inference"), "feedback", True),
+            (Lifecycle("postprocess"), "feedback", True),
+            (Lifecycle("inference", "postprocess"), "feedback", False),
+        ],
+    )
+    def test_alive_in(self, life: Lifecycle, stage: str, alive: bool) -> None:
+        assert alive_in(life, stage) is alive
+
+    @pytest.mark.parametrize(
+        ("subject", "judge"),
+        [
+            ({"until": "inference"}, {"from": "inference"}),
+            ({"until": "inference"}, {"from": "postprocess"}),
+            ({}, {"until": "feedback"}),
+        ],
+    )
+    def test_a_lifecycle_up_when_called_passes(
+        self, subject: dict, judge: dict
+    ) -> None:
+        config = self._config({"lifecycle": subject}, {"lifecycle": judge})
+        check_lifecycles_cover_calls(config, model_lifecycles(config))
+
+    @pytest.mark.parametrize(
+        ("subject", "judge", "message"),
+        [
+            (
+                {"until": "inference"},
+                {"from": "inference", "until": "postprocess"},
+                "calls its grader 'judge_alias' in feedback, but 'judge'",
+            ),
+            (
+                {"until": "preprocess"},
+                {"from": "preprocess"},
+                "calls its model under test 'subject' in inference",
+            ),
+            ({"from": "inference"}, {}, "model under test 'subject' in inference"),
+        ],
+    )
+    def test_a_model_down_when_called_is_refused(
+        self, subject: dict, judge: dict, message: str
+    ) -> None:
+        config = self._config({"lifecycle": subject}, {"lifecycle": judge})
+        with pytest.raises(LifecycleError, match=message):
+            check_lifecycles_cover_calls(config, model_lifecycles(config))
+
+    @pytest.mark.parametrize("task", [{}, {"model": ""}, {"args": {}}])
+    def test_the_only_model_is_the_model_under_test_when_unnamed(
+        self, task: dict
+    ) -> None:
+        # The session runs a task without `model:` on a config's only model.
+        config = {
+            "models": {"m": {"path": "/m", "lifecycle": {"from": "inference"}}},
+            "tasks": {"t": task},
+        }
+        with pytest.raises(LifecycleError, match="model under test 'm' in inference"):
+            check_lifecycles_cover_calls(config, model_lifecycles(config))
+
+    def test_an_unnamed_model_among_several_is_not_guessed(self) -> None:
+        # The session refuses this config itself; the check must not pick one.
+        config = {
+            "models": {
+                "a": {"path": "/a", "lifecycle": {"from": "inference"}},
+                "b": {"path": "/b"},
+            },
+            "tasks": {"t": {}},
+        }
+        check_lifecycles_cover_calls(config, model_lifecycles(config))
+
+    @pytest.mark.parametrize(
+        "life",
+        [
+            Lifecycle(start, stop)
+            for start in (None, "preprocess", "inference", "postprocess")
+            for stop in (None, "preprocess", "inference", "postprocess", "feedback")
+            if start is None
+            or stop is None
+            or BARRIER_STAGES.index(start) < BARRIER_STAGES.index(stop)
+        ],
+    )
+    def test_alive_in_agrees_with_the_phases_that_launch(self, life: Lifecycle) -> None:
+        # `plan_phases` decides who runs; `alive_in` who is checked. A stage
+        # runs in the phase whose bounds straddle it.
+        barriers = sorted(
+            {s for s in (life.start, life.stop) if s is not None},
+            key=BARRIER_STAGES.index,
+        )
+        phases = plan_phases(barriers, {"m": life}, ["m"])
+        for stage in BARRIER_STAGES[:-1]:
+            k = BARRIER_STAGES.index(stage)
+            (phase,) = [
+                p
+                for p in phases
+                if (p.start is None or BARRIER_STAGES.index(p.start) < k)
+                and (p.stop is None or BARRIER_STAGES.index(p.stop) >= k)
+            ]
+            assert alive_in(life, stage) is ("m" in phase.models), (life, stage)
 
 
 class TestChecks:

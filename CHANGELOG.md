@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A lifecycle that leaves a model down when it is called is refused before launch.** A barrier opens once every sample has finished its stage, so a judge `from: feedback` started only after every sample had graded: each grading call failed with a connection error, one per sample, and the engine then started for nothing. `from: feedback` (like `from: report`) is now refused, and so is any lifecycle that leaves the model under test down in `inference` or a `grader` down in `feedback`, naming the task, role and lifecycle; a task without `model:` in a one-model config is checked against that model. `--dry-run` reports it under `lifecycle`.
 - **A request's `timeout` bounds the client.** `timeout` in a model's `args` or a task's `infer_args` now overrides the client's `read`, `write` and `pool` phases (`connect` stays), every retry included, and is no longer sent. The OpenAI SDK dialects used to send it in the body, so the 600 s `read` default still ended longer requests (51 queued samples lost on one SGLang engine at `timeout: 5400`); `sglang_native`, `vllm_native` and `anthropic_messages` refused it as an unknown option and now accept it. A non-positive or non-numeric `timeout` fails before any engine starts. The inference identity is unchanged and the request digest ignores the copy older runs sent, so an OpenAI SDK directory from 0.15.4 resumes under the same `timeout`.
 
 ## [0.15.4] - 2026-11-06
