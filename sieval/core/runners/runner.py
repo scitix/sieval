@@ -97,12 +97,15 @@ from sieval.core.tasks.run_meta import (
     legacy_grader_keys,
     legacy_inference_digest,
     numerics_differences,
+    parsers_differences,
     preprocess_key,
     prompt_of,
     read_recorded_numerics,
+    read_recorded_parsers,
     request_digest,
     request_key,
     served_numerics,
+    served_parsers,
     serving_fingerprint,
     stage_code,
     stage_key,
@@ -2289,10 +2292,15 @@ class TaskRunner:
             numerics = numerics_differences(
                 self._recorded_numerics(), (current or {}).get("numerics")
             )
+            parsers = parsers_differences(
+                read_recorded_parsers(self._recorded), (current or {}).get("parsers")
+            )
             if current is None:
                 reason = "this run's inference identity is unknown"
             elif recorded == current["digest"] and numerics:
                 reason = "the served model's numerics: " + "; ".join(numerics)
+            elif recorded == current["digest"] and parsers:
+                reason = "how the engine parses its output: " + "; ".join(parsers)
             else:
                 reason = f"recorded {recorded}, now {current['digest']}"
         elif identity is None and (
@@ -2891,6 +2899,7 @@ class TaskRunner:
                     self._stated_serving,
                     self._checkpoint_numerics,
                 ),
+                parsers=served_parsers(self._inference_recipe, self._stated_serving),
             )
         except (TypeError, ValueError, AttributeError) as exc:
             logger.warning("Inference identity unavailable: {}", exc)
@@ -2934,6 +2943,8 @@ class TaskRunner:
             self._legacy_inference_digest(),
             numerics=current.get("numerics") if current is not None else None,
             recorded_numerics=self._recorded_numerics(),
+            parsers=current.get("parsers") if current is not None else None,
+            recorded_parsers=read_recorded_parsers(self._recorded),
         )
 
     def _recorded_numerics(self) -> Numerics | None:

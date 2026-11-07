@@ -40,7 +40,9 @@ else by ``model``.
 
 What the served model computes with is compared, though: ``inference``
 keeps ``numerics`` (:func:`served_numerics`) beside the digest, not in it,
-since a key may be unknown, and an unknown key is no difference.
+since a key may be unknown, and an unknown key is no difference. So is how
+the engine splits its output into the text a task grades: ``parsers``
+(:func:`served_parsers`), kept and compared the same way.
 
 ``preprocess`` is code, not the prompts it renders: a prompt is code,
 arguments, data and the model's ``extra``, and ``extra`` reaches the request,
@@ -183,15 +185,34 @@ class DigestedStage(TypedDict):
 type Numerics = dict[str, JSONValue]
 
 
+#: How an engine splits what the model generates into the response's fields,
+#: by the ``inference.parsers`` key it sets. A reasoning parser moves the
+#: ``<think>`` span out of the text a task reads into ``reasoning``; a
+#: tool-call parser moves calls out of it into ``tool_calls``. The tokens are
+#: the same; the text a task extracts and grades is not.
+PARSER_PARAMS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "reasoning_parser": ("reasoning_parser",),
+        "tool_call_parser": ("tool_call_parser",),
+    }
+)
+
+#: How the served engine splits its output, by :data:`PARSER_PARAMS` key; a
+#: key set to ``None`` is known to be no parser.
+type Parsers = dict[str, JSONValue]
+
+
 class InferenceIdentity(TypedDict):
     """``digest`` covers what is asked; ``requests`` what was sent;
     ``numerics`` what the served model computes with (:func:`served_numerics`),
-    absent when none of it is known; ``request_key`` (:func:`request_key`) is
-    for readers comparing across models."""
+    absent when none of it is known; ``parsers`` how the engine splits what it
+    generates (:func:`served_parsers`), likewise; ``request_key``
+    (:func:`request_key`) is for readers comparing across models."""
 
     digest: str
     requests: NotRequired[DigestedStage]
     numerics: NotRequired[Numerics]
+    parsers: NotRequired[Parsers]
     request_key: NotRequired[str]
 
 
@@ -219,12 +240,14 @@ class ServingFingerprint(TypedDict):
 
 
 #: What a caller may state about how an external endpoint serves the model.
-#: ``numerics`` alone is compared, as ``inference.numerics``.
+#: ``numerics`` and ``parsers`` alone are compared, as ``inference.numerics``
+#: and ``inference.parsers``.
 STATED_SERVING_KEYS: tuple[str, ...] = (
     "engine_version",
     "topology",
     "hardware",
     "numerics",
+    "parsers",
 )
 
 #: The engine parameters that change the logits, by the ``inference.numerics``
@@ -649,13 +672,15 @@ def inference_identity(
     runner_keys: Mapping[str, JSONValue],
     context_limit: int | None,
     numerics: Numerics | None = None,
+    parsers: Parsers | None = None,
 ) -> InferenceIdentity:
     """Digest what the candidate is asked, leaving out which model and how served.
 
     *context_limit* is its context window in tokens, ``None`` when unknown.
-    *numerics* is :func:`served_numerics`, kept beside the digest as values,
-    since a key may be unknown. What was actually sent is folded per sample
-    into ``requests`` at the end. ``request_key`` is not part of ``digest``.
+    *numerics* is :func:`served_numerics` and *parsers* :func:`served_parsers`,
+    kept beside the digest as values, since a key may be unknown. What was
+    actually sent is folded per sample into ``requests`` at the end.
+    ``request_key`` is not part of ``digest``.
     """
     payload = {
         "model_args": model_request_args(model),
@@ -669,6 +694,8 @@ def inference_identity(
     }
     if numerics:
         identity["numerics"] = dict(numerics)
+    if parsers:
+        identity["parsers"] = dict(parsers)
     return identity
 
 
@@ -700,6 +727,8 @@ def inference_matches(
     *,
     numerics: Numerics | None = None,
     recorded_numerics: Numerics | None = None,
+    parsers: Parsers | None = None,
+    recorded_parsers: Parsers | None = None,
 ) -> bool | None:
     """Whether a recorded ``identity`` block's ``inference`` is this run's.
 
@@ -707,7 +736,8 @@ def inference_matches(
     of a :data:`LEGACY_INFERENCE_SCHEMAS` schema. ``None`` when either digest
     is unknown. Equal digests still differ when *numerics*, this run's
     :func:`served_numerics`, and *recorded_numerics*
-    (:func:`read_recorded_numerics`) differ (:func:`numerics_differences`).
+    (:func:`read_recorded_numerics`) differ (:func:`numerics_differences`),
+    and when *parsers* and *recorded_parsers* do (:func:`parsers_differences`).
     """
     if not isinstance(recorded, Mapping):
         return None
@@ -716,7 +746,11 @@ def inference_matches(
     mine = legacy if recorded.get("schema") in LEGACY_INFERENCE_SCHEMAS else current
     if not isinstance(theirs, str) or mine is None:
         return None
-    return theirs == mine and not numerics_differences(recorded_numerics, numerics)
+    return (
+        theirs == mine
+        and not numerics_differences(recorded_numerics, numerics)
+        and not parsers_differences(recorded_parsers, parsers)
+    )
 
 
 def numerics_key(param: str) -> str | None:
@@ -882,6 +916,77 @@ def numerics_differences(
     return [
         f"{key}: {recorded[key]!r} -> {current[key]!r}"
         for key in NUMERICS_PARAMS
+        if key in recorded and key in current and recorded[key] != current[key]
+    ]
+
+
+def served_parsers(
+    recipe: Mapping[str, Any] | None,
+    stated: Mapping[str, Any] | None = None,
+) -> Parsers | None:
+    """How the served engine splits its output, keyed by :data:`PARSER_PARAMS`.
+
+    A launched engine's come from every role's ``engine_params`` in *recipe*:
+    a key no role sets is known to be no parser (``None``); roles that
+    disagree give their distinct values, sorted. An endpoint's (no *recipe*)
+    are the ``parsers`` the caller *stated*; a key left out is unknown.
+    ``None`` when all are unknown.
+    """
+    if recipe is None:
+        given = (stated or {}).get("parsers")
+        if not isinstance(given, Mapping) or not given:
+            return None
+        return {key: given[key] for key in PARSER_PARAMS if key in given} or None
+    roles = [
+        a.get("engine_params") or {}
+        for a in recipe.get("assignments") or ()
+        if isinstance(a, Mapping)
+    ]
+    if not roles:
+        return None
+    out: Parsers = {}
+    for key, names in PARSER_PARAMS.items():
+        values: dict[str, JSONValue] = {}
+        for params in roles:
+            value = next(
+                (
+                    v
+                    for p, v in params.items()
+                    if p.replace("-", "_") in names and v is not None
+                ),
+                None,
+            )
+            values[canonical_json(value)] = value
+        out[key] = (
+            next(iter(values.values()))
+            if len(values) == 1
+            else [values[text] for text in sorted(values)]
+        )
+    return out
+
+
+def read_recorded_parsers(meta: Mapping[str, Any] | None) -> Parsers | None:
+    """The parsers a recorded ``meta.json``'s inference ran with; ``None``
+    when it recorded none (written before they were, or an endpoint that
+    stated none): unknown, so no difference."""
+    block = (meta or {}).get("identity")
+    if not isinstance(block, Mapping) or block.get("schema") != IDENTITY_SCHEMA:
+        return None
+    stage = block.get("inference")
+    parsers = stage.get("parsers") if isinstance(stage, Mapping) else None
+    return dict(parsers) if isinstance(parsers, Mapping) else None
+
+
+def parsers_differences(
+    recorded: Mapping[str, Any] | None, current: Mapping[str, Any] | None
+) -> list[str]:
+    """Each parser known on both sides whose values differ, as
+    ``key: recorded -> current``."""
+    if recorded is None or current is None:
+        return []
+    return [
+        f"{key}: {recorded[key]!r} -> {current[key]!r}"
+        for key in PARSER_PARAMS
         if key in recorded and key in current and recorded[key] != current[key]
     ]
 

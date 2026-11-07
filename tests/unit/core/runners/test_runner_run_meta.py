@@ -339,7 +339,7 @@ class TestInferenceIdentityFromRunner:
     @pytest.mark.anyio
     async def test_the_recipe_is_recorded_not_digested(self, tmp_path):
         """The serving recipe is the run's serving fingerprint; only the
-        numerics it implies join the identity, beside the digest."""
+        numerics and parsers it implies join the identity, beside the digest."""
         task = RecordTask(dataset=MockDataset(SAMPLES), model=MockChatModel(), name="t")
         recipe = {"backend": "vllm", "assignments": [{"role": "full"}]}
         runner = TaskRunner(task, make_config(tmp_path / "a"), inference_recipe=recipe)
@@ -351,8 +351,13 @@ class TestInferenceIdentityFromRunner:
             "kv_cache_dtype": "auto",
             "model_overrides": None,
         }
+        assert inference.pop("parsers") == {
+            "reasoning_parser": None,
+            "tool_call_parser": None,
+        }
         assert inference == plain["identity"]["inference"]
         assert "numerics" not in plain["identity"]["inference"]
+        assert "parsers" not in plain["identity"]["inference"]
         assert meta["runs"][-1]["serving"]["recipe"] == recipe
 
     @pytest.mark.anyio
@@ -621,6 +626,76 @@ def _engine(**params) -> dict:
         "backend": "sglang",
         "assignments": [{"role": "full", "engine_params": params}],
     }
+
+
+class TestServedParsersAreIdentity:
+    """A reasoning or tool-call parser changes the text a task grades, so a
+    resume under another one is refused; a directory without them resumes."""
+
+    BF16 = {"dtype": "bfloat16"}
+
+    @pytest.mark.anyio
+    async def test_another_reasoning_parser_is_refused(self, tmp_path):
+        task, _ = _counting_task()
+        await TaskRunner(
+            task,
+            make_config(tmp_path),
+            inference_recipe=_engine(tp=1, reasoning_parser="qwen3"),
+            checkpoint_numerics=self.BF16,
+        ).arun()
+        root = tmp_path / "results"
+        assert _meta(root)["identity"]["inference"]["parsers"] == {
+            "reasoning_parser": "qwen3",
+            "tool_call_parser": None,
+        }
+        _forget_last_sample(root)
+        before = (root / "meta.json").read_bytes()
+
+        task, model = _counting_task()
+        runner = TaskRunner(
+            task,
+            make_config(tmp_path, resume=True),
+            inference_recipe=_engine(tp=1),
+            checkpoint_numerics=self.BF16,
+        )
+        with pytest.raises(
+            StageResumeError, match="parses its output: reasoning_parser: 'qwen3'"
+        ):
+            await runner.arun()
+        assert model.call_count == 0
+        assert (root / "meta.json").read_bytes() == before
+
+        await TaskRunner(
+            task,
+            make_config(tmp_path, resume=True),
+            inference_recipe=_engine(tp=2, reasoning_parser="qwen3"),
+            checkpoint_numerics=self.BF16,
+        ).arun()
+        assert model.call_count == 1
+
+    @pytest.mark.anyio
+    async def test_a_directory_written_before_parsers_resumes(self, tmp_path):
+        task, _ = _counting_task()
+        await TaskRunner(
+            task,
+            make_config(tmp_path),
+            inference_recipe=_engine(tp=1),
+            checkpoint_numerics=self.BF16,
+        ).arun()
+        root = tmp_path / "results"
+        meta = _meta(root)
+        del meta["identity"]["inference"]["parsers"]
+        (root / "meta.json").write_bytes(orjson.dumps(meta))
+        _forget_last_sample(root)
+
+        task, model = _counting_task()
+        await TaskRunner(
+            task,
+            make_config(tmp_path, resume=True),
+            inference_recipe=_engine(tp=1, reasoning_parser="qwen3"),
+            checkpoint_numerics=self.BF16,
+        ).arun()
+        assert model.call_count == 1
 
 
 class TestServedNumericsAreIdentity:

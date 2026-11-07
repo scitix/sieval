@@ -64,7 +64,9 @@ from sieval.core.tasks.run_meta import (
     prompt_of,
     read_identity,
     read_recorded_numerics,
+    read_recorded_parsers,
     served_numerics,
+    served_parsers,
     split_digests,
     stage_code,
     stage_key,
@@ -227,6 +229,8 @@ def plan_resume(
         legacy_inference,
         numerics=mine.get("numerics") if isinstance(mine, Mapping) else None,
         recorded_numerics=read_recorded_numerics(recorded_meta, checkpoint_numerics),
+        parsers=mine.get("parsers") if isinstance(mine, Mapping) else None,
+        recorded_parsers=read_recorded_parsers(recorded_meta),
     )
     stages["inference"] = "unknown" if match is None else _verdict(match)
     stages = {stage: stages[stage] for stage in STAGES}
@@ -319,6 +323,7 @@ def task_resume_plan(
             runner_keys=runner_keys,
             context_limit=context_limit,
             numerics=served_numerics(recipe, stated_serving, checkpoint_numerics),
+            parsers=served_parsers(recipe, stated_serving),
         ),
         **grading,
     }
