@@ -52,6 +52,7 @@ from sieval.core.models.dialect_registry import (
     get_dialect_spec,
 )
 from sieval.core.models.reconcile import ReconcileResult
+from sieval.core.models.request_log import request_timeout_seconds
 from sieval.core.runners import TaskRunnerConfig
 from sieval.core.runners.barriers import check_barrier_stage
 from sieval.core.tasks.consts import TaskAction
@@ -282,6 +283,10 @@ def _validate_models(cfg: dict, result: ValidationResult) -> None:
             ),
         ):
             _check_model_extra(extra, where, result)
+        if isinstance(raw_model_args, dict):
+            _check_request_timeout(
+                raw_model_args.get("timeout"), f"Model '{name}' args.timeout", result
+            )
         try:
             model_config_extra(mcfg, f"Model '{name}'")
         except ValueError as exc:
@@ -604,6 +609,11 @@ def _validate_tasks(cfg: dict, result: ValidationResult) -> None:
                 _check_model_extra(
                     infer_args.get("extra"), f"Task '{name}' infer_args.extra", result
                 )
+                _check_request_timeout(
+                    infer_args.get("timeout"),
+                    f"Task '{name}' infer_args.timeout",
+                    result,
+                )
 
 
 def _check_model_extra(extra: object, where: str, result: ValidationResult) -> None:
@@ -612,6 +622,14 @@ def _check_model_extra(extra: object, where: str, result: ValidationResult) -> N
     ``{seq}``."""
     try:
         check_extra(extra, where)
+    except ValueError as exc:
+        result.errors.append(str(exc))
+
+
+def _check_request_timeout(value: object, where: str, result: ValidationResult) -> None:
+    """Report a ``timeout`` that is not a positive number of seconds."""
+    try:
+        request_timeout_seconds(value, where)
     except ValueError as exc:
         result.errors.append(str(exc))
 

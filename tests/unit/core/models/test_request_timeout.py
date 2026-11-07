@@ -253,9 +253,9 @@ class TestModelTimeout:
         # connect is the client's either way.
         assert _phases(server.requests[1])["connect"] == 45.0
 
-    @pytest.mark.parametrize("value", [0, -1, True, "600"])
+    @pytest.mark.parametrize("value", [0, -1, True, "600", float("nan")])
     @pytest.mark.anyio
-    async def test_a_bad_timeout_is_refused_before_anything_is_sent(
+    async def test_a_bad_call_timeout_is_refused_before_anything_is_sent(
         self, value: object
     ) -> None:
         server = _Server(_sglang_reply())
@@ -264,6 +264,25 @@ class TestModelTimeout:
         with pytest.raises(ValueError, match="timeout must be a positive number"):
             await model.agenerate("hi", timeout=value)
         assert server.requests == []
+
+    @pytest.mark.parametrize("value", [0, -1, True, "5400"])
+    def test_a_bad_builder_timeout_is_refused_when_the_model_is_built(
+        self, value: object
+    ) -> None:
+        server = _Server(_sglang_reply())
+        with pytest.raises(ValueError, match="default_params.timeout must be"):
+            _sglang(server, timeout=value)
+        with pytest.raises(ValueError, match="default_params.timeout must be"):
+            _sglang(server).with_args(timeout=value)
+
+    @pytest.mark.anyio
+    async def test_a_call_timeout_of_none_falls_back_to_the_client(self) -> None:
+        server = _Server(_sglang_reply())
+        model = _sglang(server).with_args(timeout=5400)
+
+        await model.agenerate("hi", timeout=None)
+
+        assert _phases(server.requests[0])["read"] == DEFAULT_REQUEST_TIMEOUT.read
 
 
 @pytest.fixture

@@ -135,14 +135,11 @@ accepted where `max_retries` is (a root model, top level or `args`; an inline
 `grader` / `extractor`) and is never sent to the model; a derived model
 (`base:`) uses its root's.
 
-`timeout`, in a model's `args` or a task's `infer_args`, is how long one
-request may take, in seconds. It replaces the `read`, `write` and `pool`
-phases for that model's or task's requests, every retry included; `connect`
-stays the client's. A task's beats its model's. It is never sent to the
-model. It stays in the inference identity, where it always was, so a result
-directory resumes under the same `timeout` and is refused under another.
-Before 0.15.5 it was sent in the request body and did not bound the client,
-so the `read` default ended a long request.
+`timeout` (a model's `args` or a task's `infer_args`; a task's wins) is a
+per-request override of the `read`, `write` and `pool` phases below, for
+every retry. It bounds each wait inside an HTTP try, not the request's wall
+clock, and is never sent to the model. Unlike `client_timeout` it is in the
+inference identity, so a resume under another `timeout` is refused.
 
 ```yaml
 models:
@@ -161,15 +158,12 @@ models:
 | `write` | 600 | sending the request |
 | `pool` | 600 | waiting for a free connection |
 
-`timeout` set to 5400 for a task asking for 28672 tokens at `n: 8` gives
-that task's requests 5400 s to read and to wait for a connection, whatever
-the default.
-
-- An omitted phase keeps its default; an unknown phase or non-positive value
-  fails before any engine starts.
+- An omitted phase keeps its default; an unknown phase or non-positive value,
+  in `client_timeout` or `timeout`, fails before any engine starts.
 - A timed-out sample's `error_msg` names the phase, e.g.
   `Request timed out. (timeout phase: connect)`.
-- It is in no stage identity, so changing it resumes without a rerun.
+- `client_timeout` is in no stage identity, so changing it resumes without a
+  rerun.
 
 ## Generation Logprobs
 

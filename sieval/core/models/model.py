@@ -80,7 +80,11 @@ from .overflow import (
     overflow_output,
 )
 from .reconcile import CheckStage, DeferredCheck, RuntimeBindingPlan
-from .request_log import observe_call, request_timeout_scope
+from .request_log import (
+    observe_call,
+    request_timeout_scope,
+    request_timeout_seconds,
+)
 
 
 class ModelQuotaSnapshot(TypedDict):
@@ -226,14 +230,16 @@ def _validate_provenance_plan(
 
 
 def _checked_builder_defaults(values: Mapping[str, object]) -> dict[str, object]:
-    """Reject builder defaults that ``meta()`` could not persist.
+    """Reject builder defaults that ``meta()`` could not persist, or a bad
+    ``timeout``.
 
-    ``meta()`` runs once per response, so an unpersistable default would
-    otherwise raise only after a call had been billed. Values are stored
+    Either would otherwise raise only once requests start, after a call had
+    been billed or an engine launched. Values are stored
     unconverted -- the request builders need them as given.
     """
     for key, value in values.items():
         named_json_value(value, f"default_params.{key}")
+    request_timeout_seconds(values.get("timeout"), "default_params.timeout")
     return dict(values)
 
 
@@ -925,21 +931,14 @@ class Model:
         )
 
     def _request_timeout(self, kwargs: Mapping[str, object]) -> float | None:
-        """The ``timeout`` this call's arguments set, in seconds; ``None`` unset.
+        """This call's ``timeout``, which bounds the client and is never sent.
 
-        A call's own beats the model's builder default. It bounds each HTTP try
-        on the client (:func:`~sieval.core.models.request_log.request_timeout_scope`)
-        and is never sent: a provider that read a ``timeout`` field would bound
-        a different wait than the one that fails the sample.
+        A call's own beats the builder default, as every argument does, so a
+        call's ``timeout=None`` falls back to the client's phases.
         """
-        value = kwargs.get("timeout", self._kwargs.get("timeout"))
-        if value is None:
-            return None
-        if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
-            raise ValueError(
-                f"timeout must be a positive number of seconds, got {value!r}"
-            )
-        return float(value)
+        return request_timeout_seconds(
+            kwargs["timeout"] if "timeout" in kwargs else self._kwargs.get("timeout")
+        )
 
     def _build_generate_request(self, prompt: object, **kwargs: object) -> Request:
         final_kwargs = {**self._kwargs, **kwargs}

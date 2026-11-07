@@ -1111,6 +1111,45 @@ class TestValidateTasks:
         result = validate_eval_config(cfg)
         assert any(e.startswith(where) for e in result.errors), result.errors
 
+    @pytest.mark.parametrize("value", [0, -1, True, "5400", float("inf")])
+    @pytest.mark.parametrize(
+        ("placement", "where"),
+        [("model", "Model 'm' args.timeout"), ("task", "Task 't' infer_args.timeout")],
+    )
+    def test_a_bad_request_timeout_is_refused(self, value, placement, where):
+        model: dict = {"name": "m"}
+        task: dict = {"class": "X", "dataset": "d", "model": "m"}
+        if placement == "model":
+            model["args"] = {"timeout": value}
+        else:
+            task["infer_args"] = {"timeout": value}
+        cfg = {
+            "models": {"m": model},
+            "datasets": {"d": {"class": "X"}},
+            "tasks": {"t": task},
+        }
+        result = validate_eval_config(cfg)
+        assert any(
+            e.startswith(where) and "positive number of seconds" in e
+            for e in result.errors
+        ), result.errors
+
+    def test_a_positive_request_timeout_passes(self):
+        cfg = {
+            "models": {"m": {"name": "m", "args": {"timeout": 1800}}},
+            "datasets": {"d": {"class": "X"}},
+            "tasks": {
+                "t": {
+                    "class": "X",
+                    "dataset": "d",
+                    "model": "m",
+                    "infer_args": {"timeout": 5400.5},
+                }
+            },
+        }
+        result = validate_eval_config(cfg)
+        assert not any("timeout" in e for e in result.errors), result.errors
+
     def test_well_formed_sequence_wrappers_pass(self):
         cfg = {
             "models": {

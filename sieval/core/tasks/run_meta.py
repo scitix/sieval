@@ -558,8 +558,7 @@ def request_definition(params: Mapping[Any, object]) -> dict[str, object]:
     body = {k: v for k, v in source.items() if k not in _TRANSPORT_KEYS}
     extra = body.get("extra_body")
     if isinstance(extra, Mapping) and "timeout" in extra:
-        # Before 0.15.5 a ``timeout`` argument reached the body here instead of
-        # the client; it bounds the wait, never what is asked.
+        # The OpenAI SDK dialects sent ``timeout`` here before 0.15.5.
         trimmed = {k: v for k, v in extra.items() if k != "timeout"}
         if trimmed:
             body["extra_body"] = trimmed
