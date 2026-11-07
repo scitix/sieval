@@ -304,6 +304,41 @@ _STAGE: contextvars.ContextVar[StageScope | None] = contextvars.ContextVar(
 _CALL: contextvars.ContextVar[CallScope | None] = contextvars.ContextVar(
     "sieval_request_call", default=None
 )
+_REQUEST_TIMEOUT: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "sieval_request_timeout", default=None
+)
+
+
+@contextmanager
+def request_timeout_scope(seconds: float | None) -> Iterator[None]:
+    """Bound every HTTP try made inside by *seconds* (``None``: the client's).
+
+    A request's own ``timeout`` replaces the client's ``read``, ``write`` and
+    ``pool`` phases for that request; ``connect`` keeps the client's, so an
+    unroutable endpoint still fails fast. Read by :class:`RecordingAsyncClient`,
+    which every model client is, below every retry loop.
+    """
+
+    token = _REQUEST_TIMEOUT.set(seconds)
+    try:
+        yield
+    finally:
+        _REQUEST_TIMEOUT.reset(token)
+
+
+def _with_request_timeout(request: httpx.Request, seconds: float) -> None:
+    """Set *request*'s read, write and pool timeouts to *seconds*.
+
+    ``build_request`` has already put the client's phases in the request's
+    ``timeout`` extension; its ``connect`` stays. A request built without one
+    gets *seconds* for every phase.
+    """
+
+    current = request.extensions.get("timeout")
+    phases = dict(current) if isinstance(current, Mapping) else {}
+    phases.update(read=seconds, write=seconds, pool=seconds)
+    phases.setdefault("connect", seconds)
+    request.extensions = {**request.extensions, "timeout": phases}
 
 
 @contextmanager
@@ -489,6 +524,9 @@ class RecordingAsyncClient(httpx.AsyncClient):
         stream: bool = False,
         **kwargs: object,
     ) -> httpx.Response:
+        seconds = _REQUEST_TIMEOUT.get()
+        if seconds is not None:
+            _with_request_timeout(request, seconds)
         retries_taken = 0
         while True:
             remaining = self._max_retries - retries_taken

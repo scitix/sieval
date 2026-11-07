@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **A request's `timeout` bounds the client.** `timeout` in a model's `args` or a task's `infer_args` was sent in the request body (`extra_body.timeout` for the OpenAI SDK dialects) and never reached the HTTP client, so the client's 600 s `read` default ended every longer request. On a 9-task board on one 4-GPU SGLang engine asking for `timeout: 5400`, the engine's KV cache filled, about 300 requests queued, and 51 samples failed as `ReadTimeout` exactly 600 s after the queue began. `timeout` now replaces the `read`, `write` and `pool` phases of that model's or task's requests, every retry included, and is no longer sent; `connect` stays the client's, and with no `timeout` every client keeps its default. A task's `infer_args` beats its model's `args`. The inference identity is unchanged: `timeout` stays in it, and the request digest leaves out the copy older runs sent, so a 0.15.4 directory resumes under the same `timeout`.
+
 ## [0.15.4] - 2026-11-06
 
 A patch release: a PPL task and a CLP task can share one model again, since

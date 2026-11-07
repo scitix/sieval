@@ -133,8 +133,16 @@ With neither set, `openai_chat` / `openai_completions` fall back to
 `client_timeout` sets the HTTP client's timeout per phase, in seconds. It is
 accepted where `max_retries` is (a root model, top level or `args`; an inline
 `grader` / `extractor`) and is never sent to the model; a derived model
-(`base:`) uses its root's. `args.timeout` is different: it is a request
-argument, forwarded to the server.
+(`base:`) uses its root's.
+
+`timeout`, in a model's `args` or a task's `infer_args`, is how long one
+request may take, in seconds. It replaces the `read`, `write` and `pool`
+phases for that model's or task's requests, every retry included; `connect`
+stays the client's. A task's beats its model's. It is never sent to the
+model. It stays in the inference identity, where it always was, so a result
+directory resumes under the same `timeout` and is refused under another.
+Before 0.15.5 it was sent in the request body and did not bound the client,
+so the `read` default ended a long request.
 
 ```yaml
 models:
@@ -152,6 +160,10 @@ models:
 | `read` | 600 | a gap between stream chunks; the whole response when not streamed |
 | `write` | 600 | sending the request |
 | `pool` | 600 | waiting for a free connection |
+
+`timeout` set to 5400 for a task asking for 28672 tokens at `n: 8` gives
+that task's requests 5400 s to read and to wait for a connection, whatever
+the default.
 
 - An omitted phase keeps its default; an unknown phase or non-positive value
   fails before any engine starts.

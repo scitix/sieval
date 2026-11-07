@@ -289,6 +289,32 @@ class TestRequestDefinition:
         assert self._digest(chat) == self._digest(chat | {"model": "b"})
         assert self._digest(chat) != self._digest(chat | {"stream": False})
 
+    def test_a_timeout_sent_before_0_15_5_is_not_part_of_the_request(self):
+        """Older runs sent ``timeout`` in the body (``extra_body`` for the
+        OpenAI SDK); it bounds the wait, so they resume against a run that
+        no longer sends it."""
+        now = {"temperature": 0.6, "stream": False}
+        assert self._digest(now | {"timeout": 5400}) == self._digest(now)
+        assert self._digest(now | {"extra_body": {"timeout": 5400}}) == self._digest(
+            now
+        )
+        kept = now | {"extra_body": {"timeout": 5400, "top_k": 20}}
+        assert request_definition(kept) == {
+            "body": {"temperature": 0.6, "extra_body": {"top_k": 20}},
+            "stream": False,
+        }
+
+    def test_a_0_15_4_request_digest_matches_this_releases(self):
+        """What the candidate was sent folds into ``requests``; a sample
+        recorded before 0.15.5 sent ``timeout`` and digests the same."""
+        candidate = {"model": "m", "api_base": "http://e/v1"}
+        key = call_key(candidate)
+        old = [
+            {"model": candidate, "request_params": {"max_tokens": 8, "timeout": 5400}}
+        ]
+        new = [{"model": candidate, "request_params": {"max_tokens": 8}}]
+        assert request_digest(old, key) == request_digest(new, key)
+
     def test_a_flat_and_an_envelope_spelling_agree(self):
         flat = {"temperature": 0.2, "stream": False}
         envelope = {

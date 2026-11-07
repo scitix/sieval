@@ -4876,6 +4876,86 @@ tasks:
 
         assert client_factory.call_args.kwargs["timeout"] is DEFAULT_REQUEST_TIMEOUT
 
+    @pytest.mark.parametrize(
+        ("model_args", "infer_args", "expected"),
+        [
+            ("", "", None),
+            ("    args:\n      timeout: 1800\n", "", 1800.0),
+            ("", "    infer_args:\n      timeout: 5400\n", 5400.0),
+            (
+                "    args:\n      timeout: 1800\n",
+                "    infer_args:\n      timeout: 5400\n",
+                5400.0,
+            ),
+        ],
+        ids=["unset", "model", "task", "task-beats-model"],
+    )
+    @pytest.mark.anyio
+    async def test_a_configured_timeout_is_the_client_bound_of_the_task_model(
+        self,
+        tmp_path: Path,
+        model_args: str,
+        infer_args: str,
+        expected: float | None,
+    ) -> None:
+        """``timeout`` in a model's ``args`` or a task's ``infer_args`` is the
+        wait the task's requests get; unset, the client's default holds."""
+        from tests.unit.core.runners.test_runner import MockTask
+
+        seen: list[httpx.Request] = []
+
+        def engine(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(
+                200,
+                json={
+                    "text": "out",
+                    "meta_info": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "cached_tokens": 0,
+                        "finish_reason": {"type": "stop"},
+                    },
+                },
+            )
+
+        config_path = self._config(
+            tmp_path,
+            "models:\n  candidate:\n    name: org/candidate\n"
+            "    api_base: http://engine.test\n    api_key: k\n"
+            "    type: gen\n    engine: sglang\n    dialect: sglang_native\n"
+            + model_args
+            + "datasets:\n  ds:\n    class: fake.Dataset\n"
+            "tasks:\n  t:\n    class: fake.MockTask\n    dataset: ds\n"
+            "    model: candidate\n" + infer_args,
+        )
+        session = EvalSession(config_path)
+        with (
+            patch("sieval.cli.session.resolve_task_class", return_value=MockTask),
+            patch(
+                "sieval.core.models.connection_factory.httpx.AsyncHTTPTransport",
+                return_value=httpx.MockTransport(engine),
+            ),
+        ):
+            session._setup_prelaunch_reconciliation()
+            session._setup_postlaunch_reconciliation()
+            session._setup_models()
+            session._init_runner()
+            session.datasets["ds"] = MagicMock()
+            session._setup_tasks()
+
+        assert session.runner is not None
+        task_model = session.runner._runners[0]._task.model
+        await task_model.agenerate("hi")
+
+        [request] = seen
+        phases = request.extensions["timeout"]
+        assert phases["read"] == (
+            DEFAULT_REQUEST_TIMEOUT.read if expected is None else expected
+        )
+        assert phases["connect"] == DEFAULT_REQUEST_TIMEOUT.connect
+        assert "timeout" not in json.loads(request.content)
+
     def test_inline_grader_client_timeout_reaches_its_client(
         self, tmp_path: Path
     ) -> None:

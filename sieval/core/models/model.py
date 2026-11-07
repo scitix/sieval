@@ -80,7 +80,7 @@ from .overflow import (
     overflow_output,
 )
 from .reconcile import CheckStage, DeferredCheck, RuntimeBindingPlan
-from .request_log import observe_call
+from .request_log import observe_call, request_timeout_scope
 
 
 class ModelQuotaSnapshot(TypedDict):
@@ -818,14 +818,19 @@ class Model:
         every call outside ``infer``, raises as before.
         """
         req = self._build_generate_request(prompt, **kwargs)
+        timeout = self._request_timeout(kwargs)
         scope = current_overflow_scope()
         if scope is None:
-            return response_to_model_output(self.meta(), await self.arun(req))
+            with request_timeout_scope(timeout):
+                response = await self.arun(req)
+            return response_to_model_output(self.meta(), response)
         slot, recorded = scope.ask(self, req)
         if recorded is not None:
             return self._answer(scope, slot, req, recorded)
         try:
-            output = response_to_model_output(self.meta(), await self.arun(req))
+            with request_timeout_scope(timeout):
+                response = await self.arun(req)
+            output = response_to_model_output(self.meta(), response)
         except Exception as exc:
             message = context_overflow_message(exc) if scope.model is self else None
             if message is None:
@@ -894,7 +899,8 @@ class Model:
             **kwargs,
         )
         try:
-            response = await self.arun(req)
+            with request_timeout_scope(self._request_timeout(kwargs)):
+                response = await self.arun(req)
         except Exception as exc:
             # Logprob tasks need the logprobs an overflow cannot give, so it
             # fails the sample, but as the deterministic outcome it is.
@@ -918,8 +924,26 @@ class Model:
             "or ChatInput"
         )
 
+    def _request_timeout(self, kwargs: Mapping[str, object]) -> float | None:
+        """The ``timeout`` this call's arguments set, in seconds; ``None`` unset.
+
+        A call's own beats the model's builder default. It bounds each HTTP try
+        on the client (:func:`~sieval.core.models.request_log.request_timeout_scope`)
+        and is never sent: a provider that read a ``timeout`` field would bound
+        a different wait than the one that fails the sample.
+        """
+        value = kwargs.get("timeout", self._kwargs.get("timeout"))
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+            raise ValueError(
+                f"timeout must be a positive number of seconds, got {value!r}"
+            )
+        return float(value)
+
     def _build_generate_request(self, prompt: object, **kwargs: object) -> Request:
         final_kwargs = {**self._kwargs, **kwargs}
+        final_kwargs.pop("timeout", None)
         return kwargs_to_request(
             self.dialect_id, self._coerce_input(prompt), final_kwargs
         )
@@ -937,6 +961,7 @@ class Model:
         if isinstance(logprobs, bool) or not isinstance(logprobs, int):
             raise TypeError("logprobs must be an integer")
         final_kwargs = {**self._kwargs, **kwargs}
+        final_kwargs.pop("timeout", None)
         # ``logprobs`` is a legacy builder alias.  The explicit alogprobs
         # arguments below are authoritative and must not leave that alias
         # active alongside input scoring.

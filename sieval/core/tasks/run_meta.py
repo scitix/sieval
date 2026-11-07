@@ -524,7 +524,7 @@ def call_key(model_meta: Mapping) -> str:
 #: Keys of a flat request body that say how it was sent, or name the model,
 #: rather than what was asked. ``stream_options`` only asks for usage. An HTTP
 #: envelope's ``method``, ``path`` and ``query`` never reach the body.
-_TRANSPORT_KEYS = frozenset({"model", "stream", "stream_options"})
+_TRANSPORT_KEYS = frozenset({"model", "stream", "stream_options", "timeout"})
 
 
 def request_definition(params: Mapping[Any, object]) -> dict[str, object]:
@@ -555,8 +555,18 @@ def request_definition(params: Mapping[Any, object]) -> dict[str, object]:
     else:
         stream = params.get("stream") is True
         source = params
+    body = {k: v for k, v in source.items() if k not in _TRANSPORT_KEYS}
+    extra = body.get("extra_body")
+    if isinstance(extra, Mapping) and "timeout" in extra:
+        # Before 0.15.5 a ``timeout`` argument reached the body here instead of
+        # the client; it bounds the wait, never what is asked.
+        trimmed = {k: v for k, v in extra.items() if k != "timeout"}
+        if trimmed:
+            body["extra_body"] = trimmed
+        else:
+            del body["extra_body"]
     return {
-        "body": {k: v for k, v in source.items() if k not in _TRANSPORT_KEYS},
+        "body": body,
         "stream": bool(stream),
     }
 
