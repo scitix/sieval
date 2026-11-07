@@ -406,6 +406,18 @@ an endpoint's numerics are only what its root model states under
 `serving.numerics`. A schema-4 `meta.json` has its numerics read from its
 latest run's plan.
 
+`identity.inference.parsers` is compared the same way: a reasoning parser
+moves `<think>` out of the text a task grades, a tool-call parser moves calls
+out of it. Keys are `reasoning_parser` and `tool_call_parser`; unset is
+`null`, no parser.
+
+A launched engine's come from its plan, recipe capabilities included; a
+`meta.json` from before 0.15.5 has them read from its latest run's plan. An
+endpoint's are what its root model states under `serving.parsers`. Names are
+compared as written, so moving a model between vLLM and SGLang (`hermes` vs
+`qwen`) is refused, and so is a tool-call parser change on a task that sends
+no tools: whether a task sends any is not known before it runs.
+
 The context limit does count, since it decides which prompts overflow. A
 launched engine's is the plan's `max_model_len` (vLLM) or `context_length`
 (SGLang), the smallest across roles; a plan with a role that pins neither
@@ -424,6 +436,7 @@ models:
       topology: {prefill: 1, decode: 3}
       hardware: 4x H200
       numerics: {dtype: bfloat16, kv_cache_dtype: fp8_e4m3}   # compared
+      parsers: {reasoning_parser: qwen3}                       # compared
 ```
 
 - `weights`: a resume compares the model under test by it when both runs
@@ -432,14 +445,14 @@ models:
 - `serving`: `engine_version`, `topology` and `hardware`, any value; never
   compared. Refused on a model `sieval run` launches, which records its own.
   So a single-node run can resume on a prefill/decode deployment of the same
-  weights. `numerics` takes the keys of the table above and is compared.
+  weights. `numerics` and `parsers` take the keys above and are compared.
 
 None of the three is allowed on a derived model.
 
 `identity.inference.request_key` digests what the task asks: the model's
 request arguments (with the task's `infer_args`), the plan's request defaults
 and dialect, and the task's `n`, `stop` and `logprobs`. It leaves out the
-model's `extra`, the window, numerics, runner keys and transport keys
+model's `extra`, the window, numerics, parsers, runner keys and transport keys
 (`timeout`, `stream`), so results of one task on different models under the
 same dialect share it. No resume compares it.
 

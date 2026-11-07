@@ -1375,6 +1375,22 @@ def test_plan_resume_rolls_back_to_the_earliest_changed_stage():
     assert plan_resume(None, same)["identity_schema"] is None
 
 
+def test_plan_resume_refuses_another_output_parser():
+    """Equal digests under another known parser refuse; a directory that
+    recorded none is read from its plan; an endpoint's unknown ones resume."""
+    inference = {"digest": "sha256:i", "parsers": {"reasoning_parser": "qwen3"}}
+    recorded = {"identity": {"schema": IDENTITY_SCHEMA, "inference": inference}}
+    off = {"inference": {**inference, "parsers": {"reasoning_parser": None}}}
+    assert plan_resume(recorded, {"inference": inference})["refused"] is None
+    assert plan_resume(recorded, off)["refused"] == "inference"
+    block = {"schema": IDENTITY_SCHEMA, "inference": {"digest": "sha256:i"}}
+    plan = {"assignments": [{"engine_params": {"reasoning_parser": "qwen3"}}]}
+    legacy = {"identity": block, "runs": [{"serving": {"recipe": plan}}]}
+    assert plan_resume(legacy, off)["refused"] == "inference"
+    endpoint = {"identity": block, "runs": [{"serving": {"recipe": None}}]}
+    assert plan_resume(endpoint, off)["refused"] is None
+
+
 def test_plan_resume_refuses_other_served_numerics():
     """Equal digests with another known numerics value refuse; a schema-4
     directory's are read from its plan, resolved against this checkpoint."""

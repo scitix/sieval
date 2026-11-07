@@ -321,6 +321,20 @@ class TestValidateModels:
             "numerics has unknown key(s) tp" in e
             for e in errors({"name": "x", "serving": {"numerics": {"tp": 2}}})
         )
+        parsers = {"reasoning_parser": "qwen3", "tool_call_parser": None}
+        assert errors({"name": "x", "serving": {"parsers": parsers}}) == []
+        assert any(
+            "parsers has unknown key(s) chat_template" in e
+            for e in errors(
+                {"name": "x", "serving": {"parsers": {"chat_template": "x"}}}
+            )
+        )
+        assert any(
+            "parsers.reasoning_parser must be a parser name or null" in e
+            for e in errors(
+                {"name": "x", "serving": {"parsers": {"reasoning_parser": 1}}}
+            )
+        )
         # An engine the run launches records its own serving.
         assert any(
             "describes an external endpoint" in e

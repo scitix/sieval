@@ -33,6 +33,7 @@ from sieval.core.tasks.run_meta import (
     IDENTITY_SCHEMA,
     JUDGE_MODEL_REF_ENV,
     NUMERICS_PARAMS,
+    PARSER_PARAMS,
     STAGES,
     JudgeIdentity,
     _file_key,
@@ -60,13 +61,16 @@ from sieval.core.tasks.run_meta import (
     numerics_differences,
     numerics_key,
     ordered_stages,
+    parsers_differences,
     prompt_of,
     read_identity,
     read_recorded_numerics,
+    read_recorded_parsers,
     request_definition,
     request_digest,
     request_key,
     served_numerics,
+    served_parsers,
     serving_fingerprint,
     stage_key,
     validate_judge_model_ref,
@@ -747,6 +751,100 @@ class TestNumericsInTheInferenceIdentity:
         assert numerics_differences({"dtype": "float16"}, launched) == [
             "dtype: 'float16' -> 'bfloat16'"
         ]
+
+
+class TestServedParsers:
+    """How the engine splits its output changes the text a task grades: it is
+    kept beside the digest and compared, an unknown one is no difference."""
+
+    KEYS = {"deterministic": False, "max_iterations": None, "max_retries": None}
+
+    def test_a_recipe_states_each_parser_and_none_is_known(self):
+        qwen3 = {"reasoning-parser": "qwen3", "tool_call_parser": "qwen", "tp": 4}
+        assert served_parsers(_plan(qwen3)) == {
+            "reasoning_parser": "qwen3",
+            "tool_call_parser": "qwen",
+        }
+        assert served_parsers(_plan({"tp": 4})) == {
+            "reasoning_parser": None,
+            "tool_call_parser": None,
+        }
+        assert served_parsers(None) is None
+        assert set(PARSER_PARAMS) == {"reasoning_parser", "tool_call_parser"}
+
+    def test_roles_that_disagree_give_every_value(self):
+        both = served_parsers(_plan({"reasoning_parser": "qwen3"}, {}))
+        assert both is not None
+        assert both["reasoning_parser"] == ["qwen3", None]
+
+    def test_an_endpoint_gives_only_what_it_states(self):
+        stated = {"parsers": {"reasoning_parser": "qwen3"}}
+        assert served_parsers(None, stated) == {"reasoning_parser": "qwen3"}
+        assert served_parsers(None, {"numerics": {"dtype": "bf16"}}) is None
+
+    def _identity(self, parsers):
+        return inference_identity(
+            model=MockChatModel(),
+            task_args={},
+            runner_keys=self.KEYS,
+            context_limit=None,
+            parsers=parsers,
+        )
+
+    def test_parsers_sit_beside_the_digest(self):
+        on = self._identity({"reasoning_parser": "qwen3"})
+        off = self._identity({"reasoning_parser": None})
+        assert on["digest"] == off["digest"]
+        assert on["parsers"] == {"reasoning_parser": "qwen3"}
+        assert "parsers" not in self._identity(None)
+
+    def test_a_known_difference_refuses_an_unknown_one_does_not(self):
+        block = {"schema": IDENTITY_SCHEMA, "inference": {"digest": "sha256:a"}}
+        on, off = {"reasoning_parser": "qwen3"}, {"reasoning_parser": None}
+        assert inference_matches(block, "sha256:a", parsers=on, recorded_parsers=on)
+        assert (
+            inference_matches(block, "sha256:a", parsers=off, recorded_parsers=on)
+            is False
+        )
+        # A directory written before parsers were recorded: unknown, resumes.
+        assert inference_matches(block, "sha256:a", parsers=off)
+        assert parsers_differences(None, off) == []
+        assert parsers_differences(on, off) == ["reasoning_parser: 'qwen3' -> None"]
+
+    def test_the_recorded_block_is_read_first(self):
+        inference = {"digest": "x", "parsers": {"reasoning_parser": "qwen3"}}
+        meta = {
+            "identity": {"schema": IDENTITY_SCHEMA, "inference": inference},
+            "runs": [{"serving": {"recipe": _plan({})}}],
+        }
+        assert read_recorded_parsers(meta) == {"reasoning_parser": "qwen3"}
+
+    @pytest.mark.parametrize("schema", [4, IDENTITY_SCHEMA])
+    def test_one_written_before_them_reads_its_latest_plan(self, schema):
+        meta = {
+            "identity": {"schema": schema, "inference": {"digest": "x"}},
+            "runs": [
+                {"serving": {"recipe": _plan({})}},
+                {"model": "judge", "serving": {"recipe": _plan({})}},
+                {"serving": {"recipe": _plan({"reasoning_parser": "qwen3"})}},
+            ],
+        }
+        assert read_recorded_parsers(meta) == {
+            "reasoning_parser": "qwen3",
+            "tool_call_parser": None,
+        }
+
+    def test_an_endpoint_or_an_older_schema_is_unknown(self):
+        endpoint = {
+            "identity": {"schema": IDENTITY_SCHEMA, "inference": {"digest": "x"}},
+            "runs": [{"serving": {"recipe": None}}],
+        }
+        assert read_recorded_parsers(endpoint) is None
+        no_serving = {"identity": {"schema": 4}, "runs": [{}]}
+        assert read_recorded_parsers(no_serving) is None
+        old = {"identity": {"schema": 3}, "runs": [{"serving": {"recipe": _plan({})}}]}
+        assert read_recorded_parsers(old) is None
+        assert read_recorded_parsers(None) is None
 
 
 class TestReadRecordedNumerics:

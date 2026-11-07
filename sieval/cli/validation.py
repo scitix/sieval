@@ -57,7 +57,11 @@ from sieval.core.runners import TaskRunnerConfig
 from sieval.core.runners.barriers import check_barrier_stage
 from sieval.core.tasks.consts import TaskAction
 from sieval.core.tasks.python_requires import MissingPythonRequirementsError
-from sieval.core.tasks.run_meta import NUMERICS_PARAMS, STATED_SERVING_KEYS
+from sieval.core.tasks.run_meta import (
+    NUMERICS_PARAMS,
+    PARSER_PARAMS,
+    STATED_SERVING_KEYS,
+)
 
 # Known top-level keys from RootConfigDict
 _ROOT_KEYS: set[str] = set(RootConfigDict.__annotations__)
@@ -177,6 +181,21 @@ def _check_stated_serving(
                 f"{where}.numerics has unknown key(s) {', '.join(unknown)}; "
                 f"expected {', '.join(NUMERICS_PARAMS)}"
             )
+    parsers = stated.get("parsers")
+    if parsers is not None and not isinstance(parsers, Mapping):
+        result.errors.append(f"{where}.parsers must be a mapping")
+    elif parsers is not None:
+        unknown = sorted(set(parsers) - set(PARSER_PARAMS))
+        if unknown:
+            result.errors.append(
+                f"{where}.parsers has unknown key(s) {', '.join(unknown)}; "
+                f"expected {', '.join(PARSER_PARAMS)}"
+            )
+        for key in sorted(set(parsers) & set(PARSER_PARAMS)):
+            if parsers[key] is not None and not _is_nonempty_str(parsers[key]):
+                result.errors.append(
+                    f"{where}.parsers.{key} must be a parser name or null"
+                )
 
 
 def _validate_models(cfg: dict, result: ValidationResult) -> None:
