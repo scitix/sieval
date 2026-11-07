@@ -8,7 +8,8 @@ loop retries -- the OpenAI SDK's, or its own copy of it for ``async_http_json``
 * :func:`observe_call` -- set by ``Model.arun`` around one model call.
 
 With either unset nothing is recorded. A record holds no credential, header or
-body, and feeds no identity, digest or ``model_calls[]``.
+body, and feeds no identity, digest or ``model_calls[]``. A third,
+:func:`request_timeout_scope`, carries a call's ``timeout`` to every try.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
@@ -304,6 +305,49 @@ _STAGE: contextvars.ContextVar[StageScope | None] = contextvars.ContextVar(
 _CALL: contextvars.ContextVar[CallScope | None] = contextvars.ContextVar(
     "sieval_request_call", default=None
 )
+_REQUEST_TIMEOUT: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "sieval_request_timeout", default=None
+)
+
+
+@contextmanager
+def request_timeout_scope(seconds: float | None) -> Iterator[None]:
+    """Give every HTTP try inside *seconds* for ``read``, ``write`` and ``pool``.
+
+    ``connect`` stays the client's, so an unroutable endpoint still fails fast.
+    ``None`` keeps the client's phases.
+    """
+
+    token = _REQUEST_TIMEOUT.set(seconds)
+    try:
+        yield
+    finally:
+        _REQUEST_TIMEOUT.reset(token)
+
+
+def request_timeout_seconds(value: object, where: str = "timeout") -> float | None:
+    """*value* as a request ``timeout`` in seconds; ``None`` when unset."""
+
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise ValueError(f"{where} must be a positive number of seconds, got {value!r}")
+    return float(value)
+
+
+def _with_request_timeout(request: httpx.Request, seconds: float) -> None:
+    """Set *request*'s ``read``, ``write`` and ``pool`` timeouts to *seconds*."""
+
+    current = request.extensions.get("timeout")
+    phases = dict(current) if isinstance(current, Mapping) else {}
+    phases.update(read=seconds, write=seconds, pool=seconds)
+    phases.setdefault("connect", seconds)
+    request.extensions = {**request.extensions, "timeout": phases}
 
 
 @contextmanager
@@ -489,6 +533,9 @@ class RecordingAsyncClient(httpx.AsyncClient):
         stream: bool = False,
         **kwargs: object,
     ) -> httpx.Response:
+        seconds = _REQUEST_TIMEOUT.get()
+        if seconds is not None:
+            _with_request_timeout(request, seconds)
         retries_taken = 0
         while True:
             remaining = self._max_retries - retries_taken

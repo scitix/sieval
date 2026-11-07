@@ -80,7 +80,11 @@ from .overflow import (
     overflow_output,
 )
 from .reconcile import CheckStage, DeferredCheck, RuntimeBindingPlan
-from .request_log import observe_call
+from .request_log import (
+    observe_call,
+    request_timeout_scope,
+    request_timeout_seconds,
+)
 
 
 class ModelQuotaSnapshot(TypedDict):
@@ -226,14 +230,16 @@ def _validate_provenance_plan(
 
 
 def _checked_builder_defaults(values: Mapping[str, object]) -> dict[str, object]:
-    """Reject builder defaults that ``meta()`` could not persist.
+    """Reject builder defaults that ``meta()`` could not persist, or a bad
+    ``timeout``.
 
-    ``meta()`` runs once per response, so an unpersistable default would
-    otherwise raise only after a call had been billed. Values are stored
+    Either would otherwise raise only once requests start, after a call had
+    been billed or an engine launched. Values are stored
     unconverted -- the request builders need them as given.
     """
     for key, value in values.items():
         named_json_value(value, f"default_params.{key}")
+    request_timeout_seconds(values.get("timeout"), "default_params.timeout")
     return dict(values)
 
 
@@ -818,14 +824,19 @@ class Model:
         every call outside ``infer``, raises as before.
         """
         req = self._build_generate_request(prompt, **kwargs)
+        timeout = self._request_timeout(kwargs)
         scope = current_overflow_scope()
         if scope is None:
-            return response_to_model_output(self.meta(), await self.arun(req))
+            with request_timeout_scope(timeout):
+                response = await self.arun(req)
+            return response_to_model_output(self.meta(), response)
         slot, recorded = scope.ask(self, req)
         if recorded is not None:
             return self._answer(scope, slot, req, recorded)
         try:
-            output = response_to_model_output(self.meta(), await self.arun(req))
+            with request_timeout_scope(timeout):
+                response = await self.arun(req)
+            output = response_to_model_output(self.meta(), response)
         except Exception as exc:
             message = context_overflow_message(exc) if scope.model is self else None
             if message is None:
@@ -894,7 +905,8 @@ class Model:
             **kwargs,
         )
         try:
-            response = await self.arun(req)
+            with request_timeout_scope(self._request_timeout(kwargs)):
+                response = await self.arun(req)
         except Exception as exc:
             # Logprob tasks need the logprobs an overflow cannot give, so it
             # fails the sample, but as the deterministic outcome it is.
@@ -918,8 +930,19 @@ class Model:
             "or ChatInput"
         )
 
+    def _request_timeout(self, kwargs: Mapping[str, object]) -> float | None:
+        """This call's ``timeout``, which bounds the client and is never sent.
+
+        A call's own beats the builder default, as every argument does, so a
+        call's ``timeout=None`` falls back to the client's phases.
+        """
+        return request_timeout_seconds(
+            kwargs["timeout"] if "timeout" in kwargs else self._kwargs.get("timeout")
+        )
+
     def _build_generate_request(self, prompt: object, **kwargs: object) -> Request:
         final_kwargs = {**self._kwargs, **kwargs}
+        final_kwargs.pop("timeout", None)
         return kwargs_to_request(
             self.dialect_id, self._coerce_input(prompt), final_kwargs
         )
@@ -937,6 +960,7 @@ class Model:
         if isinstance(logprobs, bool) or not isinstance(logprobs, int):
             raise TypeError("logprobs must be an integer")
         final_kwargs = {**self._kwargs, **kwargs}
+        final_kwargs.pop("timeout", None)
         # ``logprobs`` is a legacy builder alias.  The explicit alogprobs
         # arguments below are authoritative and must not leave that alias
         # active alongside input scoring.
