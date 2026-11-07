@@ -418,7 +418,11 @@ class TestRuleTable:
         ("lifecycle", "message"),
         [
             ({"until": "infer"}, "until must be one of"),
-            ({"from": "feedback", "until": "inference"}, "is not before until"),
+            ({"from": "postprocess", "until": "inference"}, "is not before until"),
+            (
+                {"from": "feedback", "until": "inference"},
+                "no stage after it calls a model",
+            ),
             ({"from": "inference", "until": "inference"}, "is not before until"),
             ({"after": "inference"}, "unknown key"),
             # Opens once every sample has graded: the judge would never be asked.
