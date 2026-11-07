@@ -463,6 +463,11 @@ class _GroupLaunch:
                 else f"infer_plans.{self.key}.yaml"
             ),
             recipes=self.recipes,
+            windows={
+                task: window.record()
+                for task, window in self.group.windows.items()
+                if window.window is not None
+            },
         )
 
 
@@ -1188,6 +1193,9 @@ def _serving_json(
         "tasks": list(group.group.tasks),
         "windows": {
             task: window.window for task, window in group.group.windows.items()
+        },
+        "contexts": {
+            task: window.record() for task, window in group.group.windows.items()
         },
         "engines": engines,
         "needs_inference": None,

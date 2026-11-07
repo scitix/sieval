@@ -163,6 +163,18 @@ class TestParseModelContext:
         )
         assert (context.native, context.max) == (32768, 131072)
         assert dict(context.scaling) == {"json_model_override_args": "{}"}
+        assert context.extrapolate is False
+
+    def test_extrapolate_block(self) -> None:
+        context = parse_model_context(
+            "m", {"context": {"native": 32768, "max": 65536, "extrapolate": True}}
+        )
+        assert (context.native, context.max, context.extrapolate) == (
+            32768,
+            65536,
+            True,
+        )
+        assert dict(context.scaling) == {}
 
     @pytest.mark.parametrize(
         ("block", "message"),
@@ -172,6 +184,11 @@ class TestParseModelContext:
             ({"native": 0}, "context.native must be a positive"),
             ({"native": 4096, "max": 2048}, "below context.native"),
             ({"scaling": {"a": [1]}}, "scaling must map"),
+            ({"extrapolate": "yes"}, "extrapolate must be true or false"),
+            (
+                {"extrapolate": True, "scaling": {"a": 1}},
+                "takes no context.scaling",
+            ),
         ],
     )
     def test_malformed_block_is_refused(self, block: object, message: str) -> None:
@@ -264,7 +281,9 @@ class TestPlanServingGroups:
         assert default.tasks == ()
         assert scaled.key == "m@64096"
         assert scaled.tasks == ("at", "above")
-        assert scaled.windows["at"] == ServedWindow("m@64096", 64096, True)
+        assert scaled.windows["at"] == ServedWindow(
+            "m@64096", 64096, True, "scaling", 131072
+        )
 
     def test_pinned_window_below_native_refuses_at_the_native_need(self) -> None:
         config = _config(
@@ -358,8 +377,80 @@ class TestPlanServingGroups:
         params = scaled.plans["m"].assignments[0].engine_params
         assert params["context_length"] == 124096
         assert params["json_model_override_args"] == scaling["json_model_override_args"]
-        assert scaled.windows["long"] == ServedWindow("m@124096", 124096, True)
+        assert scaled.windows["long"] == ServedWindow(
+            "m@124096", 124096, True, "scaling", 131072
+        )
         assert (default.launches, scaled.launches) == ({"m"}, {"m"})
+
+    def test_extrapolate_serves_beyond_native_unscaled(self) -> None:
+        """Positions past native run as they are: only the window moves."""
+        config = _config(
+            {"short": _gen(1024), "long": _gen(48000)},
+            model={
+                "path": "/models/m",
+                "context": {"native": 32768, "max": 65536, "extrapolate": True},
+            },
+        )
+
+        default, extrapolated = plan_serving_groups(config, {"m": _plan(32768)})
+
+        assert default.tasks == ("short",)
+        assert extrapolated.key == "m@52096"
+        params = extrapolated.plans["m"].assignments[0].engine_params
+        assert params == {"context_length": 52096}
+        assert extrapolated.windows["long"] == ServedWindow(
+            "m@52096", 52096, True, "extrapolate", 65536
+        )
+        assert extrapolated.windows["long"].record() == {
+            "window": 52096,
+            "method": "extrapolate",
+            "max": 65536,
+        }
+        assert default.windows["short"].record() == {
+            "window": 32768,
+            "method": "native",
+        }
+
+    def test_a_scaled_window_records_its_method(self) -> None:
+        config = _config(
+            {"long": _gen(100000)},
+            model={
+                "path": "/models/m",
+                "context": {"native": 32768, "max": 131072, "scaling": {"x": 1}},
+            },
+        )
+
+        _, scaled = plan_serving_groups(config, {"m": _plan(32768)})
+
+        assert scaled.windows["long"].method == "scaling"
+        assert scaled.windows["long"].max == 131072
+
+    def test_extrapolate_still_stops_at_max(self) -> None:
+        config = _config(
+            {"long": _gen(100000)},
+            model={
+                "path": "/models/m",
+                "context": {"native": 32768, "max": 65536, "extrapolate": True},
+            },
+        )
+
+        with pytest.raises(ServingShortfallError, match=r"at most 65536"):
+            plan_serving_groups(config, {"m": _plan(32768)})
+
+    def test_extrapolate_is_refused_on_vllm(self) -> None:
+        config = _config(
+            {"long": _gen(48000)},
+            model={
+                "path": "/models/m",
+                "context": {"native": 32768, "max": 65536, "extrapolate": True},
+            },
+        )
+
+        with pytest.raises(
+            ServingShortfallError,
+            match=r"served by vllm, and context.extrapolate is supported on sglang",
+        ):
+            plan_serving_groups(config, {"m": _plan(32768, backend="vllm")})
 
     def test_root_with_every_task_scaled_launches_only_in_its_group(self) -> None:
         config = _config(

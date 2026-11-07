@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`context.extrapolate` serves past native unscaled.** A model's `context: {native, max, extrapolate: true}` lets a task whose need is above `native` and within `max` run in its own `<model>@<window>` group at that window with no scaling parameters, as `sglang serve --context-length` with `SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1` does. It was refused for lack of `scaling`. SGLang only; vLLM is refused, and `extrapolate` with `scaling` is refused.
+- **Each task records the window it was served at.** `meta.json` `runs[].serving.context` holds `window`, `method` (`native`, `scaling` or `extrapolate`) and, above native, `max`; `--dry-run` lists the same under `serving.<key>.contexts`. It labels the run and is not compared, so the inference identity is unchanged and 0.15.4 directories resume.
+
 ### Fixed
 
 - **A request's `timeout` bounds the client.** `timeout` in a model's `args` or a task's `infer_args` now overrides the client's `read`, `write` and `pool` phases (`connect` stays), every retry included, and is no longer sent. The OpenAI SDK dialects used to send it in the body, so the 600 s `read` default still ended longer requests (51 queued samples lost on one SGLang engine at `timeout: 5400`); `sglang_native`, `vllm_native` and `anthropic_messages` refused it as an unknown option and now accept it. A non-positive or non-numeric `timeout` fails before any engine starts. The inference identity is unchanged and the request digest ignores the copy older runs sent, so an OpenAI SDK directory from 0.15.4 resumes under the same `timeout`.
