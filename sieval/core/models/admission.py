@@ -4,16 +4,20 @@ One ``n: 16`` request at 28672 tokens holds what 16 ``n: 1`` ones do, so a
 request count does not bound an engine's KV cache. Past it, the engine
 retracts running requests and queues the rest. :class:`TokenBudget` admits by
 tokens instead, before the request is sent, so no client timeout runs while
-it waits.
+it waits. :class:`AdaptiveTokenBudget` also holds requests back while the
+engine reports it is congested.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
+import math
 from collections import deque
+from dataclasses import dataclass
 from types import TracebackType
-from typing import Self
+from typing import Protocol, Self
 
 import anyio
+from loguru import logger
 
 
 def _at_least(name: str, value: int, *, minimum: int = 1) -> int:
@@ -76,7 +80,7 @@ class TokenBudget:
         entry = (tokens, anyio.Event())
         self._waiters.append(entry)
         try:
-            await entry[1].wait()
+            await self._wait(entry[1])
         except BaseException:
             if entry[1].is_set():  # admitted as it was cancelled
                 self._release(tokens)
@@ -84,6 +88,9 @@ class TokenBudget:
                 self._waiters.remove(entry)
                 self._admit()
             raise
+
+    async def _wait(self, admitted: anyio.Event) -> None:
+        await admitted.wait()
 
     def _release(self, tokens: int) -> None:
         self._held -= tokens
@@ -106,3 +113,96 @@ class _Reservation:
         traceback: TracebackType | None,
     ) -> None:
         self._budget._release(self._tokens)
+
+
+@dataclass(frozen=True)
+class EngineLoad:
+    """Requests the engine holds waiting, and the share of its fullest KV
+    pool in use."""
+
+    waiting: int
+    token_usage: float
+
+
+class LoadProbe(Protocol):
+    """Reads the engine's load; ``None`` when it does not answer."""
+
+    async def __call__(self) -> EngineLoad | None: ...
+
+    async def aclose(self) -> None: ...
+
+
+class AdaptiveTokenBudget(TokenBudget):
+    """A :class:`TokenBudget` that also waits while the engine is congested.
+
+    While requests wait, one of them reads *probe* every *interval* seconds.
+    The engine is congested while it reports waiting requests or a KV pool at
+    least *busy* full; then nothing more is admitted beside what is held. A
+    probe that fails or does not answer counts as not congested.
+    """
+
+    def __init__(
+        self,
+        capacity: int,
+        *,
+        context: int,
+        headroom: int = 0,
+        probe: LoadProbe,
+        interval: float = 1.0,
+        busy: float = 0.95,
+    ) -> None:
+        super().__init__(capacity, context=context, headroom=headroom)
+        if not interval > 0:
+            raise ValueError("interval must be > 0")
+        if not 0 < busy <= 1:
+            raise ValueError("busy must be in (0, 1]")
+        self._probe = probe
+        self._interval = interval
+        self._busy = busy
+        self._congested = False
+        self._polling = False
+        self._last_poll = -math.inf
+        #: Times the engine turned congested at a read.
+        self.held_back = 0
+
+    @property
+    def congested(self) -> bool:
+        return self._congested
+
+    def _fits(self, tokens: int) -> bool:
+        return not (self._held and self._congested) and super()._fits(tokens)
+
+    async def _wait(self, admitted: anyio.Event) -> None:
+        # Every waiter may read, so reads go on when the last reader is
+        # admitted; ``_last_poll`` keeps it to one read per interval.
+        while not admitted.is_set():
+            with anyio.move_on_after(self._interval):
+                await admitted.wait()
+            due = anyio.current_time() - self._last_poll >= self._interval
+            if not admitted.is_set() and due and not self._polling:
+                await self._observe()
+
+    async def _observe(self) -> None:
+        self._polling = True
+        try:
+            load = await self._probe()
+        except Exception:  # a failed read must not fail a request
+            load = None
+        finally:
+            self._polling = False
+            self._last_poll = anyio.current_time()
+        congested = load is not None and (
+            load.waiting > 0 or load.token_usage >= self._busy
+        )
+        if congested and not self._congested:
+            self.held_back += 1
+        self._congested = congested
+        self._admit()
+
+    async def aclose(self) -> None:
+        """Close the probe; log how often the engine held requests back."""
+        if self.held_back:
+            logger.info(
+                "KV admission: the engine turned congested {} time(s)", self.held_back
+            )
+        await self._probe.aclose()

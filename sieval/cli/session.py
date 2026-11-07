@@ -77,7 +77,7 @@ from sieval.cli.serving import (
 from sieval.core.datasets import Dataset, TFilterKey
 from sieval.core.datasets.meta import get_dataset_meta
 from sieval.core.models import ChatModel, GenModel, Model
-from sieval.core.models.admission import TokenBudget
+from sieval.core.models.admission import AdaptiveTokenBudget, TokenBudget
 from sieval.core.models.capabilities import (
     CAPABILITY_KEYS,
     CapabilityIntent,
@@ -163,6 +163,7 @@ from sieval.core.utils.hf_uncached import uncached_reads
 from sieval.core.utils.paths import resolve_data_dir
 from sieval.datasets.downloaders.staged import probe_source, staged_dir
 from sieval.infer import deployment_plan_projection
+from sieval.infer.deployer import SglangLoadProbe
 from sieval.infer.introspect import checkpoint_numerics
 from sieval.infer.params import merge_params
 from sieval.infer.topology.models import DETERMINISTIC_DEFAULT_SEED
@@ -1252,9 +1253,17 @@ def _default_client_timeout(deployment: Deployment | None) -> httpx.Timeout:
     )
 
 
-def _kv_token_budget(deployment: Deployment) -> TokenBudget | None:
+#: A root model's ``concurrency_limit`` that adds the engine's own load to KV
+#: admission (:class:`AdaptiveTokenBudget`).
+AUTO_CONCURRENCY = "auto"
+
+
+def _kv_token_budget(
+    deployment: Deployment, *, adaptive: bool = False
+) -> TokenBudget | None:
     """KV admission for an engine ``sieval run`` launched that reported
-    its pool; ``None`` otherwise."""
+    its pool; ``None`` otherwise. *adaptive* also reads an SGLang engine's
+    load, and is ``None`` on any other engine."""
     facts = deployment.facts
     if (
         deployment.plan is None
@@ -1262,10 +1271,18 @@ def _kv_token_budget(deployment: Deployment) -> TokenBudget | None:
         or facts.context_tokens is None
     ):
         return None
-    return TokenBudget(
-        facts.kv_capacity_tokens * facts.replicas,
+    capacity = facts.kv_capacity_tokens * facts.replicas
+    if not adaptive:
+        return TokenBudget(
+            capacity, context=facts.context_tokens, headroom=PROMPT_HEADROOM
+        )
+    if deployment.engine.engine_id != "sglang":
+        return None
+    return AdaptiveTokenBudget(
+        capacity,
         context=facts.context_tokens,
         headroom=PROMPT_HEADROOM,
+        probe=SglangLoadProbe(deployment.api_base),
     )
 
 
@@ -1907,6 +1924,11 @@ class EvalSession:
 
     def _init_runner(self) -> None:
         self.result_dir = self.result_dir_override or self.config.get("result_dir")
+        if self.config.get("concurrency_limit") == AUTO_CONCURRENCY:
+            raise ValueError(
+                f"concurrency_limit '{AUTO_CONCURRENCY}' is for a root model under "
+                "'models'; the run's top level takes a number"
+            )
 
         self.runner = MultiTaskRunner(
             result_dir=self.result_dir,
@@ -3062,11 +3084,19 @@ class EvalSession:
         has_explicit_credential = _names_credential(root_config) or _names_credential(
             args
         )
-        _, max_retries, _ = self._connection_options(
+        _, max_retries, concurrency_limit = self._connection_options(
             root_config,
             nested_args=True,
             subject=f"Model '{root_name}'",
         )
+        plan = (self._infer_plans or {}).get(root_name)
+        if concurrency_limit == AUTO_CONCURRENCY and (
+            not isinstance(plan, Mapping) or plan.get("backend") != "sglang"
+        ):
+            raise ValueError(
+                f"Model '{root_name}': concurrency_limit '{AUTO_CONCURRENCY}' needs "
+                "an SGLang engine sieval run launches; set a number here"
+            )
         return ConnectionScope(
             (
                 f"model:{root_name}:managed-local-credential"
@@ -3888,7 +3918,7 @@ class EvalSession:
         nested_args: bool,
         subject: str = "Model",
         environ: Mapping[str, str] | None = None,
-    ) -> tuple[str | None, int, int | None]:
+    ) -> tuple[str | None, int, int | str | None]:
         """Extract client/pool options without treating them as request defaults."""
 
         args = config.get("args")
@@ -3906,14 +3936,19 @@ class EvalSession:
         )
         if isinstance(max_retries, bool) or not isinstance(max_retries, int):
             raise TypeError("max_retries must be an integer")
-        if isinstance(concurrency_limit, bool) or (
-            concurrency_limit is not None
-            and (not isinstance(concurrency_limit, int) or concurrency_limit < 1)
+        if concurrency_limit != AUTO_CONCURRENCY and (
+            isinstance(concurrency_limit, bool)
+            or (
+                concurrency_limit is not None
+                and (not isinstance(concurrency_limit, int) or concurrency_limit < 1)
+            )
         ):
-            raise ValueError("concurrency_limit must be a positive integer")
+            raise ValueError(
+                f"concurrency_limit must be a positive integer or '{AUTO_CONCURRENCY}'"
+            )
         # Validate at prelaunch; the real default needs the realized deployment.
         _configured_client_timeout(config, nested, DEFAULT_REQUEST_TIMEOUT, subject)
-        return api_key, max_retries, concurrency_limit
+        return api_key, max_retries, cast(int | str | None, concurrency_limit)
 
     def _configured_deployment_for(
         self,
@@ -4179,7 +4214,7 @@ class EvalSession:
         if root_key not in root_limiters:
             root_limiters[root_key] = (
                 anyio.CapacityLimiter(concurrency_limit)
-                if concurrency_limit is not None
+                if isinstance(concurrency_limit, int)
                 else None
             )
         token_budgets = getattr(self, "_root_token_budgets", None)
@@ -4187,9 +4222,19 @@ class EvalSession:
             token_budgets = {}
             self._root_token_budgets = token_budgets
         if root_key not in token_budgets:
-            token_budgets[root_key] = (
-                _kv_token_budget(deployment) if concurrency_limit is None else None
+            auto = concurrency_limit == AUTO_CONCURRENCY
+            budget = (
+                _kv_token_budget(deployment, adaptive=auto)
+                if auto or concurrency_limit is None
+                else None
             )
+            if auto and budget is None:
+                raise ValueError(
+                    f"Model root '{root_key}': concurrency_limit "
+                    f"'{AUTO_CONCURRENCY}' needs an SGLang engine sieval run "
+                    "launched that reported its KV pool; set a number here"
+                )
+            token_budgets[root_key] = budget
         connection = CONNECTION_FACTORY_REGISTRY.create(
             connection_family,
             ConnectionRequest(
@@ -4325,6 +4370,12 @@ class EvalSession:
                     raw_args = cfg.get("args", {})
                     assert isinstance(raw_args, Mapping)
                     concurrency_limit = raw_args.get("concurrency_limit")
+                    if concurrency_limit == AUTO_CONCURRENCY:
+                        raise ValueError(
+                            f"Model '{name}': concurrency_limit "
+                            f"'{AUTO_CONCURRENCY}' is for a root model; a "
+                            "derived model takes a number"
+                        )
                 if args or extra is not None or concurrency_limit is not None:
                     model = model.with_args(
                         concurrency_limit=cast(int | None, concurrency_limit),
@@ -5560,13 +5611,18 @@ class EvalSession:
 
         owned_pools = getattr(self, "_owned_pools", {})
         root_shared_limiters = getattr(self, "_root_shared_limiters", {})
+        token_budgets = getattr(self, "_root_token_budgets", {})
         pools = tuple({id(pool): pool for pool in owned_pools.values()}.values())
+        adaptive = [
+            b for b in token_budgets.values() if isinstance(b, AdaptiveTokenBudget)
+        ]
         owned_pools.clear()
         root_shared_limiters.clear()
+        token_budgets.clear()
         first_error: BaseException | None = None
-        for pool in pools:
+        for closable in (*pools, *adaptive):
             try:
-                await pool.aclose()
+                await closable.aclose()
             except BaseException as exc:
                 if first_error is None:
                     first_error = exc
