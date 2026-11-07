@@ -21,7 +21,7 @@ from sieval.core.utils.concurrency import CompositeLimiter
 
 from ._engine_source import EngineSource
 from ._fingerprint import fingerprint_mapping
-from .admission import TokenBudget
+from .admission import PendingTokenBudget, TokenBudget
 
 # These names select or mutate binding resources; they are never provider wire
 # extensions.  Composition layers and the legacy ``Model`` bridge share this
@@ -352,7 +352,7 @@ class ConnectionPool[ConnectionT]:
         connection: ConnectionT,
         identity: ConnectionIdentity,
         shared_limiter: Limiter | None = None,
-        token_budget: TokenBudget | None = None,
+        token_budget: TokenBudget | PendingTokenBudget | None = None,
     ) -> None:
         self._connection = connection
         self._identity = identity
@@ -391,9 +391,18 @@ class ConnectionPool[ConnectionT]:
 
     @property
     def token_budget(self) -> TokenBudget | None:
-        """The engine's KV admission, ``None`` when it has none."""
+        """The engine's KV admission; ``None`` for none or not resolved yet."""
 
-        return self._token_budget
+        budget = self._token_budget
+        return budget.resolved if isinstance(budget, PendingTokenBudget) else budget
+
+    async def admission(self) -> TokenBudget | None:
+        """The engine's KV admission, resolving a pending one first."""
+
+        budget = self._token_budget
+        if isinstance(budget, PendingTokenBudget):
+            return await budget.resolve()
+        return budget
 
     @property
     def is_closing(self) -> bool:
@@ -455,9 +464,10 @@ class ConnectionPool[ConnectionT]:
         try:
             if local_limiter is self._shared_limiter:
                 local_limiter = None
+            budget = await self.admission()
             reservation = (
-                self._token_budget.reserve(tokens)
-                if self._token_budget is not None and tokens is not None
+                budget.reserve(tokens)
+                if budget is not None and tokens is not None
                 else None
             )
             async with CompositeLimiter(

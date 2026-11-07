@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`concurrency_limit: auto` is accepted before its engine is up.** 0.15.5 refused it in `--dry-run` on every SGLang engine `sieval run` launches, and at run time on a model started at a barrier. Such a root now reads the engine's KV pool at its first request; if the engine reports none, `auto` fails those requests naming the root (read once, not per request).
+- **A model started at a barrier with no `concurrency_limit` gets KV admission**, as one started up front has since 0.15.5. It ran without it before.
+
 ## [0.15.5] - 2026-11-07
 
 A patch release: a request's `timeout` bounds the client again, so a

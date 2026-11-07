@@ -11,7 +11,12 @@ import httpx
 import pytest
 
 from sieval.core.models import SglangGenModel
-from sieval.core.models.admission import AdaptiveTokenBudget, EngineLoad, TokenBudget
+from sieval.core.models.admission import (
+    AdaptiveTokenBudget,
+    EngineLoad,
+    PendingTokenBudget,
+    TokenBudget,
+)
 
 
 class TestWeight:
@@ -192,6 +197,98 @@ class TestModelAdmission:
 
         assert seen == [400]
         assert budget.borrowed_tokens == 0
+
+    @pytest.mark.anyio
+    async def test_a_pending_budget_is_read_at_the_first_request_once(self) -> None:
+        budget = TokenBudget(10_000, context=32768, headroom=0)
+        reads: list[int] = []
+        seen: list[int] = []
+
+        async def resolve() -> TokenBudget:
+            reads.append(1)
+            return budget
+
+        def engine(_: httpx.Request) -> httpx.Response:
+            seen.append(budget.borrowed_tokens)
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "text": "o",
+                        "meta_info": {
+                            "prompt_tokens": 1,
+                            "completion_tokens": 1,
+                            "cached_tokens": 0,
+                            "finish_reason": {"type": "stop"},
+                        },
+                    }
+                ],
+            )
+
+        with patch(
+            "sieval.core.models.connection_factory.httpx.AsyncHTTPTransport",
+            return_value=httpx.MockTransport(engine),
+        ):
+            model = SglangGenModel(model="m", api_base="http://e", api_key="k")
+        pending = PendingTokenBudget(resolve)
+        model.pool._token_budget = pending
+        # Bound, not read: planning sends no request.
+        assert model.pool.token_budget is None
+        assert reads == []
+
+        async with anyio.create_task_group() as tg:
+            for _ in range(3):
+                tg.start_soon(lambda: model.agenerate("hi", max_tokens=100))
+
+        assert reads == [1]
+        # Every request reserved from the budget it resolved.
+        assert len(seen) == 3 and all(0 < held <= 300 for held in seen)
+        assert model.pool.token_budget is budget
+        assert budget.borrowed_tokens == 0
+
+    @pytest.mark.anyio
+    async def test_a_pending_budget_that_fails_fails_every_request_reading_once(
+        self,
+    ) -> None:
+        reads: list[int] = []
+
+        async def resolve() -> TokenBudget:
+            reads.append(1)
+            await anyio.sleep(0)
+            raise RuntimeError("no KV pool")
+
+        pending = PendingTokenBudget(resolve)
+        failed: list[str] = []
+
+        async def request() -> None:
+            try:
+                await pending.resolve()
+            except RuntimeError as exc:
+                failed.append(str(exc))
+
+        async with anyio.create_task_group() as tg:
+            for _ in range(5):
+                tg.start_soon(request)
+        await request()
+
+        assert failed == ["no KV pool"] * 6
+        assert reads == [1]
+
+    @pytest.mark.anyio
+    async def test_a_pending_budget_closes_the_adaptive_one_it_resolved(
+        self,
+    ) -> None:
+        probe = _Probe(None)
+
+        async def resolve() -> TokenBudget:
+            return _adaptive(probe)
+
+        pending = PendingTokenBudget(resolve)
+        await pending.aclose()  # never resolved: nothing to close
+        assert probe.closed is False
+        await pending.resolve()
+        await pending.aclose()
+        assert probe.closed is True
 
 
 class _Probe:
