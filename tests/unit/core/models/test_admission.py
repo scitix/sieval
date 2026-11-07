@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from sieval.core.models import SglangGenModel
-from sieval.core.models.admission import TokenBudget
+from sieval.core.models.admission import AdaptiveTokenBudget, EngineLoad, TokenBudget
 
 
 class TestWeight:
@@ -192,3 +192,175 @@ class TestModelAdmission:
 
         assert seen == [400]
         assert budget.borrowed_tokens == 0
+
+
+class _Probe:
+    """Answers *loads* in turn, then the last one forever."""
+
+    def __init__(self, *loads: EngineLoad | None) -> None:
+        self.loads = list(loads)
+        self.calls = 0
+        self.closed = False
+
+    async def __call__(self) -> EngineLoad | None:
+        self.calls += 1
+        return self.loads.pop(0) if len(self.loads) > 1 else self.loads[0]
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+_BUSY = EngineLoad(waiting=2, token_usage=0.5)
+_FREE = EngineLoad(waiting=0, token_usage=0.4)
+
+
+def _adaptive(probe: _Probe, capacity: int = 100) -> AdaptiveTokenBudget:
+    return AdaptiveTokenBudget(capacity, context=100, probe=probe, interval=0.01)
+
+
+class TestAdaptive:
+    @pytest.mark.parametrize(
+        "busy_load",
+        [
+            EngineLoad(waiting=3, token_usage=0.5),
+            EngineLoad(waiting=0, token_usage=0.95),
+        ],
+        ids=["queueing", "kv-full"],
+    )
+    @pytest.mark.anyio
+    async def test_a_request_that_fits_waits_while_the_engine_is_congested(
+        self, busy_load: EngineLoad
+    ) -> None:
+        probe = _Probe(busy_load, busy_load, busy_load, _FREE)
+        budget = _adaptive(probe)
+        budget._congested = True  # as the last read left it
+        admitted = anyio.Event()
+
+        async def second() -> None:
+            async with budget.reserve(10):
+                admitted.set()
+
+        async with budget.reserve(10), anyio.create_task_group() as tg:
+            tg.start_soon(second)
+            await anyio.wait_all_tasks_blocked()
+            # 20 of 100 tokens would fit; congestion holds it back.
+            assert budget.borrowed_tokens == 10 and not admitted.is_set()
+            with anyio.fail_after(2):
+                await admitted.wait()
+        assert probe.calls == 4
+        assert not budget.congested
+
+    @pytest.mark.anyio
+    async def test_reading_survives_the_reader_being_admitted(self) -> None:
+        # Regression: only the first waiter read the engine. Admitted while
+        # congested (nothing else held), it stopped reading, and the stale
+        # flag let the rest through one at a time.
+        probe = _Probe(_BUSY)
+        budget = _adaptive(probe)
+        budget._congested = True
+        admitted: list[str] = []
+        release_a = anyio.Event()
+
+        async def req(name: str, gate: anyio.Event | None = None) -> None:
+            async with budget.reserve(10):
+                admitted.append(name)
+                if gate is not None:
+                    await gate.wait()
+                else:
+                    await anyio.sleep(10)
+
+        with anyio.fail_after(5):
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(req, "a", release_a)
+                await anyio.wait_all_tasks_blocked()
+                for name in "bcd":
+                    tg.start_soon(req, name)
+                    await anyio.wait_all_tasks_blocked()
+                assert admitted == ["a"]
+                release_a.set()  # held drops to 0: "b" is admitted alone
+                while admitted != ["a", "b"]:
+                    await anyio.sleep(0.005)
+                probe.loads = [_FREE]  # the engine drains
+                while len(admitted) < 4:
+                    await anyio.sleep(0.005)
+                tg.cancel_scope.cancel()
+        assert not budget.congested
+
+    @pytest.mark.anyio
+    async def test_one_read_per_interval_however_many_wait(self) -> None:
+        probe = _Probe(_BUSY)
+        budget = AdaptiveTokenBudget(100, context=100, probe=probe, interval=0.05)
+        budget._congested = True
+        async with budget.reserve(10), anyio.create_task_group() as tg:
+            for _ in range(20):
+                tg.start_soon(lambda: budget.reserve(10).__aenter__())
+            await anyio.sleep(0.26)
+            tg.cancel_scope.cancel()
+        assert 3 <= probe.calls <= 6
+
+    @pytest.mark.anyio
+    async def test_congestion_seen_at_a_read_counts_once(self) -> None:
+        probe = _Probe(_BUSY, _BUSY, _BUSY, _FREE)
+        budget = _adaptive(probe)
+        async with budget.reserve(100), anyio.create_task_group() as tg:
+            tg.start_soon(lambda: budget.reserve(1).__aenter__())
+            while probe.calls < 3:
+                await anyio.sleep(0.005)
+            tg.cancel_scope.cancel()
+        assert budget.held_back == 1
+
+    @pytest.mark.anyio
+    async def test_nothing_held_back_while_nothing_is_admitted(self) -> None:
+        budget = _adaptive(_Probe(_BUSY))
+        budget._congested = True
+        async with budget.reserve(10):
+            assert budget.borrowed_tokens == 10
+
+    @pytest.mark.parametrize(
+        "failure", [None, RuntimeError("down")], ids=["no-answer", "raises"]
+    )
+    @pytest.mark.anyio
+    async def test_an_engine_that_does_not_answer_leaves_the_budget(
+        self, failure: Exception | None
+    ) -> None:
+        probe = _Probe(None) if failure is None else _Raising(failure)
+        budget = _adaptive(probe)
+        budget._congested = True
+        done = anyio.Event()
+
+        async def second() -> None:
+            async with budget.reserve(30):
+                done.set()
+
+        async with budget.reserve(60), anyio.create_task_group() as tg:
+            tg.start_soon(second)
+            with anyio.fail_after(2):
+                await done.wait()
+        assert not budget.congested
+
+    @pytest.mark.anyio
+    async def test_aclose_closes_the_probe(self) -> None:
+        probe = _Probe(None)
+        await _adaptive(probe).aclose()
+        assert probe.closed
+
+    @pytest.mark.parametrize(
+        ("interval", "busy", "match"),
+        [(0, 0.9, "interval"), (1, 0, "busy"), (1, 1.5, "busy")],
+    )
+    def test_bad_settings_are_refused(
+        self, interval: float, busy: float, match: str
+    ) -> None:
+        with pytest.raises(ValueError, match=match):
+            AdaptiveTokenBudget(
+                1, context=1, probe=_Probe(None), interval=interval, busy=busy
+            )
+
+
+class _Raising(_Probe):
+    def __init__(self, exc: Exception) -> None:
+        super().__init__(None)
+        self.exc = exc
+
+    async def __call__(self) -> EngineLoad | None:
+        raise self.exc

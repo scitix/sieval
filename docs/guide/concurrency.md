@@ -33,3 +33,24 @@ they may hold, unless its root model sets `concurrency_limit`.
   than the whole pool runs alone.
 - Throughput only: no stage identity changes. Request records show the
   budget as `kv_tokens` under `in_flight`.
+
+## `concurrency_limit: auto`
+
+A root model on an SGLang engine `sieval run` launches can set
+`concurrency_limit: auto`: KV admission as above, and while requests wait,
+SiEval reads the engine's `/v1/loads` once a second. A waiting request is held
+back while the engine reports queued requests or a KV pool at least 95% full.
+An engine that does not answer leaves the KV budget in charge.
+
+```yaml
+models:
+    candidate:
+        concurrency_limit: auto
+        infer:
+            backend: sglang
+            checkpoint: /models/candidate
+```
+
+Anywhere else (external API, vLLM, an engine that did not report its KV pool,
+a derived model, the run's top level) `auto` is refused before any request is
+sent. Per-task `concurrency_limits` still apply.

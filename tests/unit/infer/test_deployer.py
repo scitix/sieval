@@ -1798,3 +1798,81 @@ class TestKvFacts:
     async def test_other_backends_are_not_asked(self) -> None:
         facts, seen = await self._facts({}, backend="vllm")
         assert seen == [] and facts.kv_capacity_tokens is None
+
+
+class TestSglangLoadProbe:
+    @staticmethod
+    async def _probe(routes: dict[str, object]):
+        from unittest.mock import patch as _patch
+
+        import httpx as _httpx
+
+        from sieval.infer.deployer import SglangLoadProbe
+
+        seen: list[str] = []
+
+        def handler(request: _httpx.Request) -> _httpx.Response:
+            seen.append(str(request.url))
+            body = routes.get(request.url.path)
+            if body is None:
+                return _httpx.Response(404)
+            return _httpx.Response(200, json=body)
+
+        real = _httpx.AsyncClient
+
+        def client(*_args, **kwargs):
+            return real(transport=_httpx.MockTransport(handler), **kwargs)
+
+        with _patch("sieval.infer.deployer.httpx.AsyncClient", client):
+            probe = SglangLoadProbe("http://127.0.0.1:30000/v1")
+            try:
+                return await probe(), seen
+            finally:
+                await probe.aclose()
+
+    @pytest.mark.anyio
+    async def test_sums_waiting_and_takes_the_fullest_rank(self) -> None:
+        load, seen = await self._probe(
+            {
+                "/v1/loads": {
+                    "loads": [
+                        {"num_waiting_reqs": 2, "token_usage": 0.4},
+                        {"num_waiting_reqs": 1, "token_usage": 0.97},
+                    ]
+                }
+            }
+        )
+        assert load is not None
+        assert (load.waiting, load.token_usage) == (3, 0.97)
+        assert seen == ["http://127.0.0.1:30000/v1/loads?include=core"]
+
+    @pytest.mark.anyio
+    async def test_the_deprecated_get_load_is_not_read(self) -> None:
+        # Its num_tokens is used + pending prefill, not the pool: a 1%-used
+        # pool would read as 100% full.
+        load, seen = await self._probe(
+            {
+                "/get_load": [
+                    {"num_waiting_reqs": 0, "num_tokens": 1000, "num_pending_tokens": 0}
+                ]
+            }
+        )
+        assert load is None
+        assert [url.split("?")[0] for url in seen] == [
+            "http://127.0.0.1:30000/v1/loads"
+        ]
+
+    @pytest.mark.parametrize(
+        "body",
+        [{}, {"loads": []}, {"loads": ["x"]}, ["not", "a", "mapping"]],
+        ids=["no-loads", "empty", "no-ranks", "list"],
+    )
+    @pytest.mark.anyio
+    async def test_an_unusable_answer_is_none(self, body: object) -> None:
+        load, _ = await self._probe({"/v1/loads": body})
+        assert load is None
+
+    @pytest.mark.anyio
+    async def test_no_answer_is_none(self) -> None:
+        load, _ = await self._probe({})
+        assert load is None

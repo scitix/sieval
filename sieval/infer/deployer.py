@@ -34,6 +34,7 @@ from sieval.core.models import (
     Engine,
     ServingFacts,
 )
+from sieval.core.models.admission import EngineLoad
 from sieval.infer.backends.process import (
     kill_orphaned_group,
     kill_process_group,
@@ -857,6 +858,52 @@ async def kv_facts(backend: str, endpoint: str) -> ServingFacts:
         context_tokens=context,
         replicas=_positive(info.get("dp_size")) or 1,
     )
+
+
+class SglangLoadProbe:
+    """Reads an SGLang engine's load from ``/v1/loads``: waiting requests over
+    its data-parallel ranks, and the fullest rank's ``token_usage``.
+
+    ``None`` when the engine does not answer. The deprecated ``/get_load`` is
+    not read: its ``num_tokens`` counts used plus pending prefill tokens, not
+    the pool, so it gives no share of the pool.
+    """
+
+    def __init__(self, endpoint: str) -> None:
+        parsed = urlparse(endpoint)
+        self._client = httpx.AsyncClient(
+            base_url=urlunparse((parsed.scheme, parsed.netloc, "", "", "", "")),
+            timeout=_LOAD_PROBE_TIMEOUT,
+        )
+
+    async def __call__(self) -> EngineLoad | None:
+        try:
+            response = await self._client.get("/v1/loads", params={"include": "core"})
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        ranks = payload.get("loads") if isinstance(payload, Mapping) else None
+        if not isinstance(ranks, list):
+            return None
+        ranks = [r for r in ranks if isinstance(r, Mapping)]
+        if not ranks:
+            return None
+        waiting, usage = 0, 0.0
+        for rank in ranks:
+            w, u = rank.get("num_waiting_reqs"), rank.get("token_usage")
+            if isinstance(w, int) and not isinstance(w, bool):
+                waiting += w
+            if isinstance(u, int | float) and not isinstance(u, bool):
+                usage = max(usage, float(u))
+        return EngineLoad(waiting=waiting, token_usage=usage)
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+
+#: A load read is cheap; one slower than this is treated as no answer.
+_LOAD_PROBE_TIMEOUT = 2.0
 
 
 def command_endpoint(cmd: BackendCommand) -> str | None:
