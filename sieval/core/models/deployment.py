@@ -391,8 +391,7 @@ class ConnectionPool[ConnectionT]:
 
     @property
     def token_budget(self) -> TokenBudget | None:
-        """The engine's KV admission, ``None`` when it has none or a pending
-        one is not resolved yet (:meth:`admission`)."""
+        """The engine's KV admission; ``None`` for none or not resolved yet."""
 
         budget = self._token_budget
         return budget.resolved if isinstance(budget, PendingTokenBudget) else budget

@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- **`concurrency_limit: auto` is accepted before its engine is up.** `--dry-run` and the planning a run does before launching bind each root to the deployment its launch will realize, which has not reported a KV pool yet, so 0.15.5 refused `auto` on every SGLang engine `sieval run` launches, a judge started at a barrier included. Planning now accepts `auto` (and binds KV admission) for such a root and reads the engine's pool at the first request through it, once it is up. An engine that reports no pool and window then fails that request, naming the root, before anything is sent: `auto` asked for admission it cannot give. A number or no limit runs without KV admission, as on a launched engine that reports none. `auto` on an external endpoint, vLLM, a derived model or the top level is still refused before launch.
+- **`concurrency_limit: auto` is accepted before its engine is up.** 0.15.5 refused it in `--dry-run` on every SGLang engine `sieval run` launches, and at run time on a model started at a barrier. Such a root now reads the engine's KV pool at its first request; if the engine reports none, `auto` fails those requests naming the root (read once, not per request).
+- **A model started at a barrier with no `concurrency_limit` gets KV admission**, as one started up front has since 0.15.5. It ran without it before.
 
 ## [0.15.5] - 2026-11-07
 

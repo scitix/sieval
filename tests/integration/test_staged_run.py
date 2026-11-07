@@ -172,6 +172,11 @@ class Engines:
 
 @pytest.fixture
 def engines(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Engines]:
+    yield from stub_engines(monkeypatch, tmp_path)
+
+
+def stub_engines(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Engines]:
+    """Launch, ask and stop through :class:`Engines`; shared with sibling patterns."""
     stub = Engines()
     real_openai = AsyncOpenAI
 

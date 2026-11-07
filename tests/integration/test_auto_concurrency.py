@@ -1,10 +1,7 @@
 """Pattern: ``concurrency_limit: auto`` through ``sieval run``, plan to report.
 
-Planning binds every root to the deployment its launch will realize, before
-an engine exists, so it knows no KV pool. ``auto`` is accepted there for an
-SGLang engine ``sieval run`` launches; the pool is read once the engine is up,
-at the first request through it. The real session, runner and connection
-factory run; the engines are the stubs of ``test_staged_run`` and answer
+Planning binds each root before its engine exists; the KV pool is read at the
+first request. The engines are the stubs of ``test_staged_run`` and answer
 ``/get_server_info`` once launched.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
@@ -27,8 +24,8 @@ from tests.integration.test_staged_run import (
     _dry,
     _run,
     _write,
+    stub_engines,
 )
-from tests.integration.test_staged_run import engines as staged_engines
 
 AUTO: dict[str, Any] = {"concurrency_limit": "auto"}
 
@@ -50,8 +47,7 @@ class KvFacts:
 
 @pytest.fixture
 def engines(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Engines]:
-    """The stub engines of the staged-run pattern."""
-    yield from staged_engines.__wrapped__(monkeypatch, tmp_path)
+    yield from stub_engines(monkeypatch, tmp_path)
 
 
 @pytest.fixture
@@ -144,6 +140,22 @@ class TestAutoConcurrency:
         assert engines.events.index("start judge") < engines.events.index("ask judge")
         adaptive = [b for b in _budgets() if isinstance(b, AdaptiveTokenBudget)]
         assert [b.total_tokens for b in adaptive] == [500_000]
+
+    @pytest.mark.anyio
+    async def test_a_judge_with_no_limit_started_at_a_barrier_gets_kv_admission(
+        self,
+        tmp_path: Path,
+        engines: Engines,
+        facts: KvFacts,
+    ) -> None:
+        config = _sglang(_write(tmp_path, subject=SUBJECT_UNTIL, judge=JUDGE_FROM))
+
+        reports = await _run(config)
+
+        assert reports["judged"]["correct"] == 3
+        # Plain KV admission, as an engine started up front gets (#277).
+        plain = [b for b in _budgets() if not isinstance(b, AdaptiveTokenBudget)]
+        assert [b.total_tokens for b in plain] == [500_000, 500_000]
 
     @pytest.mark.anyio
     async def test_auto_on_an_engine_that_reports_no_pool_is_refused(

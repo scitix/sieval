@@ -5,8 +5,8 @@ request count does not bound an engine's KV cache. Past it, the engine
 retracts running requests and queues the rest. :class:`TokenBudget` admits by
 tokens instead, before the request is sent, so no client timeout runs while
 it waits. :class:`AdaptiveTokenBudget` also holds requests back while the
-engine reports it is congested. :class:`PendingTokenBudget` stands for either
-until the engine it gates is up and has said what it holds.
+engine reports it is congested. :class:`PendingTokenBudget` defers either to
+the first request, for an engine not up when its root was bound.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
@@ -211,14 +211,11 @@ class AdaptiveTokenBudget(TokenBudget):
 
 
 class PendingTokenBudget:
-    """The KV admission of an engine not up yet, resolved at its first request.
+    """KV admission for an engine not up when the root was bound.
 
-    Planning binds a root to the deployment its launch will realize, before
-    the engine exists, so it knows nothing of its pool; a root started at a
-    barrier stays bound that way for the run. *resolve* reads the engine once,
-    at the first request through it, which is after the engine is up, and
-    returns the :class:`TokenBudget` to use, or ``None`` for no admission.
-    Planning sends no request, so it never resolves.
+    *resolve* runs once, at the first request (the engine is up by then), and
+    gives the budget, or ``None`` for no admission. A failed read is kept and
+    raised to every later request, so a broken engine is not read per request.
     """
 
     def __init__(self, resolve: Callable[[], Awaitable[TokenBudget | None]]) -> None:
@@ -226,18 +223,25 @@ class PendingTokenBudget:
         self._lock = anyio.Lock()
         self._done = False
         self._budget: TokenBudget | None = None
+        self._error: Exception | None = None
 
     @property
     def resolved(self) -> TokenBudget | None:
-        """The resolved budget; ``None`` before resolution or for none."""
+        """The budget once resolved; ``None`` before that or for none."""
         return self._budget
 
     async def resolve(self) -> TokenBudget | None:
         if not self._done:
             async with self._lock:
                 if not self._done:
-                    self._budget = await self._resolve()
+                    try:
+                        self._budget = await self._resolve()
+                    except Exception as exc:
+                        self._error = exc
                     self._done = True
+        if self._error is not None:
+            # Reset: re-raising one instance would grow its traceback per request.
+            raise self._error.with_traceback(None)
         return self._budget
 
     async def aclose(self) -> None:

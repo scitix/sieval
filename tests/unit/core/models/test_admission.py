@@ -247,13 +247,32 @@ class TestModelAdmission:
         assert budget.borrowed_tokens == 0
 
     @pytest.mark.anyio
-    async def test_a_pending_budget_that_fails_fails_the_request(self) -> None:
+    async def test_a_pending_budget_that_fails_fails_every_request_reading_once(
+        self,
+    ) -> None:
+        reads: list[int] = []
+
         async def resolve() -> TokenBudget:
+            reads.append(1)
+            await anyio.sleep(0)
             raise RuntimeError("no KV pool")
 
         pending = PendingTokenBudget(resolve)
-        with pytest.raises(RuntimeError, match="no KV pool"):
-            await pending.resolve()
+        failed: list[str] = []
+
+        async def request() -> None:
+            try:
+                await pending.resolve()
+            except RuntimeError as exc:
+                failed.append(str(exc))
+
+        async with anyio.create_task_group() as tg:
+            for _ in range(5):
+                tg.start_soon(request)
+        await request()
+
+        assert failed == ["no KV pool"] * 6
+        assert reads == [1]
 
     @pytest.mark.anyio
     async def test_a_pending_budget_closes_the_adaptive_one_it_resolved(

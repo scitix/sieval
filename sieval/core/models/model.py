@@ -714,8 +714,7 @@ class Model:
         prepared = self._dialect.prepare(projected, audit)
         audit.finish(prepared)
 
-        # Resolved before the record reads the limiters, so a KV budget that
-        # waited for its engine is recorded from the first request on.
+        # Before observe_call reads the limiters, so a pending budget is logged.
         budget = await self._pool.admission()
         with observe_call(
             model_meta=self.meta,
