@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.15.7] - 2026-11-08
+
+A patch release: KV admission now needs `concurrency_limit: auto` (#286).
+0.15.6 admitted every root on an SGLang engine `sieval run` launched by KV
+cache when it set no `concurrency_limit`, and on mixed workloads that gate
+held the engine well below what it could serve: on a mixed arck-general-1k
+slice on 4×H100, 0.15.6's default reached about 2470 useful tokens/s, a fixed
+cap of 64 about 3600 and a cap of 256 about 4370. For mixed workloads on a
+self-hosted SGLang engine, set a high fixed `concurrency_limit`. `auto` stays
+opt-in while it is reworked (#287). No on-disk format changes: `meta.json`
+`identity` stays schema 5, `RESULT_SCHEMA_VERSION` stays 1, and 0.15.6 result
+directories resume.
+
 ### Changed
 
 - **KV admission now needs `concurrency_limit: auto`.** Since 0.15.5 (#277) a root with no `concurrency_limit` on an SGLang engine `sieval run` launched was admitted by KV cache; it is now bounded only by its task and stage limits, as before 0.15.5 (no `KV:` line, no `kv_tokens`). Set `concurrency_limit: auto` to keep KV admission. Throughput only: identity schema and `RESULT_SCHEMA_VERSION` are unchanged, and 0.15.6 result directories resume.
@@ -760,6 +773,7 @@ Mainstream benchmarks registered in `sieval/meta/index.json`:
 - Project-wide preflight (`scripts/check_preflight.py`): links, deps, tasks, datasets, imports, examples, meta-index sync, version.
 - Tooling: `ruff`, `ty`, `mypy strict`, `pytest`.
 
+[0.15.7]: https://github.com/scitix/sieval/compare/v0.15.6...v0.15.7
 [0.15.6]: https://github.com/scitix/sieval/compare/v0.15.5...v0.15.6
 [0.15.5]: https://github.com/scitix/sieval/compare/v0.15.4...v0.15.5
 [0.15.4]: https://github.com/scitix/sieval/compare/v0.15.3...v0.15.4
