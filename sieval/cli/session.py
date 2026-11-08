@@ -78,8 +78,12 @@ from sieval.core.datasets import Dataset, TFilterKey
 from sieval.core.datasets.meta import get_dataset_meta
 from sieval.core.models import ChatModel, GenModel, Model
 from sieval.core.models.admission import (
+    AdaptiveLimit,
     AdaptiveTokenBudget,
-    PendingTokenBudget,
+    AdmissionGate,
+    AutoConcurrency,
+    CombinedGate,
+    PendingGate,
     TokenBudget,
 )
 from sieval.core.models.capabilities import (
@@ -167,7 +171,7 @@ from sieval.core.utils.hf_uncached import uncached_reads
 from sieval.core.utils.paths import resolve_data_dir
 from sieval.datasets.downloaders.staged import probe_source, staged_dir
 from sieval.infer import deployment_plan_projection
-from sieval.infer.deployer import SglangLoadProbe, kv_facts
+from sieval.infer.deployer import SglangLoadProbe, SglangThroughputProbe, kv_facts
 from sieval.infer.introspect import checkpoint_numerics
 from sieval.infer.params import merge_params
 from sieval.infer.topology.models import DETERMINISTIC_DEFAULT_SEED
@@ -1257,8 +1261,8 @@ def _default_client_timeout(deployment: Deployment | None) -> httpx.Timeout:
     )
 
 
-#: The root ``concurrency_limit`` that turns on KV admission
-#: (:class:`AdaptiveTokenBudget`); no other value does.
+#: The root ``concurrency_limit`` that turns on adaptive admission
+#: (:class:`AutoConcurrency`), alone or as ``{auto: {options}}``.
 AUTO_CONCURRENCY = "auto"
 
 
@@ -1269,50 +1273,76 @@ def _configured_concurrency_limit(
     return config.get("concurrency_limit", nested.get("concurrency_limit"))
 
 
+def auto_concurrency(value: object) -> AutoConcurrency | None:
+    """The ``auto`` options a ``concurrency_limit`` *value* sets, else ``None``."""
+    return AutoConcurrency.from_config(value)
+
+
 def sets_auto_concurrency(model_config: Mapping[str, object]) -> bool:
-    """Whether a root model sets ``concurrency_limit: auto``."""
+    """Whether a root model sets ``concurrency_limit: auto`` (with or
+    without options)."""
     limit = _configured_concurrency_limit(model_config, _nested_args(model_config))
-    return limit == AUTO_CONCURRENCY
+    return auto_concurrency(limit) is not None
 
 
-def _kv_token_budget(deployment: Deployment) -> TokenBudget | None:
-    """KV admission from the pool a launched SGLang engine reported, else ``None``."""
-    return _budget_from_facts(deployment, deployment.facts)
+def _auto_gate(
+    deployment: Deployment, options: AutoConcurrency, *, root: str
+) -> AdmissionGate | None:
+    """The admission ``options`` asks for on a launched SGLang engine, from
+    the KV facts it reported; ``None`` off one, or when ``kv`` / ``both``
+    finds no KV pool."""
+    return _gate_from_facts(deployment, deployment.facts, options, root=root)
 
 
-def _pending_kv_token_budget(
-    deployment: Deployment, *, root: str
-) -> PendingTokenBudget:
-    """KV admission for an SGLang engine not up yet, read at its first request;
-    fails naming *root* if the engine reports no pool."""
+def _pending_auto_gate(
+    deployment: Deployment, options: AutoConcurrency, *, root: str
+) -> PendingGate:
+    """``kv`` / ``both`` admission for an SGLang engine not up yet, read at
+    its first request; fails naming *root* if the engine reports no pool."""
 
-    async def resolve() -> TokenBudget | None:
+    async def resolve() -> AdmissionGate | None:
         facts = await kv_facts(deployment.engine.engine_id, deployment.api_base)
-        budget = _budget_from_facts(deployment, facts)
-        if budget is None:
+        gate = _gate_from_facts(deployment, facts, options, root=root)
+        if gate is None:
             raise RuntimeError(
                 f"Model root '{root}': concurrency_limit '{AUTO_CONCURRENCY}' "
-                "needs the engine's KV pool and context window, and the SGLang "
-                "engine sieval run launched reported none at /get_server_info; "
-                "set a number here"
+                f"with signal '{options.signal}' needs the engine's KV pool and "
+                "context window, and the SGLang engine sieval run launched "
+                "reported none at /get_server_info; set a number here"
             )
-        return budget
+        return gate
 
-    return PendingTokenBudget(resolve)
+    return PendingGate(resolve)
 
 
-def _budget_from_facts(
-    deployment: Deployment, facts: ServingFacts
-) -> TokenBudget | None:
-    if (
-        deployment.plan is None
-        or deployment.engine.engine_id != "sglang"
-        or facts.kv_capacity_tokens is None
-        or facts.context_tokens is None
-    ):
+def _gate_from_facts(
+    deployment: Deployment,
+    facts: ServingFacts,
+    options: AutoConcurrency,
+    *,
+    root: str,
+) -> AdmissionGate | None:
+    if not _launches_sglang(deployment):
         return None
+    name = root.removeprefix("model:")
+
+    def limit() -> AdaptiveLimit:
+        return AdaptiveLimit(
+            options, probe=SglangThroughputProbe(deployment.api_base), name=name
+        )
+
+    if not options.needs_kv_pool:
+        return limit()
+    if facts.kv_capacity_tokens is None or facts.context_tokens is None:
+        return None
+    capacity = facts.kv_capacity_tokens * facts.replicas
+    if options.signal == "both":
+        budget = TokenBudget(
+            capacity, context=facts.context_tokens, headroom=PROMPT_HEADROOM
+        )
+        return CombinedGate(limit(), budget)
     return AdaptiveTokenBudget(
-        facts.kv_capacity_tokens * facts.replicas,
+        capacity,
         context=facts.context_tokens,
         headroom=PROMPT_HEADROOM,
         probe=SglangLoadProbe(deployment.api_base),
@@ -1964,7 +1994,7 @@ class EvalSession:
 
     def _init_runner(self) -> None:
         self.result_dir = self.result_dir_override or self.config.get("result_dir")
-        if self.config.get("concurrency_limit") == AUTO_CONCURRENCY:
+        if auto_concurrency(self.config.get("concurrency_limit")) is not None:
             raise ValueError(
                 f"concurrency_limit '{AUTO_CONCURRENCY}' is for a root model under "
                 "'models'; the run's top level takes a number"
@@ -3130,7 +3160,7 @@ class EvalSession:
             subject=f"Model '{root_name}'",
         )
         plan = (self._infer_plans or {}).get(root_name)
-        if concurrency_limit == AUTO_CONCURRENCY and (
+        if isinstance(concurrency_limit, AutoConcurrency) and (
             not isinstance(plan, Mapping) or plan.get("backend") != "sglang"
         ):
             raise ValueError(
@@ -3958,8 +3988,10 @@ class EvalSession:
         nested_args: bool,
         subject: str = "Model",
         environ: Mapping[str, str] | None = None,
-    ) -> tuple[str | None, int, int | str | None]:
-        """Extract client/pool options without treating them as request defaults."""
+    ) -> tuple[str | None, int, int | AutoConcurrency | None]:
+        """Extract client/pool options without treating them as request
+        defaults; ``concurrency_limit: auto`` (with or without options)
+        comes back as its :class:`AutoConcurrency`."""
 
         args = config.get("args")
         nested: Mapping[str, object] = (
@@ -3974,7 +4006,8 @@ class EvalSession:
         concurrency_limit = _configured_concurrency_limit(config, nested)
         if isinstance(max_retries, bool) or not isinstance(max_retries, int):
             raise TypeError("max_retries must be an integer")
-        if concurrency_limit != AUTO_CONCURRENCY and (
+        auto = auto_concurrency(concurrency_limit)
+        if auto is None and (
             isinstance(concurrency_limit, bool)
             or (
                 concurrency_limit is not None
@@ -3986,7 +4019,11 @@ class EvalSession:
             )
         # Validate at prelaunch; the real default needs the realized deployment.
         _configured_client_timeout(config, nested, DEFAULT_REQUEST_TIMEOUT, subject)
-        return api_key, max_retries, cast(int | str | None, concurrency_limit)
+        return (
+            api_key,
+            max_retries,
+            auto if auto is not None else cast(int | None, concurrency_limit),
+        )
 
     def _configured_deployment_for(
         self,
@@ -4261,31 +4298,35 @@ class EvalSession:
                 if isinstance(concurrency_limit, int)
                 else None
             )
-        token_budgets = getattr(self, "_root_token_budgets", None)
-        if token_budgets is None:
-            token_budgets = {}
-            self._root_token_budgets = token_budgets
-        if root_key not in token_budgets:
-            budget: TokenBudget | PendingTokenBudget | None = None
-            if concurrency_limit == AUTO_CONCURRENCY:
-                budget = _kv_token_budget(deployment)
-                if budget is None and not _launches_sglang(deployment):
+        gates = getattr(self, "_root_gates", None)
+        if gates is None:
+            gates = {}
+            self._root_gates = gates
+        if root_key not in gates:
+            gate: AdmissionGate | PendingGate | None = None
+            if isinstance(concurrency_limit, AutoConcurrency):
+                if not _launches_sglang(deployment):
                     # Prelaunch refuses this first; kept as the backstop.
                     raise ValueError(
                         f"Model root '{root_key}': concurrency_limit "
                         f"'{AUTO_CONCURRENCY}' needs an SGLang engine sieval run "
                         "launched; set a number here"
                     )
-                if budget is None and self._not_up_yet(root_key):
-                    budget = _pending_kv_token_budget(deployment, root=root_key)
-                if budget is None:
+                gate = _auto_gate(deployment, concurrency_limit, root=root_key)
+                if gate is None and self._not_up_yet(root_key):
+                    gate = _pending_auto_gate(
+                        deployment, concurrency_limit, root=root_key
+                    )
+                if gate is None:
                     raise ValueError(
                         f"Model root '{root_key}': concurrency_limit "
-                        f"'{AUTO_CONCURRENCY}' needs the KV pool and context "
-                        "window, and the SGLang engine sieval run launched "
-                        "reported none at /get_server_info; set a number here"
+                        f"'{AUTO_CONCURRENCY}' with signal "
+                        f"'{concurrency_limit.signal}' needs the KV pool and "
+                        "context window, and the SGLang engine sieval run "
+                        "launched reported none at /get_server_info; set a "
+                        "number here"
                     )
-            token_budgets[root_key] = budget
+            gates[root_key] = gate
         connection = CONNECTION_FACTORY_REGISTRY.create(
             connection_family,
             ConnectionRequest(
@@ -4304,7 +4345,7 @@ class EvalSession:
             connection,
             identity,
             root_limiters[root_key],
-            token_budget=token_budgets[root_key],
+            gate=gates[root_key],
         )
         identity_payload = {
             "endpoint": identity.endpoint,
@@ -4421,7 +4462,7 @@ class EvalSession:
                     raw_args = cfg.get("args", {})
                     assert isinstance(raw_args, Mapping)
                     concurrency_limit = raw_args.get("concurrency_limit")
-                    if concurrency_limit == AUTO_CONCURRENCY:
+                    if auto_concurrency(concurrency_limit) is not None:
                         raise ValueError(
                             f"Model '{name}': concurrency_limit "
                             f"'{AUTO_CONCURRENCY}' is for a root model; a "
@@ -5667,18 +5708,14 @@ class EvalSession:
 
         owned_pools = getattr(self, "_owned_pools", {})
         root_shared_limiters = getattr(self, "_root_shared_limiters", {})
-        token_budgets = getattr(self, "_root_token_budgets", {})
+        gates = getattr(self, "_root_gates", {})
         pools = tuple({id(pool): pool for pool in owned_pools.values()}.values())
-        adaptive = [
-            b
-            for b in token_budgets.values()
-            if isinstance(b, AdaptiveTokenBudget | PendingTokenBudget)
-        ]
+        open_gates = [g for g in gates.values() if g is not None]
         owned_pools.clear()
         root_shared_limiters.clear()
-        token_budgets.clear()
+        gates.clear()
         first_error: BaseException | None = None
-        for closable in (*pools, *adaptive):
+        for closable in (*pools, *open_gates):
             try:
                 await closable.aclose()
             except BaseException as exc:

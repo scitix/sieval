@@ -21,7 +21,7 @@ from sieval.core.utils.concurrency import CompositeLimiter
 
 from ._engine_source import EngineSource
 from ._fingerprint import fingerprint_mapping
-from .admission import PendingTokenBudget, TokenBudget
+from .admission import AdmissionGate, PendingGate
 
 # These names select or mutate binding resources; they are never provider wire
 # extensions.  Composition layers and the legacy ``Model`` bridge share this
@@ -352,12 +352,12 @@ class ConnectionPool[ConnectionT]:
         connection: ConnectionT,
         identity: ConnectionIdentity,
         shared_limiter: Limiter | None = None,
-        token_budget: TokenBudget | PendingTokenBudget | None = None,
+        gate: AdmissionGate | PendingGate | None = None,
     ) -> None:
         self._connection = connection
         self._identity = identity
         self._shared_limiter = shared_limiter
-        self._token_budget = token_budget
+        self._gate = gate
         self._state_lock = anyio.Lock()
         self._drained = anyio.Event()
         self._close_complete = anyio.Event()
@@ -390,19 +390,20 @@ class ConnectionPool[ConnectionT]:
         return self._shared_limiter
 
     @property
-    def token_budget(self) -> TokenBudget | None:
-        """The engine's KV admission; ``None`` for none or not resolved yet."""
+    def gate(self) -> AdmissionGate | None:
+        """The ``concurrency_limit: auto`` admission; ``None`` for none or
+        not resolved yet."""
 
-        budget = self._token_budget
-        return budget.resolved if isinstance(budget, PendingTokenBudget) else budget
+        gate = self._gate
+        return gate.resolved if isinstance(gate, PendingGate) else gate
 
-    async def admission(self) -> TokenBudget | None:
-        """The engine's KV admission, resolving a pending one first."""
+    async def admission(self) -> AdmissionGate | None:
+        """The ``auto`` admission, resolving a pending one first."""
 
-        budget = self._token_budget
-        if isinstance(budget, PendingTokenBudget):
-            return await budget.resolve()
-        return budget
+        gate = self._gate
+        if isinstance(gate, PendingGate):
+            return await gate.resolve()
+        return gate
 
     @property
     def is_closing(self) -> bool:
@@ -449,11 +450,12 @@ class ConnectionPool[ConnectionT]:
         self,
         local_limiter: Limiter | None = None,
         *,
-        tokens: int | None = None,
+        size: tuple[int, int | None] | None = None,
     ) -> AsyncIterator[ConnectionT]:
         """Admit one request, enter shared/local limits, and yield the client.
 
-        *tokens* is reserved from :attr:`token_budget` after those limits.
+        A request of *size* ``(n, max_tokens)`` is then admitted by
+        :attr:`gate`, which hears how it ended.
         """
 
         async with self._state_lock:
@@ -464,16 +466,18 @@ class ConnectionPool[ConnectionT]:
         try:
             if local_limiter is self._shared_limiter:
                 local_limiter = None
-            budget = await self.admission()
-            reservation = (
-                budget.reserve(tokens)
-                if budget is not None and tokens is not None
-                else None
-            )
+            gate = await self.admission() if size is not None else None
+            reservation = gate.admit(*size) if gate is not None and size else None
             async with CompositeLimiter(
                 self._shared_limiter, local_limiter, reservation
             ):
-                yield self._connection
+                try:
+                    yield self._connection
+                except Exception as exc:
+                    if gate is not None:
+                        gate.failed(exc)
+                    raise
+
         finally:
             with anyio.CancelScope(shield=True):
                 async with self._state_lock:

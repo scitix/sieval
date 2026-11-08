@@ -111,6 +111,7 @@ from sieval.infer.deployer import (
     LocalDeployer,
     kv_facts,
     unlaunched_deployment,
+    with_engine_metrics,
 )
 from sieval.infer.introspect import (
     GPUInfo,
@@ -404,15 +405,29 @@ async def _prepare_launch_batch(
             plan = dataclasses.replace(plan, deterministic=True)
 
         plan_dicts[model_name] = unwrap_proxies(plan)
-        prepared_launches[model_name] = (plan, _translate(model_name, plan, user_env))
+        prepared_launches[model_name] = (
+            plan,
+            _translate(
+                model_name,
+                plan,
+                user_env,
+                metrics=sets_auto_concurrency(model_config),
+            ),
+        )
 
     return plan_dicts, prepared_launches
 
 
 def _translate(
-    model_name: str, plan: DeploymentPlan, user_env: dict[str, str]
+    model_name: str,
+    plan: DeploymentPlan,
+    user_env: dict[str, str],
+    *,
+    metrics: bool,
 ) -> list[BackendCommand]:
-    """Validate *plan* and translate it into its launch commands."""
+    """Validate *plan* and translate it into its launch commands; with
+    *metrics* (a ``concurrency_limit: auto`` root), SGLang serves the
+    counters ``auto`` reads (:func:`with_engine_metrics`)."""
     from sieval.infer.topology.validator import validate_plan
 
     errors = validate_plan(plan)
@@ -422,7 +437,7 @@ def _translate(
         )
     commands = get_translator(plan.backend).translate(plan)
     inject_user_env(commands, user_env)
-    return commands
+    return with_engine_metrics(commands) if metrics else commands
 
 
 def _user_env(model_config: Mapping[str, Any]) -> dict[str, str]:
@@ -494,10 +509,14 @@ def _serving_groups(
         base, commands = prepared_launches[name]
         if plan == base:
             return (plan, commands), plan_dicts[name]
-        user_env = _user_env(models.get(name) or {})
+        model_config = models.get(name) or {}
+        user_env = _user_env(model_config)
         if scaled:
             user_env = {**SCALING_ENV.get(plan.backend, {}), **user_env}
-        return (plan, _translate(name, plan, user_env)), unwrap_proxies(plan)
+        commands = _translate(
+            name, plan, user_env, metrics=sets_auto_concurrency(model_config)
+        )
+        return (plan, commands), unwrap_proxies(plan)
 
     default = {name: entry(name, plan) for name, plan in groups[0].plans.items()}
     out: list[_GroupLaunch] = []

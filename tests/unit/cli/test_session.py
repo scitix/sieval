@@ -58,6 +58,7 @@ from sieval.cli.session import (
 )
 from sieval.cli.validation import _VALID_OPERATIONS
 from sieval.core.datasets import Dataset
+from sieval.core.models.admission import AutoConcurrency, Signal
 from sieval.core.models.capabilities import (
     CapabilityIntent,
     ModelCapabilityStatus,
@@ -10693,49 +10694,74 @@ class TestKvTokenBudget:
             facts=ServingFacts(**facts),
         )
 
-    def test_capacity_is_the_measured_pool_times_replicas(self) -> None:
-        from sieval.cli.session import _kv_token_budget
+    _KV = AutoConcurrency(signal="kv")
 
-        budget = _kv_token_budget(
+    def test_capacity_is_the_measured_pool_times_replicas(self) -> None:
+        from sieval.cli.session import _auto_gate
+        from sieval.core.models.admission import TokenBudget
+
+        budget = _auto_gate(
             self._deployment(
                 kv_capacity_tokens=2266113, context_tokens=32768, replicas=2
-            )
+            ),
+            self._KV,
+            root="model:m",
         )
-        assert budget is not None
+        assert isinstance(budget, TokenBudget)
         assert budget.total_tokens == 2 * 2266113
         # Group A: an n=8 task at max_tokens 28672 holds 8 full windows.
         assert budget.weight(8, 28672) == 8 * 32768
 
     def test_no_facts_or_not_launched_gives_none(self) -> None:
-        from sieval.cli.session import _kv_token_budget
+        from sieval.cli.session import _auto_gate
 
-        assert _kv_token_budget(self._deployment()) is None
-        assert (
-            _kv_token_budget(
-                self._deployment(
-                    launched=False, kv_capacity_tokens=10, context_tokens=10
-                )
-            )
-            is None
+        assert _auto_gate(self._deployment(), self._KV, root="model:m") is None
+        not_launched = self._deployment(
+            launched=False, kv_capacity_tokens=10, context_tokens=10
         )
+        assert _auto_gate(not_launched, self._KV, root="model:m") is None
+        assert _auto_gate(not_launched, AutoConcurrency(), root="model:m") is None
 
 
 class TestAutoConcurrency:
-    """Only `concurrency_limit: auto` gets KV admission, on a launched SGLang."""
+    """Only `concurrency_limit: auto` gets adaptive admission, on a launched
+    SGLang; its `signal` picks the gate."""
 
-    def test_auto_on_a_launched_sglang_gets_adaptive_admission(self) -> None:
-        from sieval.cli.session import _kv_token_budget
-        from sieval.core.models.admission import AdaptiveTokenBudget
+    @pytest.mark.parametrize(
+        ("signal", "kind"),
+        [
+            ("throughput", "AdaptiveLimit"),
+            ("kv", "AdaptiveTokenBudget"),
+            ("both", "CombinedGate"),
+        ],
+    )
+    def test_the_signal_picks_the_gate(self, signal: Signal, kind: str) -> None:
+        from sieval.cli.session import _auto_gate
 
         deployment = TestKvTokenBudget._deployment(
             kv_capacity_tokens=1000, context_tokens=100
         )
-        assert isinstance(_kv_token_budget(deployment), AdaptiveTokenBudget)
+        gate = _auto_gate(
+            deployment,
+            AutoConcurrency(signal=signal),
+            root="model:m",
+        )
+        assert type(gate).__name__ == kind
+
+    def test_throughput_needs_no_kv_pool(self) -> None:
+        from sieval.cli.session import _auto_gate
+        from sieval.core.models.admission import AdaptiveLimit
+
+        gate = _auto_gate(
+            TestKvTokenBudget._deployment(), AutoConcurrency(), root="model:m"
+        )
+        assert isinstance(gate, AdaptiveLimit)
+        assert gate.limit == AutoConcurrency().start
 
     def test_no_kv_facts_launch_or_sglang_gets_none(self) -> None:
         from dataclasses import replace
 
-        from sieval.cli.session import _kv_token_budget
+        from sieval.cli.session import _auto_gate
         from sieval.core.models import DeploymentPlanProjection, Engine
 
         vllm = replace(
@@ -10743,7 +10769,8 @@ class TestAutoConcurrency:
             plan=DeploymentPlanProjection("fp", "vllm"),
             engine=Engine("vllm"),
         )
-        assert _kv_token_budget(vllm) is None
+        for options in (AutoConcurrency(), AutoConcurrency(signal="kv")):
+            assert _auto_gate(vllm, options, root="model:m") is None
 
     @pytest.mark.parametrize(
         ("config", "auto"),
@@ -10755,6 +10782,8 @@ class TestAutoConcurrency:
             ({"args": {"concurrency_limit": 4}}, False),
             # The top level wins, as in `_connection_options`.
             ({"concurrency_limit": 4, "args": {"concurrency_limit": "auto"}}, False),
+            ({"concurrency_limit": {"auto": {"signal": "kv"}}}, True),
+            ({"concurrency_limit": {"auto": None}}, True),
         ],
     )
     def test_sets_auto_concurrency_reads_both_spellings(
@@ -10807,7 +10836,7 @@ class TestAutoConcurrency:
         # The engine reported its pool; only `auto` admits by it.
         pool = self._pool_for(config, kv_capacity_tokens=500_000, context_tokens=32_768)
 
-        assert pool.token_budget is None
+        assert pool.gate is None
         limit = config.get("concurrency_limit")
         shared = pool.shared_limiter
         if limit is None:
@@ -10816,8 +10845,8 @@ class TestAutoConcurrency:
             assert isinstance(shared, anyio.CapacityLimiter)
             assert shared.total_tokens == limit
 
-    def test_auto_builds_the_kv_budget(self) -> None:
-        from sieval.core.models.admission import AdaptiveTokenBudget
+    def test_auto_builds_the_throughput_limit(self) -> None:
+        from sieval.core.models.admission import AdaptiveLimit
 
         pool = self._pool_for(
             {"concurrency_limit": "auto"},
@@ -10825,21 +10854,58 @@ class TestAutoConcurrency:
             context_tokens=32_768,
         )
 
-        assert isinstance(pool.token_budget, AdaptiveTokenBudget)
-        assert pool.token_budget.total_tokens == 500_000
+        assert isinstance(pool.gate, AdaptiveLimit)
         assert pool.shared_limiter is None
 
-    @pytest.mark.parametrize("value", ["auto", 4, None])
-    def test_auto_and_numbers_pass_option_parsing(self, value: object) -> None:
+    def test_auto_kv_builds_the_kv_budget(self) -> None:
+        from sieval.core.models.admission import AdaptiveTokenBudget
+
+        pool = self._pool_for(
+            {"concurrency_limit": {"auto": {"signal": "kv"}}},
+            kv_capacity_tokens=500_000,
+            context_tokens=32_768,
+        )
+
+        assert isinstance(pool.gate, AdaptiveTokenBudget)
+        assert pool.gate.total_tokens == 500_000
+
+    @pytest.mark.parametrize(
+        ("value", "parsed"),
+        [
+            ("auto", AutoConcurrency()),
+            ({"auto": {"signal": "both", "max": 64}}, AutoConcurrency("both", max=64)),
+            (4, 4),
+            (None, None),
+        ],
+    )
+    def test_auto_and_numbers_pass_option_parsing(
+        self, value: object, parsed: object
+    ) -> None:
         config: dict[str, object] = {"name": "m"}
         if value is not None:
             config["concurrency_limit"] = value
-        _, _, parsed = EvalSession._connection_options(config, nested_args=False)
-        assert parsed == value
+        _, _, got = EvalSession._connection_options(config, nested_args=False)
+        assert got == parsed
 
-    @pytest.mark.parametrize("value", ["fast", 0, True])
+    @pytest.mark.parametrize("value", ["fast", 0, True, {"max": 4}])
     def test_other_values_are_refused(self, value: object) -> None:
         with pytest.raises(ValueError, match="positive integer or 'auto'"):
+            EvalSession._connection_options(
+                {"name": "m", "concurrency_limit": value}, nested_args=False
+            )
+
+    @pytest.mark.parametrize(
+        ("value", "match"),
+        [
+            ({"auto": {"signal": "queue"}}, "signal must be one of"),
+            ({"auto": {"window": 3}}, "unknown option"),
+            ({"auto": {}, "max": 3}, "'auto' alone"),
+            ({"auto": "kv"}, "mapping of options"),
+            ({"auto": {"min": 64, "max": 8}}, "max must be >= min"),
+        ],
+    )
+    def test_bad_auto_options_are_refused(self, value: object, match: str) -> None:
+        with pytest.raises(ValueError, match=match):
             EvalSession._connection_options(
                 {"name": "m", "concurrency_limit": value}, nested_args=False
             )
@@ -10905,17 +10971,21 @@ class TestAutoConcurrency:
             EvalSession(config_path)._init_runner()
 
     @pytest.mark.anyio
-    async def test_session_close_closes_the_load_probe(self) -> None:
+    async def test_session_close_closes_the_load_probes(self) -> None:
         from unittest.mock import AsyncMock
 
-        from sieval.core.models.admission import AdaptiveTokenBudget
+        from sieval.core.models.admission import AdaptiveLimit, AdaptiveTokenBudget
 
         session = EvalSession.__new__(EvalSession)
-        probe = AsyncMock()
-        budget = AdaptiveTokenBudget(1, context=1, probe=probe)
+        kv, tput = AsyncMock(), AsyncMock()
         session._owned_pools = {}
         session._root_shared_limiters = {}
-        session._root_token_budgets = {"candidate": budget}
+        session._root_gates = {
+            "candidate": AdaptiveTokenBudget(1, context=1, probe=kv),
+            "judge": AdaptiveLimit(AutoConcurrency(), probe=tput),
+            "fixed": None,
+        }
         await session._close_owned_model_resources()
-        probe.aclose.assert_awaited_once()
-        assert session._root_token_budgets == {}
+        kv.aclose.assert_awaited_once()
+        tput.aclose.assert_awaited_once()
+        assert session._root_gates == {}

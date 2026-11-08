@@ -142,13 +142,19 @@ class LimiterLoad(Protocol):
 
 
 def limiter_snapshot(limiter: LimiterLoad) -> dict[str, JSONValue]:
-    """``{"borrowed", "total"}``; an unbounded total is ``None``."""
+    """``{"borrowed", "total"}``; an unbounded total is ``None``. A limiter
+    with a ``record_extra`` mapping (the ``auto`` gate's last decision) adds
+    its keys."""
 
     total = limiter.total_tokens
-    return {
+    out: dict[str, JSONValue] = {
         "borrowed": limiter.borrowed_tokens,
         "total": None if math.isinf(total) else int(total),
     }
+    extra = getattr(limiter, "record_extra", None)
+    if isinstance(extra, Mapping):
+        out.update(extra)
+    return out
 
 
 @dataclass
