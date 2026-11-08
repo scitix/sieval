@@ -1,7 +1,8 @@
 """Pattern: ``concurrency_limit: auto`` through ``sieval run``, plan to report.
 
 Planning binds each root before its engine exists; the KV pool is read at the
-first request. The engines are the stubs of ``test_staged_run`` and answer
+first request. Without ``auto`` no pool is read and nothing is admitted by KV.
+The engines are the stubs of ``test_staged_run`` and answer
 ``/get_server_info`` once launched.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
@@ -118,10 +119,11 @@ class TestAutoConcurrency:
         reports = await _run(_sglang(_write(tmp_path, subject=AUTO)))
 
         assert reports["judged"]["correct"] == 3
-        budgets = _budgets()
-        adaptive = [b for b in budgets if isinstance(b, AdaptiveTokenBudget)]
-        assert len(adaptive) == 1
-        assert adaptive[0].total_tokens == 500_000
+        # Only the subject sets `auto`; the judge, with no limit, has no budget.
+        (budget,) = _budgets()
+        assert isinstance(budget, AdaptiveTokenBudget)
+        assert budget.total_tokens == 500_000
+        assert facts.asked == ["sglang"]
 
     @pytest.mark.anyio
     async def test_a_judge_started_at_a_barrier_gets_auto_after_it_is_up(
@@ -142,7 +144,21 @@ class TestAutoConcurrency:
         assert [b.total_tokens for b in adaptive] == [500_000]
 
     @pytest.mark.anyio
-    async def test_a_judge_with_no_limit_started_at_a_barrier_gets_kv_admission(
+    async def test_no_limit_gets_no_kv_admission(
+        self,
+        tmp_path: Path,
+        engines: Engines,
+        facts: KvFacts,
+    ) -> None:
+        reports = await _run(_sglang(_write(tmp_path)))
+
+        assert reports["judged"]["correct"] == 3
+        # KV admission is `auto`'s: no pool is read, no budget is reserved.
+        assert facts.asked == []
+        assert _budgets() == []
+
+    @pytest.mark.anyio
+    async def test_a_judge_with_no_limit_started_at_a_barrier_gets_no_kv_admission(
         self,
         tmp_path: Path,
         engines: Engines,
@@ -153,9 +169,8 @@ class TestAutoConcurrency:
         reports = await _run(config)
 
         assert reports["judged"]["correct"] == 3
-        # Plain KV admission, as an engine started up front gets (#277).
-        plain = [b for b in _budgets() if not isinstance(b, AdaptiveTokenBudget)]
-        assert [b.total_tokens for b in plain] == [500_000, 500_000]
+        assert facts.asked == []
+        assert _budgets() == []
 
     @pytest.mark.anyio
     async def test_auto_on_an_engine_that_reports_no_pool_is_refused(

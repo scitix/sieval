@@ -1257,34 +1257,43 @@ def _default_client_timeout(deployment: Deployment | None) -> httpx.Timeout:
     )
 
 
-#: A root model's ``concurrency_limit`` that adds the engine's own load to KV
-#: admission (:class:`AdaptiveTokenBudget`).
+#: A root model's ``concurrency_limit`` that turns on KV admission with the
+#: engine's own load (:class:`AdaptiveTokenBudget`). Without it a root has no
+#: KV admission.
 AUTO_CONCURRENCY = "auto"
 
 
-def _kv_token_budget(
-    deployment: Deployment, *, adaptive: bool = False
-) -> TokenBudget | None:
-    """KV admission for an engine ``sieval run`` launched that reported
-    its pool; ``None`` otherwise. *adaptive* also reads an SGLang engine's
-    load, and is ``None`` on any other engine."""
-    return _budget_from_facts(deployment, deployment.facts, adaptive=adaptive)
+def sets_auto_concurrency(model_config: Mapping[str, object]) -> bool:
+    """Whether a root model sets ``concurrency_limit: auto``, at its top
+    level or under ``args``."""
+    args = model_config.get("args")
+    nested: Mapping[str, object] = (
+        cast(Mapping[str, object], args) if isinstance(args, Mapping) else {}
+    )
+    limit = model_config.get("concurrency_limit", nested.get("concurrency_limit"))
+    return limit == AUTO_CONCURRENCY
+
+
+def _kv_token_budget(deployment: Deployment) -> TokenBudget | None:
+    """``auto``'s KV admission for an SGLang engine ``sieval run`` launched
+    that reported its pool; ``None`` otherwise."""
+    return _budget_from_facts(deployment, deployment.facts)
 
 
 def _pending_kv_token_budget(
-    deployment: Deployment, *, root: str, adaptive: bool
+    deployment: Deployment, *, root: str
 ) -> PendingTokenBudget:
-    """KV admission for an SGLang engine not up yet, read at its first request.
+    """``auto``'s KV admission for an SGLang engine not up yet, read at its
+    first request.
 
     The launch waits for readiness, so this is the same one read an engine
-    started up front gets. With no pool reported, ``auto`` fails naming the
-    root, and no limit runs without KV admission.
+    started up front gets. With no pool reported, it fails naming the root.
     """
 
     async def resolve() -> TokenBudget | None:
         facts = await kv_facts(deployment.engine.engine_id, deployment.api_base)
-        budget = _budget_from_facts(deployment, facts, adaptive=adaptive)
-        if adaptive and budget is None:
+        budget = _budget_from_facts(deployment, facts)
+        if budget is None:
             raise RuntimeError(
                 f"Model root '{root}': concurrency_limit '{AUTO_CONCURRENCY}' "
                 "needs the engine's KV pool and context window, and the SGLang "
@@ -1297,23 +1306,17 @@ def _pending_kv_token_budget(
 
 
 def _budget_from_facts(
-    deployment: Deployment, facts: ServingFacts, *, adaptive: bool
+    deployment: Deployment, facts: ServingFacts
 ) -> TokenBudget | None:
     if (
         deployment.plan is None
+        or deployment.engine.engine_id != "sglang"
         or facts.kv_capacity_tokens is None
         or facts.context_tokens is None
     ):
         return None
-    capacity = facts.kv_capacity_tokens * facts.replicas
-    if not adaptive:
-        return TokenBudget(
-            capacity, context=facts.context_tokens, headroom=PROMPT_HEADROOM
-        )
-    if deployment.engine.engine_id != "sglang":
-        return None
     return AdaptiveTokenBudget(
-        capacity,
+        facts.kv_capacity_tokens * facts.replicas,
         context=facts.context_tokens,
         headroom=PROMPT_HEADROOM,
         probe=SglangLoadProbe(deployment.api_base),
@@ -4269,30 +4272,25 @@ class EvalSession:
             token_budgets = {}
             self._root_token_budgets = token_budgets
         if root_key not in token_budgets:
-            auto = concurrency_limit == AUTO_CONCURRENCY
-            budget: TokenBudget | PendingTokenBudget | None = (
-                _kv_token_budget(deployment, adaptive=auto)
-                if auto or concurrency_limit is None
-                else None
-            )
-            if budget is None and (auto or concurrency_limit is None):
-                if _launches_sglang(deployment) and self._not_up_yet(root_key):
-                    budget = _pending_kv_token_budget(
-                        deployment, root=root_key, adaptive=auto
-                    )
-                elif auto and _launches_sglang(deployment):
-                    raise ValueError(
-                        f"Model root '{root_key}': concurrency_limit "
-                        f"'{AUTO_CONCURRENCY}' needs the KV pool and context "
-                        "window, and the SGLang engine sieval run launched "
-                        "reported none at /get_server_info; set a number here"
-                    )
-                elif auto:
+            # KV admission is `auto`'s alone; no limit or a number has none.
+            budget: TokenBudget | PendingTokenBudget | None = None
+            if concurrency_limit == AUTO_CONCURRENCY:
+                budget = _kv_token_budget(deployment)
+                if budget is None and not _launches_sglang(deployment):
                     # Prelaunch refuses this first; kept as the backstop.
                     raise ValueError(
                         f"Model root '{root_key}': concurrency_limit "
                         f"'{AUTO_CONCURRENCY}' needs an SGLang engine sieval run "
                         "launched; set a number here"
+                    )
+                if budget is None and self._not_up_yet(root_key):
+                    budget = _pending_kv_token_budget(deployment, root=root_key)
+                if budget is None:
+                    raise ValueError(
+                        f"Model root '{root_key}': concurrency_limit "
+                        f"'{AUTO_CONCURRENCY}' needs the KV pool and context "
+                        "window, and the SGLang engine sieval run launched "
+                        "reported none at /get_server_info; set a number here"
                     )
             token_budgets[root_key] = budget
         connection = CONNECTION_FACTORY_REGISTRY.create(
