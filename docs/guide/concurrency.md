@@ -16,7 +16,27 @@ config = TaskRunnerConfig(concurrency_limits={"infer": 64, "postprocess": 32})
 model = ChatModel("gpt-4o", concurrency_limit=32)
 ```
 
+## Self-hosted SGLang engines
+
+For a mixed workload on an SGLang engine `sieval run` launches, set a high
+fixed `concurrency_limit` on the root model and let the engine schedule. On a
+mixed arck-general-1k slice on 4×H100, a cap of 256 served about 4370 useful
+tokens/s, a cap of 64 about 3600, and 0.15.6's KV admission about 2470. At 256
+a few requests hit connect timeouts and were retried; lower the cap if many
+do.
+
+```yaml
+models:
+    candidate:
+        concurrency_limit: 256
+        infer:
+            backend: sglang
+            checkpoint: /models/candidate
+```
+
 ## `concurrency_limit: auto`
+
+`auto` is opt-in and being reworked (#287); prefer a fixed cap for now.
 
 A root model on an SGLang engine `sieval run` launches can set
 `concurrency_limit: auto` to admit requests by the KV cache they may hold.
