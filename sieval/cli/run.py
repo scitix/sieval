@@ -92,6 +92,7 @@ from sieval.cli.session import (
     read_persisted_config,
     redact_secrets,
     resolve_deterministic,
+    sets_auto_concurrency,
     unwrap_proxies,
 )
 from sieval.cli.signals import terminate_as_interrupt
@@ -1506,7 +1507,12 @@ class _Engines:
     deployments: dict[str, Deployment] = dataclasses.field(default_factory=dict)
 
     async def start(
-        self, name: str, plan: DeploymentPlan, commands: list[BackendCommand]
+        self,
+        name: str,
+        plan: DeploymentPlan,
+        commands: list[BackendCommand],
+        *,
+        auto: bool,
     ) -> Deployment:
         if name in self.launched:
             return self.deployments[name]
@@ -1514,6 +1520,7 @@ class _Engines:
             name,
             plan,
             commands,
+            auto=auto,
             deployer=self.deployer,
             launched=self.launched,
             handle_dir=self.handle_dir,
@@ -1592,10 +1599,17 @@ async def _run_group(
         await check_launch_gpu(required=True)
     for root in sorted(group.own - runnable):
         log_user("No work for model {} in this run; not starting it", group.names[root])
+    models = config.get("models") or {}
+
+    def auto(root: str) -> bool:
+        return sets_auto_concurrency(models.get(root) or {})
+
     realized: dict[str, Deployment] = {}
     for root in sorted(upfront):
         plan, commands = group.prepared[root]
-        realized[root] = await engines.start(group.names[root], plan, commands)
+        realized[root] = await engines.start(
+            group.names[root], plan, commands, auto=auto(root)
+        )
     for root in sorted(deferred):
         # Up already, kept from an earlier group.
         name = group.names[root]
@@ -1616,7 +1630,7 @@ async def _run_group(
         for root in sorted(deferred):
             if staged.starts(root) == stage:
                 plan, commands = group.prepared[root]
-                await engines.start(group.names[root], plan, commands)
+                await engines.start(group.names[root], plan, commands, auto=auto(root))
                 watches.start(root, engines.launched[group.names[root]])
 
     serving = dataclasses.replace(serving, on_barrier=on_barrier)
@@ -1665,6 +1679,7 @@ async def _launch(
     plan: DeploymentPlan,
     commands: list[BackendCommand],
     *,
+    auto: bool,
     deployer: LocalDeployer,
     launched: dict[str, list[InferHandle]],
     handle_dir: Path,
@@ -1673,7 +1688,7 @@ async def _launch(
     ready_timeout: float,
 ) -> Deployment:
     """Start one engine under *model_name*, wait until it is ready, and record
-    its handles in *launched*."""
+    its handles in *launched*; with *auto*, also read its KV pool."""
     log_user("Starting inference for model: {}", model_name)
 
     last_status = None
@@ -1740,6 +1755,8 @@ async def _launch(
             env.gpu_count,
         )
     deployment = deployer.build_deployment(plan, new_handles)
+    if not auto:
+        return deployment
     facts = await kv_facts(plan.backend, deployment.api_base)
     if facts.kv_capacity_tokens is None:
         return deployment

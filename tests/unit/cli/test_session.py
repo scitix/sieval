@@ -10721,7 +10721,7 @@ class TestKvTokenBudget:
 
 
 class TestAutoConcurrency:
-    """`concurrency_limit: auto` is for a launched SGLang that reported its KV."""
+    """Only `concurrency_limit: auto` gets KV admission, on a launched SGLang."""
 
     def test_auto_on_a_launched_sglang_gets_adaptive_admission(self) -> None:
         from sieval.cli.session import _kv_token_budget
@@ -10730,35 +10730,104 @@ class TestAutoConcurrency:
         deployment = TestKvTokenBudget._deployment(
             kv_capacity_tokens=1000, context_tokens=100
         )
-        assert isinstance(
-            _kv_token_budget(deployment, adaptive=True), AdaptiveTokenBudget
-        )
-        assert not isinstance(_kv_token_budget(deployment), AdaptiveTokenBudget)
+        assert isinstance(_kv_token_budget(deployment), AdaptiveTokenBudget)
 
-    def test_auto_without_kv_facts_launch_or_sglang_gets_none(self) -> None:
+    def test_no_kv_facts_launch_or_sglang_gets_none(self) -> None:
         from dataclasses import replace
 
         from sieval.cli.session import _kv_token_budget
-        from sieval.core.models import Engine
-
-        assert _kv_token_budget(TestKvTokenBudget._deployment(), adaptive=True) is None
-        assert (
-            _kv_token_budget(
-                TestKvTokenBudget._deployment(
-                    launched=False, kv_capacity_tokens=1, context_tokens=1
-                ),
-                adaptive=True,
-            )
-            is None
-        )
-        from sieval.core.models import DeploymentPlanProjection
+        from sieval.core.models import DeploymentPlanProjection, Engine
 
         vllm = replace(
             TestKvTokenBudget._deployment(kv_capacity_tokens=1, context_tokens=1),
             plan=DeploymentPlanProjection("fp", "vllm"),
             engine=Engine("vllm"),
         )
-        assert _kv_token_budget(vllm, adaptive=True) is None
+        assert _kv_token_budget(vllm) is None
+
+    @pytest.mark.parametrize(
+        ("config", "auto"),
+        [
+            ({}, False),
+            ({"concurrency_limit": 4}, False),
+            ({"concurrency_limit": "auto"}, True),
+            ({"args": {"concurrency_limit": "auto"}}, True),
+            ({"args": {"concurrency_limit": 4}}, False),
+            # The top level wins, as in `_connection_options`.
+            ({"concurrency_limit": 4, "args": {"concurrency_limit": "auto"}}, False),
+        ],
+    )
+    def test_sets_auto_concurrency_reads_both_spellings(
+        self, config: dict[str, object], auto: bool
+    ) -> None:
+        from sieval.cli.session import sets_auto_concurrency
+
+        assert sets_auto_concurrency(config) is auto
+
+    @staticmethod
+    def _pool_for(config: dict[str, object], **facts: Any):
+        """The pool a root on a launched SGLang engine gets for *config*."""
+        from sieval.core.models import ConnectionIdentity, ResolvedRoute
+        from sieval.core.models.reconcile import RuntimeBindingPlan
+
+        session = EvalSession.__new__(EvalSession)
+        session._owned_pools = {}
+        session._realized_deployments_by_root = {}
+        identity = ConnectionIdentity(
+            endpoint="http://127.0.0.1:1/v1",
+            connection_family="openai_sdk",
+            credential_scope="model:m:managed-local-credential",
+            retry_policy="openai-sdk:max-retries=3",
+            quota_scope="model:m",
+        )
+        runtime_plan = cast(
+            RuntimeBindingPlan,
+            types.SimpleNamespace(
+                dialect_id="openai_chat",
+                resolved_route=ResolvedRoute(
+                    service_role="default",
+                    endpoint=identity.endpoint,
+                    connection_family="openai_sdk",
+                    fingerprint="route",
+                ),
+                connection_identity=identity,
+            ),
+        )
+        with patch("sieval.core.models.connection_factory.AsyncOpenAI"):
+            return session._create_owned_pool(
+                "model:m",
+                TestKvTokenBudget._deployment(**facts),
+                runtime_plan,
+                {"name": "org/m", **config},
+                nested_args=True,
+            )
+
+    @pytest.mark.parametrize("config", [{}, {"concurrency_limit": 4}])
+    def test_no_auto_gets_no_kv_admission(self, config: dict[str, object]) -> None:
+        # The engine reported its pool; only `auto` admits by it.
+        pool = self._pool_for(config, kv_capacity_tokens=500_000, context_tokens=32_768)
+
+        assert pool.token_budget is None
+        limit = config.get("concurrency_limit")
+        shared = pool.shared_limiter
+        if limit is None:
+            assert shared is None
+        else:
+            assert isinstance(shared, anyio.CapacityLimiter)
+            assert shared.total_tokens == limit
+
+    def test_auto_builds_the_kv_budget(self) -> None:
+        from sieval.core.models.admission import AdaptiveTokenBudget
+
+        pool = self._pool_for(
+            {"concurrency_limit": "auto"},
+            kv_capacity_tokens=500_000,
+            context_tokens=32_768,
+        )
+
+        assert isinstance(pool.token_budget, AdaptiveTokenBudget)
+        assert pool.token_budget.total_tokens == 500_000
+        assert pool.shared_limiter is None
 
     @pytest.mark.parametrize("value", ["auto", 4, None])
     def test_auto_and_numbers_pass_option_parsing(self, value: object) -> None:

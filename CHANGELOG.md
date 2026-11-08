@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **KV admission now needs `concurrency_limit: auto`.** Since 0.15.5 (#277) a root with no `concurrency_limit` on an SGLang engine `sieval run` launched was admitted by KV cache; it is now bounded only by its task and stage limits, as before 0.15.5 (no `KV:` line, no `kv_tokens`). Set `concurrency_limit: auto` to keep KV admission. Throughput only: identity schema and `RESULT_SCHEMA_VERSION` are unchanged, and 0.15.6 result directories resume.
+
 ## [0.15.6] - 2026-11-08
 
 A patch release: `concurrency_limit: auto` (#278) works again. 0.15.5's
