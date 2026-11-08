@@ -1,9 +1,8 @@
 """Pattern: ``concurrency_limit: auto`` through ``sieval run``, plan to report.
 
 Planning binds each root before its engine exists; the KV pool is read at the
-first request. Without ``auto`` no pool is read and nothing is admitted by KV.
-The engines are the stubs of ``test_staged_run`` and answer
-``/get_server_info`` once launched.
+first request; without ``auto`` none is read. The engines are the stubs of
+``test_staged_run`` and answer ``/get_server_info`` once launched.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
@@ -119,7 +118,7 @@ class TestAutoConcurrency:
         reports = await _run(_sglang(_write(tmp_path, subject=AUTO)))
 
         assert reports["judged"]["correct"] == 3
-        # Only the subject sets `auto`; the judge, with no limit, has no budget.
+        # Only the subject sets `auto`.
         (budget,) = _budgets()
         assert isinstance(budget, AdaptiveTokenBudget)
         assert budget.total_tokens == 500_000
@@ -153,7 +152,6 @@ class TestAutoConcurrency:
         reports = await _run(_sglang(_write(tmp_path)))
 
         assert reports["judged"]["correct"] == 3
-        # KV admission is `auto`'s: no pool is read, no budget is reserved.
         assert facts.asked == []
         assert _budgets() == []
 

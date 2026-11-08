@@ -1257,38 +1257,34 @@ def _default_client_timeout(deployment: Deployment | None) -> httpx.Timeout:
     )
 
 
-#: A root model's ``concurrency_limit`` that turns on KV admission with the
-#: engine's own load (:class:`AdaptiveTokenBudget`). Without it a root has no
-#: KV admission.
+#: The root ``concurrency_limit`` that turns on KV admission
+#: (:class:`AdaptiveTokenBudget`); no other value does.
 AUTO_CONCURRENCY = "auto"
 
 
+def _configured_concurrency_limit(
+    config: Mapping[str, object], nested: Mapping[str, object]
+) -> object:
+    """``concurrency_limit``: the top level wins over ``args``."""
+    return config.get("concurrency_limit", nested.get("concurrency_limit"))
+
+
 def sets_auto_concurrency(model_config: Mapping[str, object]) -> bool:
-    """Whether a root model sets ``concurrency_limit: auto``, at its top
-    level or under ``args``."""
-    args = model_config.get("args")
-    nested: Mapping[str, object] = (
-        cast(Mapping[str, object], args) if isinstance(args, Mapping) else {}
-    )
-    limit = model_config.get("concurrency_limit", nested.get("concurrency_limit"))
+    """Whether a root model sets ``concurrency_limit: auto``."""
+    limit = _configured_concurrency_limit(model_config, _nested_args(model_config))
     return limit == AUTO_CONCURRENCY
 
 
 def _kv_token_budget(deployment: Deployment) -> TokenBudget | None:
-    """``auto``'s KV admission for an SGLang engine ``sieval run`` launched
-    that reported its pool; ``None`` otherwise."""
+    """KV admission from the pool a launched SGLang engine reported, else ``None``."""
     return _budget_from_facts(deployment, deployment.facts)
 
 
 def _pending_kv_token_budget(
     deployment: Deployment, *, root: str
 ) -> PendingTokenBudget:
-    """``auto``'s KV admission for an SGLang engine not up yet, read at its
-    first request.
-
-    The launch waits for readiness, so this is the same one read an engine
-    started up front gets. With no pool reported, it fails naming the root.
-    """
+    """KV admission for an SGLang engine not up yet, read at its first request;
+    fails naming *root* if the engine reports no pool."""
 
     async def resolve() -> TokenBudget | None:
         facts = await kv_facts(deployment.engine.engine_id, deployment.api_base)
@@ -3975,9 +3971,7 @@ class EvalSession:
             config, nested, subject, os.environ if environ is None else environ
         )
         max_retries = config.get("max_retries", nested.get("max_retries", 3))
-        concurrency_limit = config.get(
-            "concurrency_limit", nested.get("concurrency_limit")
-        )
+        concurrency_limit = _configured_concurrency_limit(config, nested)
         if isinstance(max_retries, bool) or not isinstance(max_retries, int):
             raise TypeError("max_retries must be an integer")
         if concurrency_limit != AUTO_CONCURRENCY and (
@@ -4272,7 +4266,6 @@ class EvalSession:
             token_budgets = {}
             self._root_token_budgets = token_budgets
         if root_key not in token_budgets:
-            # KV admission is `auto`'s alone; no limit or a number has none.
             budget: TokenBudget | PendingTokenBudget | None = None
             if concurrency_limit == AUTO_CONCURRENCY:
                 budget = _kv_token_budget(deployment)

@@ -1688,8 +1688,7 @@ async def _launch(
     ready_timeout: float,
 ) -> Deployment:
     """Start one engine under *model_name*, wait until it is ready, and record
-    its handles in *launched*. With *auto* (its root sets ``concurrency_limit:
-    auto``), also read the KV pool its admission needs."""
+    its handles in *launched*; with *auto*, also read its KV pool."""
     log_user("Starting inference for model: {}", model_name)
 
     last_status = None

@@ -10721,8 +10721,7 @@ class TestKvTokenBudget:
 
 
 class TestAutoConcurrency:
-    """KV admission is `concurrency_limit: auto`'s, on a launched SGLang that
-    reported its KV."""
+    """Only `concurrency_limit: auto` gets KV admission, on a launched SGLang."""
 
     def test_auto_on_a_launched_sglang_gets_adaptive_admission(self) -> None:
         from sieval.cli.session import _kv_token_budget
@@ -10754,6 +10753,8 @@ class TestAutoConcurrency:
             ({"concurrency_limit": "auto"}, True),
             ({"args": {"concurrency_limit": "auto"}}, True),
             ({"args": {"concurrency_limit": 4}}, False),
+            # The top level wins, as in `_connection_options`.
+            ({"concurrency_limit": 4, "args": {"concurrency_limit": "auto"}}, False),
         ],
     )
     def test_sets_auto_concurrency_reads_both_spellings(
@@ -10803,8 +10804,7 @@ class TestAutoConcurrency:
 
     @pytest.mark.parametrize("config", [{}, {"concurrency_limit": 4}])
     def test_no_auto_gets_no_kv_admission(self, config: dict[str, object]) -> None:
-        # As before KV admission (#277): the engine reported its pool, and
-        # still only `auto` admits by it.
+        # The engine reported its pool; only `auto` admits by it.
         pool = self._pool_for(config, kv_capacity_tokens=500_000, context_tokens=32_768)
 
         assert pool.token_budget is None

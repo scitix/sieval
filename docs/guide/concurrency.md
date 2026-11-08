@@ -19,10 +19,9 @@ model = ChatModel("gpt-4o", concurrency_limit=32)
 ## `concurrency_limit: auto`
 
 A root model on an SGLang engine `sieval run` launches can set
-`concurrency_limit: auto`. Its requests are then admitted by the KV cache they
-may hold, and held back while the engine reports itself congested. Without
-`auto`, a root has no KV admission: no `concurrency_limit` leaves it bounded
-only by the task and stage limits, and a number is a fixed cap.
+`concurrency_limit: auto` to admit requests by the KV cache they may hold.
+Only `auto` does this: a number is a fixed cap, and no limit leaves the root
+bounded by the task and stage limits alone.
 
 ```yaml
 models:
@@ -42,10 +41,9 @@ models:
 - **Order.** First come, first served, after the other limits. A request
   waits before it is sent, so no client timeout runs meanwhile. One larger
   than the whole pool runs alone.
-- **Engine load.** While requests wait, SiEval reads the engine's `/v1/loads`
-  once a second. A waiting request that fits is held back while the engine
-  reports queued requests or a KV pool at least 95% full. An engine that does
-  not answer leaves the KV budget in charge.
+- **Engine load.** While requests wait, SiEval polls `/v1/loads` once a
+  second and holds them back while the engine reports queued requests or a
+  KV pool at least 95% full. No answer leaves the KV budget in charge.
 - Throughput only: no stage identity changes. Request records show the
   budget as `kv_tokens` under `in_flight`.
 
