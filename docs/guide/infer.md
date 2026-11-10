@@ -225,12 +225,18 @@ SiEval (`api_base`, `sieval infer start`) is not reported.
 window from what its tasks need, before any engine starts (`--dry-run`
 included).
 
-A task needs its `min_context` if set, else the larger of what its class
+A task needs its `min_context` if set, else the stricter of what its class
 declares (`TaskRequirements.min_context`; RULER: `max_seq_length` plus any
-unreserved thinking budget) and its effective `max_tokens` plus 4096 for the
-prompt. Both `min_context` forms already count prompt and output and are used
-as they are. A task whose prompts are longer (or known to be shorter) sets
-`min_context`. A root model states what it can serve:
+unreserved thinking budget) and its effective `max_tokens`. One rule picks a
+window and checks one SiEval did not pick:
+
+- `min_context` (either form) counts prompt and output: window ≥ need.
+- `max_tokens` counts output only: window > `max_tokens`. The rest is the
+  prompt's room; a longer prompt is that sample's
+  [context overflow](metrics.md#always-present). Room under 4096 tokens is
+  warned about, not refused.
+
+A root model states what it can serve:
 
 ```yaml
 models:
@@ -248,32 +254,33 @@ tasks:
     min_context: 38000       # optional: override the derived need
 ```
 
-- Within the recipe window: nothing changes.
-- Within `native`: the plan's `context_length` / `max_model_len` is raised to
-  the largest such need, for every task on that model. A `max_tokens` below
-  `native` raises it to `native` itself, even when the 4096 would not fit:
-  such a task is never scaled, and its prompt gets `native - max_tokens`
-  tokens. A longer prompt is that sample's
-  [context overflow](metrics.md#always-present), as before.
-- Within `max`: a plan of its own with `scaling`, in serving group
-  `<model>@<window>`. Scaling changes short-context outputs, so no other task
-  shares that engine. SGLang launches it with
-  `SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1`, so `max` is the only bound:
-  SGLang no longer checks the window against the scaling. `infer.env`
-  overrides it.
+A served window is a declared one, never sized to a need:
+
+- The recipe window serves every task with 4096 tokens of prompt room:
+  nothing changes.
+- Otherwise, when `native` serves the task: the plan's `context_length` /
+  `max_model_len` is raised to `native`, for every task on that model.
+- Only `max` serves it: a plan of its own at `max`, with `scaling`, in serving
+  group `<model>@<max>`, the same for every subset of tasks. Scaling changes
+  short-context outputs, so no other task shares that engine. SGLang launches
+  it with `SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1`, so `max` is the only
+  bound; `infer.env` overrides it. The engine keeps the recipe's tp;
+  `--dry-run` warns when one `max` sequence leaves little KV room. Raise tp in
+  `infer.overrides` then.
 - Within `max` with `extrapolate: true` instead of `scaling`: the same
   group and variable, with no scaling parameters. SGLang only; exclusive with
   `scaling`.
-- Otherwise, or beyond a window pinned by `infer.overrides` / `context_limit`:
-  refused before launch, naming the task, its need and the model's limit. An
-  unknown native window refuses any raise (set `context.native`).
+- Otherwise, or beyond a window pinned by `infer.overrides` / `context_limit`
+  (never raised): refused before launch, naming the task, what was checked and
+  the model's limit. An unknown native window refuses any raise (set
+  `context.native`).
 
-An `api_base` model is checked against its `context_limit`; without one, an
-overflow shows per sample.
+An `api_base` model is checked against its `context_limit` by the same rule;
+without one, an overflow shows per sample.
 
 **Resume.** The served window is in each task's inference identity, and a
-resume never reruns inference. A run recorded at a window this release now
-raises is refused: start fresh, or pin the recorded window with
+resume never reruns inference. A run recorded at a window this release serves
+differently is refused: start fresh, or pin the recorded window with
 `infer.overrides`.
 
 Groups run one after another, each group's engines stopped before the next

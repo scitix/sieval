@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **One rule decides whether a context window serves a task, whoever picked it (#289).** `min_context` and a declared need count the prompt (window ≥ need); `max_tokens` counts the output only (window > `max_tokens`). An endpoint with `context_limit: 40960` now runs `max_tokens: 38000`, as a launched engine already did, instead of refusing it as needing 42096. Under 4096 tokens of prompt room is a warning (`task 't' leaves 2960 tokens for the prompt at window 40960; ...`), on `--dry-run` and at run time.
+- **A served window is a declared one, never sized to a need.** A scaled group serves and is keyed by `context.max` (`<model>@<max>`) for every task subset. A need between the recipe window and `native`, including a `max_tokens` left under 4096 tokens of prompt room by the recipe window, raises the default group to `native`. A pinned window is never raised. A scaled engine keeps the recipe's tp; `--dry-run` warns on low KV room at `context.max`.
+- **Resume:** a directory recorded at a need-sized window (a scaled group, or a default group raised to a `min_context` below `native`) is refused on `inference`: start fresh, or pin the recorded window with `infer.overrides`. `IDENTITY_SCHEMA` and `RESULT_SCHEMA_VERSION` are unchanged; the window is already in `identity.inference`.
+- `sieval.cli.serving`: new `fits(need, window)` and `prompt_room_warnings(...)`; `check_context_fits` returns the warnings; a `max_tokens` need is the raw `max_tokens`.
+
 ## [0.15.7] - 2026-11-08
 
 A patch release: KV admission now needs `concurrency_limit: auto` (#286).

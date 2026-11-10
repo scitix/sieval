@@ -2032,7 +2032,7 @@ class TestServingGroups:
                     "path": "/tmp/ckpt",
                     "context": {
                         "native": 32768,
-                        "max": 131072,
+                        "max": 100000,
                         "scaling": {"json_model_override_args": "{}"},
                     },
                 }
@@ -2287,7 +2287,7 @@ class TestServingGroups:
                     "path": "/tmp/ckpt",
                     "context": {
                         "native": 32768,
-                        "max": 131072,
+                        "max": 100000,
                         "scaling": {"json_model_override_args": "{}"},
                     },
                     **({"infer": {"env": user_env}} if user_env else {}),
@@ -2365,15 +2365,15 @@ class TestServingGroups:
                 config, {"m": unwrap_proxies(plan)}, {"m": (plan, base)}
             )
 
-        assert extrapolated.key == "m@52096"
+        assert extrapolated.key == "m@65536"
         params = extrapolated.prepared["m"][0].assignments[0].engine_params
-        assert params["context_length"] == 52096
+        assert params["context_length"] == 65536
         assert "json_model_override_args" not in params
         (command,) = extrapolated.prepared["m"][1]
         assert command.env["SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN"] == "1"
         assert extrapolated.serving().windows == {
             "long": {
-                "window": 52096,
+                "window": 65536,
                 "method": "extrapolate",
                 "native": 32768,
                 "max": 65536,
@@ -2496,7 +2496,10 @@ class TestServingGroups:
         (check,) = cast(list, result["checks"])
         assert check["name"] == "serving"
         assert check["ok"] is False
-        assert "task 'long' needs 100000 tokens" in check["detail"]
+        assert (
+            "task 'long' max_tokens 95904 leaves no room for the prompt at window 32768"
+            in check["detail"]
+        )
         assert result["n_errors"] == 1
         assert (result["tasks"], result["serving"]) == (None, None)
 
@@ -2605,6 +2608,88 @@ class TestDryRunSizing:
         assert result["n_warnings"] == 0
         (fit,) = cast(dict, result["serving"])["default"]["engines"]["m"]["memory"]
         assert (fit["tp"], fit["tp_source"], fit["low_room"]) == (4, "stated", False)
+
+    @staticmethod
+    def _scaled_config(tmp_path: Path, **overrides: object) -> Path:
+        """A task past native 40960: its group serves context.max (#289)."""
+        path = TestDryRunSizing._config(tmp_path, **overrides)
+        config = yaml.safe_load(path.read_text())
+        model = config["models"]["m"]
+        del model["infer"]["overrides"]["context_length"]
+        model["context"] = {
+            "native": 40960,
+            "max": 131072,
+            "scaling": {"json_model_override_args": "{}"},
+        }
+        config["datasets"] = {"d": {"class": "GSM8KDataset"}}
+        config["tasks"] = {
+            "long": {
+                "class": "GSM8KZeroShotGenTask",
+                "dataset": "d",
+                "infer_args": {"max_tokens": 60000},
+            }
+        }
+        path.write_text(yaml.safe_dump(config))
+        return path
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("overrides", "gpu", "tp", "source"),
+        [
+            ({}, "NVIDIA H100:1:81559", 1, "sized"),
+            ({"tp_size": 2}, "NVIDIA H100:2:81559", 2, "stated"),
+        ],
+        ids=["sized", "stated"],
+    )
+    async def test_a_scaled_engine_is_checked_at_context_max(
+        self,
+        tmp_path: Path,
+        overrides: dict[str, object],
+        gpu: str,
+        tp: int,
+        source: str,
+    ) -> None:
+        """The scaled engine launches at context.max with the recipe's tp,
+        sized or stated, and its memory is checked at that window."""
+        result = await self._dry_run(self._scaled_config(tmp_path, **overrides), gpu)
+
+        serving = cast(dict, result["serving"])
+        assert list(serving) == ["default", "m@131072"]
+        engine = serving["m@131072"]["engines"]["m@131072"]
+        assert engine["window"] == 131072
+        (fit,) = engine["memory"]
+        assert (fit["tp"], fit["tp_source"], fit["context"]) == (tp, source, 131072)
+        # One full 131072 sequence fits beside the weights on one H100, with
+        # little room: the serving check warns, naming the scaled engine.
+        assert (fit["fits"], fit["low_room"]) == (True, True)
+        checks = cast(list, result["checks"])
+        warnings = next(c for c in checks if c["name"] == "serving")["warnings"]
+        assert any(
+            w.startswith("engine m@131072:") and "context 131072" in w for w in warnings
+        )
+
+    @pytest.mark.anyio
+    async def test_little_prompt_room_warns_on_the_serving_check(
+        self, tmp_path: Path
+    ) -> None:
+        """#289: native 40960 serves max_tokens 38000 with 2960 tokens left."""
+        path = self._scaled_config(tmp_path, tp_size=4)
+        config = yaml.safe_load(path.read_text())
+        config["tasks"]["long"]["infer_args"]["max_tokens"] = 38000
+        path.write_text(yaml.safe_dump(config))
+
+        result = await self._dry_run(path, "NVIDIA H100:4:81559")
+
+        assert list(cast(dict, result["serving"])) == ["default"]
+        serving = next(
+            c for c in cast(list, result["checks"]) if c["name"] == "serving"
+        )
+        assert serving["ok"] is True
+        assert serving["warnings"] == [
+            "task 'long' leaves 2960 tokens for the prompt at window 40960; "
+            "longer prompts overflow per sample"
+        ]
+        assert result["n_warnings"] == 1
 
     @pytest.mark.anyio
     async def test_memory_unknown_without_the_checkpoint(self, tmp_path: Path) -> None:

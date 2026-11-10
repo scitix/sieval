@@ -83,6 +83,7 @@ from sieval.cli.serving import (
     ServingGroup,
     SessionServing,
     plan_serving_groups,
+    prompt_room_warnings,
     served_contexts,
     served_window,
 )
@@ -1162,7 +1163,9 @@ def _serving_json(
 
     Each engine's ``memory`` is how each role fits its GPUs, ``None`` when
     unknown; a fit with little KV room appends the warning
-    :func:`~sieval.infer.topology.memory.size_tp` logs to *warnings*.
+    :func:`~sieval.infer.topology.memory.size_tp` logs to *warnings*, and a
+    ``max_tokens`` task left little room for its prompt the one
+    :func:`~sieval.cli.serving.check_context_fits` logs.
     """
     models = config.get("models") or {}
     engines: dict[str, dict[str, object]] = {}
@@ -1191,6 +1194,11 @@ def _serving_json(
                 where = engine_name if len(fits or ()) == 1 else f"{engine_name}.{role}"
                 warnings.append(f"engine {where}: {warning}")
         engines[engine_name] = engine
+    warnings.extend(
+        prompt_room_warnings(
+            config, group.plan_dicts, frozenset(group.group.tasks), launched=True
+        )
+    )
     return {
         "tasks": list(group.group.tasks),
         "windows": {
