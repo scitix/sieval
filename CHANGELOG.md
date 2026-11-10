@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-10
+
+A minor bump with a breaking change: one rule now decides whether a context
+window serves a task, whether SiEval picked the window or an endpoint states
+it (#289, #290). An endpoint or model Service whose `context_limit` leaves a
+task any room for its prompt runs the task, as a launched engine already did,
+and a served window is always a declared one (`native` or `context.max`),
+never sized to the tasks of one run. On disk nothing changes: `meta.json`
+`identity` stays schema 5 and `RESULT_SCHEMA_VERSION` stays 1. A directory
+recorded at a need-sized window is refused resume on `inference`.
+
 ### Changed
 
 - **One rule decides whether a context window serves a task, whoever picked it (#289).** `min_context` and a declared need count the prompt (window ≥ need); `max_tokens` counts the output only (window > `max_tokens`). An endpoint with `context_limit: 40960` now runs `max_tokens: 38000`, as a launched engine already did, instead of refusing it as needing 42096. Under 4096 tokens of prompt room is a warning (`task 't' leaves 2960 tokens for the prompt at window 40960; ...`), on `--dry-run` and at run time.
@@ -780,6 +791,7 @@ Mainstream benchmarks registered in `sieval/meta/index.json`:
 - Project-wide preflight (`scripts/check_preflight.py`): links, deps, tasks, datasets, imports, examples, meta-index sync, version.
 - Tooling: `ruff`, `ty`, `mypy strict`, `pytest`.
 
+[0.16.0]: https://github.com/scitix/sieval/compare/v0.15.7...v0.16.0
 [0.15.7]: https://github.com/scitix/sieval/compare/v0.15.6...v0.15.7
 [0.15.6]: https://github.com/scitix/sieval/compare/v0.15.5...v0.15.6
 [0.15.5]: https://github.com/scitix/sieval/compare/v0.15.4...v0.15.5
