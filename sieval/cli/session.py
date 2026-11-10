@@ -3605,7 +3605,10 @@ class EvalSession:
         self._validate_external_runtime_obligations(result)
         for diagnostic in result.diagnostics:
             logger.warning(self._format_reconcile_diagnostic(diagnostic))
-        check_context_fits(self.config, self._infer_plans, self._serving.tasks)
+        for warning in check_context_fits(
+            self.config, self._infer_plans, self._serving.tasks
+        ):
+            logger.warning(warning)
 
         self._task_model_requirements = tuple(records)
         self._aggregated_requirements = aggregated

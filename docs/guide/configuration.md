@@ -601,9 +601,12 @@ An unknown mode, or `--mode` without `--dry-run`, exits 2.
   `infer_plans.yaml` would record it, each process the launch starts (`argv`,
   and `env` and `cwd` when set), and `needs_inference`, whether this run starts
   its engine. `gpu` is what the plans were resolved for.
-- `serving` has one entry per serving group (`default`, or `<model>@<window>`):
+- `serving` has one entry per serving group (`default`, or `<model>@<max>`):
   its `tasks`, their served windows, the `engines` it launches and whether any
-  starts. The `serving` check fails on a window shortfall. See
+  starts. The `serving` check fails on a window shortfall, and warns, as
+  `task '<task>' leaves <n> tokens for the prompt at window <w>; ...`, for a
+  `max_tokens` task with under 4096 tokens of prompt room on a launched
+  engine; an endpoint's goes to `capability_reconcile`. See
   [Serving plans](infer.md#serving-plans-context-window-and-dialect). An
   engine serving input scoring has `headroom`
   ([Input-scoring headroom](infer.md#input-scoring-headroom)).

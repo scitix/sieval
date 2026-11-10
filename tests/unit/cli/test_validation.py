@@ -1855,6 +1855,51 @@ class TestRunDryRun:
             "plan": {"unmet": {}, "declared": {}},
         }
 
+    @pytest.mark.parametrize(
+        ("max_tokens", "warnings"),
+        [
+            (
+                38000,
+                [
+                    "task 't' leaves 2960 tokens for the prompt at window 40960; "
+                    "longer prompts overflow per sample"
+                ],
+            ),
+            (32768, None),
+        ],
+    )
+    def test_an_endpoint_with_little_prompt_room_warns(
+        self, tmp_path: Path, max_tokens: int, warnings: list[str] | None
+    ) -> None:
+        """#289: refused before as needing 42096; now the run goes ahead."""
+        from sieval.cli.validation import run_dry_run
+
+        config = tmp_path / "endpoint.yaml"
+        config.write_text(
+            "models:\n"
+            "  m:\n"
+            "    api_base: http://x/v1\n"
+            "    name: x\n"
+            "    context_limit: 40960\n"
+            "datasets:\n"
+            "  d:\n"
+            "    class: sieval.datasets.aime_2024.AIME2024Dataset\n"
+            "tasks:\n"
+            "  t:\n"
+            f"    class: {self._AIME_TASK}\n"
+            "    dataset: d\n"
+            "    model: m\n"
+            f"    infer_args: {{max_tokens: {max_tokens}}}\n",
+            encoding="utf-8",
+        )
+
+        result = run_dry_run(config)
+
+        check = next(c for c in result["checks"] if c["name"] == "capability_reconcile")
+        assert check["ok"] is True
+        assert check.get("warnings") == warnings
+        assert result["n_errors"] == 0
+
     def test_dependencies_check_fails_on_an_unmet_declaration(self, tmp_path):
         from sieval.cli.validation import run_dry_run
         from sieval.tasks.aime_2024_0shot_gen import AIME2024ZeroShotGenTask

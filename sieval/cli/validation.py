@@ -35,7 +35,11 @@ from sieval.cli.resolution import (
     validate_configured_engine_id,
     validate_task_config_args,
 )
-from sieval.cli.serving import SessionServing, parse_model_context
+from sieval.cli.serving import (
+    SessionServing,
+    parse_model_context,
+    prompt_room_warnings,
+)
 from sieval.cli.session import EvalSession, RootConfigDict
 from sieval.core.models import check_extra
 from sieval.core.models.capabilities import (
@@ -1058,6 +1062,14 @@ def _capability_reconcile_check(
         for diagnostic in result.diagnostics
         if diagnostic.severity.value == "warning"
     ]
+    # An endpoint's prompt room; a launched engine's is on `sieval run
+    # --dry-run`'s serving check, once per group.
+    warnings += prompt_room_warnings(
+        session.config,
+        infer_plans,
+        serving.tasks if serving is not None else None,
+        launched=False,
+    )
     if warnings:
         check["warnings"] = warnings
     return [check, _dependencies_check(session)]

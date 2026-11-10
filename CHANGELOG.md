@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **One rule decides whether a context window serves a task, whoever picked the window (#289).** A `max_tokens` task fits a window that leaves at least one token for the prompt; `min_context` and a task's declared need still count the prompt and must fit whole. Before, a launched engine at its native window ran `max_tokens: 38000` at 40960, while an endpoint declaring `context_limit: 40960` refused it as needing 42096 (`max_tokens` plus 4096 for the prompt). Both now run it, and both warn, on `--dry-run` and at run time, when the prompt is left under 4096 tokens: `task 't' leaves 2960 tokens for the prompt at window 40960; longer prompts overflow per sample`. A `max_tokens` equal to the window is refused as `max_tokens 32768 leaves no room for the prompt at window 32768`. A longer prompt still overflows per sample (`context_overflow`).
+- **A served window is a declared one, never sized to a need.** A scaled group serves `context.max` and is keyed `<model>@<max>`, the same for every subset of tasks; it used to serve, and be keyed by, the largest need among this run's tasks. A `min_context` or declared need between the recipe window and `native` now raises the default group to `native`, not to the need. A recipe window that serves every task still stays, and a window pinned by `infer.overrides` or `context_limit` is still never raised. A scaled engine keeps the recipe's tp; `--dry-run` checks its memory at `context.max` and warns when little KV room is left. Raise tp in `infer.overrides` if one `context.max` sequence does not fit.
+- **Resume:** the served window is in `identity.inference`, so a directory recorded at a need-sized window (a scaled group, or a default group raised to a `min_context` below `native`) is refused on `inference` and needs inference again: start fresh, or pin the recorded window with `infer.overrides`. `IDENTITY_SCHEMA` stays 5 and `RESULT_SCHEMA_VERSION` stays 1: no served token changes at a given window, and the window change is already caught by the inference identity.
+- `sieval.cli.serving`: `check_context_fits` returns the prompt-room warnings; `task_context_needs` carries a `max_tokens` need as the raw `max_tokens`, no longer plus `PROMPT_HEADROOM`; `fits(need, window)` is the one rule. `PROMPT_HEADROOM` is the warning threshold only.
+
 ## [0.15.7] - 2026-11-08
 
 A patch release: KV admission now needs `concurrency_limit: auto` (#286).
