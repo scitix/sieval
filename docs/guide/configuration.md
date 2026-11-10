@@ -603,10 +603,9 @@ An unknown mode, or `--mode` without `--dry-run`, exits 2.
   its engine. `gpu` is what the plans were resolved for.
 - `serving` has one entry per serving group (`default`, or `<model>@<max>`):
   its `tasks`, their served windows, the `engines` it launches and whether any
-  starts. The `serving` check fails on a window shortfall, and warns, as
-  `task '<task>' leaves <n> tokens for the prompt at window <w>; ...`, for a
-  `max_tokens` task with under 4096 tokens of prompt room on a launched
-  engine; an endpoint's goes to `capability_reconcile`. See
+  starts. The `serving` check fails on a window shortfall and warns on a
+  `max_tokens` task left under 4096 tokens of prompt room (an endpoint's
+  warning goes to `capability_reconcile`). See
   [Serving plans](infer.md#serving-plans-context-window-and-dialect). An
   engine serving input scoring has `headroom`
   ([Input-scoring headroom](infer.md#input-scoring-headroom)).

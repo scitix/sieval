@@ -276,6 +276,22 @@ class TestPlanServingGroups:
             DEFAULT_GROUP, 40960, "native", 40960, 131072
         )
 
+    @pytest.mark.parametrize(
+        ("max_tokens", "window"), [(28672, 32768), (28673, 40960), (32767, 40960)]
+    )
+    def test_recipe_window_short_of_prompt_room_is_raised_to_native(
+        self, max_tokens: int, window: int
+    ) -> None:
+        """Under 4096 tokens of room at the recipe window, native leaves more."""
+        config = _config(
+            {"t": _gen(max_tokens)},
+            model={"path": "/models/m", "context": {"native": 40960}},
+        )
+
+        (group,) = plan_serving_groups(config, {"m": _plan(32768)})
+
+        assert plan_window(group.plans["m"]) == window
+
     def test_max_tokens_at_or_above_native_scales_to_max(self) -> None:
         """At native, max_tokens leaves no prompt: the task is scaled, and the
         scaled window is context.max, not the largest need."""
@@ -766,13 +782,16 @@ class TestCheckContextFits:
 
         plans = {"m": _served(40960)}
 
-        def tasks(launched: bool | None) -> list[str]:
-            warnings = prompt_room_warnings(config, plans, launched=launched)
+        def tasks(launched: bool) -> list[str]:
+            warnings = prompt_room_warnings(config, plans, None, launched=launched)
             return [w.split("'")[1] for w in warnings]
 
         assert tasks(False) == ["u"]
         assert tasks(True) == ["t"]
-        assert tasks(None) == ["t", "u"]
+        assert [w.split("'")[1] for w in check_context_fits(config, plans)] == [
+            "t",
+            "u",
+        ]
 
     def test_unknown_window_is_not_checked(self) -> None:
         config = _config({"long": _gen(1_000_000)}, model=_endpoint())
@@ -1073,21 +1092,23 @@ class TestScoringHeadroomInServingGroups:
 
         assert group.headroom["m"].prefill_tokens == 2048
 
-    @pytest.mark.parametrize(("max_tokens", "prefill"), [(30720, 2048), (1024, 3072)])
-    def test_a_max_tokens_bounds_the_scored_prompt_by_the_room_it_leaves(
-        self, tmp_path: Path, max_tokens: int, prefill: int
+    @pytest.mark.parametrize("max_tokens", [None, 1024, 30720, 32000])
+    def test_a_max_tokens_does_not_bound_the_scored_prompt(
+        self, tmp_path: Path, max_tokens: int | None
     ) -> None:
-        """32768 - 30720 leaves 2048; 31744 left is above the GPU budget."""
+        """Scoring calls send their own max_tokens, so a generation one the
+        model's args set leaves the prompt the whole window."""
         checkpoint = _checkpoint(tmp_path)
         plan = _plan(checkpoint=checkpoint, mem_fraction_static=0.87)
+        args = {} if max_tokens is None else {"max_tokens": max_tokens}
         config = _config(
-            {"ppl": {"class": SCORING, **_gen(max_tokens)}},
-            model={"path": checkpoint},
+            {"ppl": {"class": SCORING}, "gen": {}},
+            model={"path": checkpoint, "args": args},
         )
 
         (group,) = plan_serving_groups(config, {"m": plan}, H100_MIB)
 
-        assert group.headroom["m"].prefill_tokens == prefill
+        assert group.headroom["m"].prefill_tokens == 3072
 
     def test_unknown_gpu_memory_reports_the_unchanged_plan(
         self, tmp_path: Path
