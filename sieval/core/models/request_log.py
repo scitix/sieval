@@ -8,7 +8,8 @@ loop retries -- the OpenAI SDK's, or its own copy of it for ``async_http_json``
 * :func:`observe_call` -- set by ``Model.arun`` around one model call.
 
 With either unset nothing is recorded. A record holds no credential, header or
-body, and feeds no identity, digest or ``model_calls[]``. A third,
+body, and feeds no identity, digest or ``model_calls[]``. Of an error body it
+keeps only the provider's own error code (:func:`provider_error_code`). A third,
 :func:`request_timeout_scope`, carries a call's ``timeout`` to every try.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
@@ -17,8 +18,10 @@ AI-Generated Code - Claude Opus 5.5 (Anthropic)
 import contextvars
 import email.utils
 import inspect
+import json
 import math
 import random
+import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -183,6 +186,7 @@ class _Attempt:
     status: int | None = None
     error: str | None = None
     outcome: str | None = None
+    error_code: str | None = None
     request_id: str | None = None
     retry_after_header_s: float | None = None
     #: When the request headers went out (httpcore's trace).
@@ -222,8 +226,8 @@ class CallScope:
         """Label the last attempt when *exc* refused the prompt as too long.
 
         Its own outcome, so ``outcomes`` still partitions attempts: the refusal
-        counts once, under ``context_overflow`` rather than ``4xx``. The status
-        stays the one the server sent.
+        counts once, under ``context_overflow`` rather than its status. The
+        status and ``error_code`` stay the ones the server sent.
         """
 
         if not self.attempts or context_overflow_message(exc) is None:
@@ -297,6 +301,7 @@ class CallScope:
                 "status": attempt.status,
                 "outcome": attempt.outcome,
                 "error": attempt.error,
+                "error_code": attempt.error_code,
                 "request_id": attempt.request_id,
                 "retry_after_s": (
                     round(following.started - ended, 6)
@@ -434,19 +439,66 @@ def retry_after_header_s(response: httpx.Response) -> float | None:
 
 
 def status_outcome(status: int) -> str:
-    """The outcome of a status. A refused over-long prompt is relabelled
-    ``context_overflow`` when its call ends (``CallScope.mark_context_overflow``).
+    """``2xx``, an error status as itself (``"401"``), else ``other``.
+
+    A refused over-long prompt becomes ``context_overflow`` when its call ends
+    (``CallScope.mark_context_overflow``).
     """
 
     if 200 <= status < 300:
         return "2xx"
-    if status == 429:
-        return "429"
-    if 400 <= status < 500:
-        return "4xx"
-    if status >= 500:
-        return "5xx"
+    if status >= 400:
+        return str(status)
     return "other"
+
+
+#: One token, so never free text.
+_ERROR_CODE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}")
+#: Placeholders some gateways write for "no code".
+_NO_CODE = frozenset({"none", "null", "undefined"})
+
+
+def provider_error_code(body: bytes) -> str | None:
+    """The provider's own code for an error *body*, or ``None``.
+
+    Tried in order: ``error.status`` (Google), ``error.code`` (OpenAI),
+    ``error.type`` (Anthropic); with no ``error`` object, the top-level
+    ``code`` then ``type`` (vLLM, SGLang). A value counts only as one short
+    token that is not an HTTP status; the message is never read.
+    """
+
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return None
+    if isinstance(payload, list) and payload:
+        payload = payload[0]
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if isinstance(error, dict):
+        candidates = (error.get("status"), error.get("code"), error.get("type"))
+    else:
+        candidates = (payload.get("code"), payload.get("type"))
+    for value in candidates:
+        code = _error_code(value)
+        if code is not None:
+            return code
+    return None
+
+
+def _error_code(value: object) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, str | int):
+        return None
+    code = str(value).strip()
+    if (
+        _ERROR_CODE.fullmatch(code) is None
+        or code.lower() in _NO_CODE
+        # Any HTTP status, this one or a wrapped upstream's, says nothing new.
+        or (code.isdigit() and 100 <= int(code) <= 599)
+    ):
+        return None
+    return code
 
 
 def error_outcome(exc: BaseException) -> tuple[str, str]:
@@ -594,6 +646,16 @@ class RecordingAsyncClient(httpx.AsyncClient):
         finally:
             request.extensions = extensions
         _finish_response(attempt, response)
+        if response.is_error:
+            # Read once so every attempt, retried or not, records its code;
+            # the final caller reuses the cached bytes.
+            try:
+                await response.aread()
+            except BaseException as exc:
+                _finish_error(attempt, exc)
+                await response.aclose()
+                raise
+            attempt.error_code = provider_error_code(response.content)
         # An error status ends here: a retry loop closes its body only after
         # the backoff, which would bill the wait as latency.
         if stream and attempt.outcome == "2xx":

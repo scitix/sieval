@@ -42,6 +42,8 @@ class RequestSummary(TypedDict):
     retried_calls: int
     max_attempts: int
     outcomes: dict[str, int]
+    #: Attempts by provider error code; not a partition (codeless ones skip).
+    error_codes: dict[str, int]
     retry_wait_s_total: float
     in_flight: dict[str, LimiterPeak]
     latency: NotRequired[ProfileTimingStats]
@@ -63,6 +65,7 @@ class _Totals:
     retried_calls: int = 0
     max_attempts: int = 0
     outcomes: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    error_codes: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     retry_wait_s_total: float = 0.0
     in_flight: dict[str, LimiterPeak] = field(default_factory=dict)
     latency: list[float] = field(default_factory=list)
@@ -81,6 +84,9 @@ class _Totals:
                 self.max_attempts = max(self.max_attempts, attempts)
         outcome = line.get("outcome")
         self.outcomes[outcome if isinstance(outcome, str) else "other"] += 1
+        error_code = line.get("error_code")
+        if isinstance(error_code, str):
+            self.error_codes[error_code] += 1
         wait = line.get("retry_after_s")
         if isinstance(wait, float | int):
             self.retry_wait_s_total += wait
@@ -116,6 +122,7 @@ class _Totals:
             retried_calls=self.retried_calls,
             max_attempts=self.max_attempts,
             outcomes=dict(sorted(self.outcomes.items())),
+            error_codes=dict(sorted(self.error_codes.items())),
             retry_wait_s_total=round(self.retry_wait_s_total, 6),
             in_flight=dict(sorted(self.in_flight.items())),
         )
@@ -266,6 +273,7 @@ class TaskRequestLog:
                 calls=full["calls"],
                 attempts=full["attempts"],
                 outcomes=full["outcomes"],
+                error_codes=full["error_codes"],
                 in_flight=full["in_flight"],
             )
         return by_phase

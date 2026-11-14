@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Request outcomes name the exact HTTP status (#293).** In `requests.jsonl` and the request summaries (`profile.json`, `report.json` `sieval.requests`, `meta.json` `runs[].requests`), an error status is its own key (`"401"`, `"402"`, `"503"`, …); `4xx` and `5xx` are gone. Readers matching them must group the codes themselves (`400 <= int(k) < 500`); the non-`2xx` total is unchanged. Older directories keep their keys and resume as before (`RESULT_SCHEMA_VERSION` stays 1: no resume reads these counts).
+
+### Added
+
+- **The provider's error code, per attempt and summed (#293).** Each `requests.jsonl` line gains `error_code` (`insufficient_quota`, `authentication_error`, `PERMISSION_DENIED`, vLLM's `BadRequestError`), and the request summaries gain `error_codes` beside `outcomes`. Free text, HTTP-status numbers and non-JSON bodies record `null`; the message is never kept. The recording client reads the error body once and the SDK and dialects reuse it.
+
 ## [0.16.0] - 2026-11-10
 
 A minor bump with a breaking change: one rule now decides whether a context

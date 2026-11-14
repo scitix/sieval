@@ -356,11 +356,17 @@ class LimiterPeak(TypedDict):
 
 
 class RequestCounts(TypedDict):
-    """One phase x model's model requests in a run: calls, attempts, outcomes."""
+    """One phase x model's model requests in a run: calls, attempts, outcomes.
+
+    ``outcomes`` partitions attempts, an error status as itself (``"401"``);
+    ``error_codes`` counts only attempts with a provider code. Runs by 0.16 and
+    earlier have no ``error_codes`` and fold statuses into ``4xx``/``5xx``.
+    """
 
     calls: int
     attempts: int
     outcomes: dict[str, int]
+    error_codes: NotRequired[dict[str, int]]
     in_flight: dict[str, LimiterPeak]
 
 

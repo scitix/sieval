@@ -3,11 +3,13 @@
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
+import contextlib
 import json
 import math
 import time
 import types
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
+from pathlib import Path
 from typing import Any
 
 import anyio
@@ -22,6 +24,18 @@ from sieval.core.models.connection_factory import (
     AsyncHTTPJSONConnection,
     ConnectionRequest,
 )
+from sieval.core.models.dialects.anthropic_messages import AnthropicMessagesDialect
+from sieval.core.models.dialects.google_genai import GoogleGenAIDialect
+from sieval.core.models.dialects.sglang_native import SglangNativeDialect
+from sieval.core.models.ir import (
+    ChatInput,
+    ChatMessage,
+    CompletionInput,
+    Request,
+    SamplingParams,
+    SchedulingParams,
+    TextPart,
+)
 from sieval.core.models.request_log import (
     RecordingAsyncClient,
     RecordingOpenAIClient,
@@ -30,6 +44,7 @@ from sieval.core.models.request_log import (
     stage_scope,
     timeout_phase,
 )
+from sieval.core.tasks.requests import TaskRequestLog
 from sieval.core.types import JSONValue
 
 SECRET = "sk-SENTINEL-NEVER-RECORDED"
@@ -163,7 +178,7 @@ class TestSdkRetriesAreRecordedPerAttempt:
         assert [line["attempt"] for line in sink.lines] == [1, 2, 3]
         assert {line["attempts"] for line in sink.lines} == {3}
         assert [line["status"] for line in sink.lines] == [429, 503, 200]
-        assert [line["outcome"] for line in sink.lines] == ["429", "5xx", "2xx"]
+        assert [line["outcome"] for line in sink.lines] == ["429", "503", "2xx"]
         assert [line["request_id"] for line in sink.lines] == [
             "req-429",
             None,
@@ -766,7 +781,26 @@ class TestHelpers:
 
     @pytest.mark.parametrize(
         ("status", "outcome"),
-        [(200, "2xx"), (429, "429"), (404, "4xx"), (502, "5xx"), (302, "other")],
+        [
+            (200, "2xx"),
+            (204, "2xx"),
+            (400, "400"),
+            (401, "401"),
+            (402, "402"),
+            (403, "403"),
+            (404, "404"),
+            (408, "408"),
+            (413, "413"),
+            (422, "422"),
+            (429, "429"),
+            (500, "500"),
+            (502, "502"),
+            (503, "503"),
+            (504, "504"),
+            (599, "599"),
+            (100, "other"),
+            (302, "other"),
+        ],
     )
     def test_status_outcome(self, status: int, outcome: str) -> None:
         assert rl.status_outcome(status) == outcome
@@ -838,3 +872,491 @@ class TestTimeoutPhase:
         second.__cause__ = first
 
         assert timeout_phase(first) is None
+
+
+class TestProviderErrorCode:
+    """One body shape per provider; the message is never the code."""
+
+    @pytest.mark.parametrize(
+        ("status", "body", "code"),
+        [
+            # OpenAI: `code` first, `type` when the code is null.
+            (
+                429,
+                {
+                    "error": {
+                        "message": "You exceeded your current quota",
+                        "type": "insufficient_quota",
+                        "param": None,
+                        "code": "insufficient_quota",
+                    }
+                },
+                "insufficient_quota",
+            ),
+            (
+                401,
+                {
+                    "error": {
+                        "message": "Incorrect API key provided: sk-...",
+                        "type": "invalid_request_error",
+                        "code": "invalid_api_key",
+                    }
+                },
+                "invalid_api_key",
+            ),
+            (
+                400,
+                {"error": {"message": "bad", "type": "invalid_request_error"}},
+                "invalid_request_error",
+            ),
+            (
+                400,
+                {
+                    "error": {
+                        "message": "x",
+                        "type": "invalid_request_error",
+                        "code": None,
+                    }
+                },
+                "invalid_request_error",
+            ),
+            # New API / one-api gateways.
+            (
+                403,
+                {
+                    "error": {
+                        "message": "user quota is not enough",
+                        "type": "new_api_error",
+                        "code": "insufficient_user_quota",
+                    }
+                },
+                "insufficient_user_quota",
+            ),
+            # LiteLLM: a numeric-string code that is only the status, then type.
+            (
+                401,
+                {
+                    "error": {
+                        "message": "Authentication Error, Invalid proxy server token",
+                        "type": "auth_error",
+                        "param": "None",
+                        "code": "401",
+                    }
+                },
+                "auth_error",
+            ),
+            (
+                429,
+                {"error": {"message": "x", "type": "None", "code": "429"}},
+                None,
+            ),
+            # vLLM / SGLang: a top-level error whose code is the status number.
+            (
+                400,
+                {
+                    "object": "error",
+                    "message": "This model's maximum context length is 4096 tokens",
+                    "type": "BadRequestError",
+                    "param": None,
+                    "code": 400,
+                },
+                "BadRequestError",
+            ),
+            (
+                404,
+                {
+                    "object": "error",
+                    "message": "The model `x` does not exist.",
+                    "type": "NotFoundError",
+                    "code": 404,
+                },
+                "NotFoundError",
+            ),
+            # Anthropic.
+            (
+                401,
+                {
+                    "type": "error",
+                    "error": {
+                        "type": "authentication_error",
+                        "message": "invalid x-api-key",
+                    },
+                },
+                "authentication_error",
+            ),
+            (
+                529,
+                {
+                    "type": "error",
+                    "error": {"type": "overloaded_error", "message": "Overloaded"},
+                },
+                "overloaded_error",
+            ),
+            # Google: `status`, with `code` only the HTTP number.
+            (
+                403,
+                {
+                    "error": {
+                        "code": 403,
+                        "message": "Permission denied on resource project x.",
+                        "status": "PERMISSION_DENIED",
+                    }
+                },
+                "PERMISSION_DENIED",
+            ),
+            # A Google stream error is a one-item list.
+            (
+                429,
+                [
+                    {
+                        "error": {
+                            "code": 429,
+                            "message": "Resource has been exhausted",
+                            "status": "RESOURCE_EXHAUSTED",
+                        }
+                    }
+                ],
+                "RESOURCE_EXHAUSTED",
+            ),
+            # Google without a status: its code, unless only the HTTP status.
+            (400, {"error": {"code": 400, "message": "bad"}}, None),
+            (500, {"error": {"code": 13, "message": "internal"}}, "13"),
+            # A gateway wrapping its upstream's status: still only a status.
+            (502, {"error": {"code": 500, "message": "upstream"}}, None),
+            # No usable code: free text, an empty or non-token value, no error.
+            (400, {"error": {"message": "x", "type": "bad request: try again"}}, None),
+            (400, {"error": {"message": "x", "code": ""}}, None),
+            (400, {"error": {"message": "x", "code": True}}, None),
+            (400, {"error": {"message": "x", "code": {"nested": 1}}}, None),
+            (400, {"error": {"message": "x", "code": "a" * 65}}, None),
+            (400, {"error": {"message": "x", "code": "null"}}, None),
+            (502, {"error": "plain"}, None),
+            (400, {"detail": "Not Found"}, None),
+            (400, [], None),
+            (400, ["text"], None),
+            (400, "just a string", None),
+        ],
+    )
+    def test_reads_each_providers_shape(
+        self, status: int, body: JSONValue, code: str | None
+    ) -> None:
+        assert rl.provider_error_code(json.dumps(body).encode()) == code
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b"<html><head><title>502 Bad Gateway</title></head></html>",
+            b"upstream connect error or disconnect/reset before headers",
+            b"",
+        ],
+    )
+    def test_a_proxys_page_has_no_code(self, body: bytes) -> None:
+        assert rl.provider_error_code(body) is None
+
+
+def _recorded(
+    handler: Callable[[httpx.Request], httpx.Response], base_url: str
+) -> AsyncHTTPJSONConnection:
+    return AsyncHTTPJSONConnection(
+        RecordingAsyncClient(base_url=base_url, transport=httpx.MockTransport(handler)),
+        "k",
+    )
+
+
+async def _in_call(sink: _Sink, call: Callable[[], Awaitable[object]]) -> None:
+    with (
+        stage_scope(_scope(sink)),
+        observe_call(model_meta=lambda: {"model": "m"}, model={}, n=1, limiters={}),
+    ):
+        await call()
+
+
+class TestErrorCodeOnTheWire:
+    """Each dialect family's error is recorded with its code, and its caller
+    still reads the whole body: the recording client reads it once, cached."""
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("endpoint", ["chat", "completions", "responses"])
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_the_openai_sdk_still_reads_its_body(
+        self, endpoint: str, stream: bool
+    ) -> None:
+        body = {
+            "error": {
+                "message": "You exceeded your current quota",
+                "type": "insufficient_quota",
+                "code": "insufficient_quota",
+            }
+        }
+        handler, _ = _replies(httpx.Response(429, json=body))
+        sink = _Sink()
+        calls = {
+            "chat": lambda c: c.chat.completions.create(
+                model="m", messages=[{"role": "user", "content": "q"}], stream=stream
+            ),
+            "completions": lambda c: c.completions.create(
+                model="m", prompt="q", stream=stream
+            ),
+            "responses": lambda c: c.responses.create(
+                model="m", input="q", stream=stream
+            ),
+        }
+        async with _sdk(handler, retries=0) as client:
+            with pytest.raises(openai.RateLimitError) as raised:
+                await _in_call(sink, lambda: calls[endpoint](client))
+        assert raised.value.code == "insufficient_quota"
+        assert raised.value.body == body["error"]
+        [line] = sink.lines
+        assert (line["outcome"], line["error_code"]) == ("429", "insufficient_quota")
+
+    @pytest.mark.anyio
+    async def test_a_retried_error_keeps_each_attempts_code(self) -> None:
+        handler, _ = _replies(
+            httpx.Response(
+                503,
+                json={
+                    "object": "error",
+                    "type": "ServiceUnavailableError",
+                    "code": 503,
+                },
+                headers={"retry-after-ms": "1"},
+            ),
+            httpx.Response(502, content=b"<html>502 Bad Gateway</html>"),
+            httpx.Response(200, json=_chat_body()),
+        )
+        sink = _Sink()
+        async with _sdk(handler, retries=2) as client:
+            await _call(client, sink)
+        assert [(line["outcome"], line["error_code"]) for line in sink.lines] == [
+            ("503", "ServiceUnavailableError"),
+            ("502", None),
+            ("2xx", None),
+        ]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_anthropic(self, stream: bool) -> None:
+        body = (
+            b'{"type":"error","error":{"type":"authentication_error",'
+            b'"message":"invalid x-api-key"}}'
+        )
+        connection = _recorded(
+            lambda _: httpx.Response(
+                401,
+                stream=_OneChunk(body),
+                headers={"content-type": "application/json"},
+            ),
+            "https://api.anthropic.com/v1/",
+        )
+        dialect = AnthropicMessagesDialect(connection, "claude-sonnet-4-6")
+        request = Request(
+            input=ChatInput((ChatMessage("user", (TextPart("q"),)),)),
+            sampling=SamplingParams(max_tokens=8),
+            scheduling=SchedulingParams(stream=stream),
+        )
+        sink = _Sink()
+        with pytest.raises(httpx.HTTPStatusError) as raised:
+            await _in_call(sink, lambda: dialect.arun(request))
+        await connection.aclose()
+        assert str(raised.value).endswith("\nAnthropic: invalid x-api-key")
+        [line] = sink.lines
+        assert (line["outcome"], line["error_code"]) == ("401", "authentication_error")
+        assert "invalid x-api-key" not in json.dumps(line)
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_google_genai(self, stream: bool) -> None:
+        body = (
+            b'{"error":{"code":403,"message":"Permission denied",'
+            b'"status":"PERMISSION_DENIED"}}'
+        )
+        connection = _recorded(
+            lambda _: httpx.Response(403, stream=_OneChunk(body)),
+            "https://generativelanguage.googleapis.com/",
+        )
+        dialect = GoogleGenAIDialect(connection, "gemini-2.5-flash")
+        request = Request(
+            input=ChatInput((ChatMessage("user", (TextPart("q"),)),)),
+            scheduling=SchedulingParams(stream=stream),
+        )
+        sink = _Sink()
+        with pytest.raises(httpx.HTTPStatusError) as raised:
+            await _in_call(sink, lambda: dialect.arun(request))
+        await connection.aclose()
+        assert str(raised.value).endswith("\nGoogle: Permission denied")
+        [line] = sink.lines
+        assert (line["outcome"], line["error_code"]) == ("403", "PERMISSION_DENIED")
+
+    @pytest.mark.anyio
+    async def test_sglang_native(self) -> None:
+        body = (
+            b'{"object":"error","message":"context too long",'
+            b'"type":"BadRequestError","param":null,"code":400}'
+        )
+        connection = _recorded(
+            lambda _: httpx.Response(400, stream=_OneChunk(body)),
+            "http://host:30000/v1",
+        )
+        dialect = SglangNativeDialect(connection, "m")
+        request = Request(input=CompletionInput("q"))
+        sink = _Sink()
+        with pytest.raises(httpx.HTTPStatusError) as raised:
+            await _in_call(sink, lambda: dialect.arun(request))
+        await connection.aclose()
+        # A top-level error has no `error.message`: the body is the reason.
+        assert str(raised.value).endswith("\nSGLang: " + body.decode())
+        [line] = sink.lines
+        assert (line["outcome"], line["error_code"]) == ("400", "BadRequestError")
+
+    @pytest.mark.anyio
+    async def test_a_streamed_error_body_is_read_once_and_still_readable(
+        self,
+    ) -> None:
+        body = b'{"error":{"type":"new_api_error","code":"insufficient_user_quota"}}'
+        reads: list[int] = []
+
+        class _Counted(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                reads.append(1)
+                yield body
+
+        client = RecordingAsyncClient(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(402, stream=_Counted())
+            )
+        )
+        sink = _Sink()
+
+        async def call() -> None:
+            async with client.stream("POST", "https://gw.example/x") as response:
+                assert await response.aread() == body
+
+        await _in_call(sink, call)
+        await client.aclose()
+        assert reads == [1]
+        [line] = sink.lines
+        assert (line["outcome"], line["error_code"]) == (
+            "402",
+            "insufficient_user_quota",
+        )
+
+    @pytest.mark.anyio
+    async def test_a_broken_error_body_keeps_its_status(self) -> None:
+        class _Broken(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b'{"error":'
+                raise httpx.ReadError("reset")
+
+        client = RecordingAsyncClient(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(500, stream=_Broken())
+            )
+        )
+        sink = _Sink()
+        with pytest.raises(httpx.ReadError):
+            await _in_call(
+                sink,
+                lambda: client.send(
+                    client.build_request("POST", "https://gw.example/x"), stream=True
+                ),
+            )
+        await client.aclose()
+        [line] = sink.lines
+        assert line["status"] == 500
+        assert line["outcome"] == "500"
+        assert line["error"] == "exception::ReadError"
+        assert line["error_code"] is None
+        assert client._in_flight == 0
+
+    @pytest.mark.anyio
+    async def test_a_success_body_is_not_read_early(self) -> None:
+        client = RecordingAsyncClient(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(200, stream=_OneChunk(b"data: [DONE]\n\n"))
+            )
+        )
+        sink = _Sink()
+
+        async def call() -> None:
+            response = await client.send(
+                client.build_request("POST", "https://gw.example/x"), stream=True
+            )
+            assert not response.is_stream_consumed
+            await response.aclose()
+
+        await _in_call(sink, call)
+        await client.aclose()
+        [line] = sink.lines
+        assert (line["outcome"], line["error_code"]) == ("2xx", None)
+
+    @pytest.mark.anyio
+    async def test_context_overflow_still_wins_and_keeps_the_code(self) -> None:
+        handler, _ = _replies(
+            httpx.Response(
+                400,
+                json={
+                    "object": "error",
+                    "message": "This model's maximum context length is 4096 tokens.",
+                    "type": "BadRequestError",
+                    "code": 400,
+                },
+            )
+        )
+        sink = _Sink()
+        async with _sdk(handler, retries=0) as client:
+            with pytest.raises(openai.BadRequestError):
+                await _call(client, sink)
+        [line] = sink.lines
+        assert line["status"] == 400
+        assert line["outcome"] == "context_overflow"
+        assert line["error_code"] == "BadRequestError"
+
+
+class _OneChunk(httpx.AsyncByteStream):
+    """A body that must be read, as a live one is."""
+
+    def __init__(self, content: bytes) -> None:
+        self._content = content
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield self._content
+
+
+class TestOutcomesPartitionAttempts:
+    @pytest.mark.anyio
+    async def test_every_attempt_lands_in_exactly_one_outcome(
+        self, tmp_path: Path
+    ) -> None:
+        statuses = [400, 401, 402, 403, 404, 408, 413, 422, 429, 500, 502, 503, 504]
+        # `None` drops the connection.
+        script: list[httpx.Response | None] = [httpx.Response(s) for s in statuses]
+        script += [None, httpx.Response(200, json={})]
+        queue = list(script)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            item = queue.pop(0)
+            if item is None:
+                raise httpx.ConnectError("x", request=request)
+            return item
+
+        client = RecordingAsyncClient(transport=httpx.MockTransport(handler))
+        sink = _Sink()
+        for _ in script:
+            with contextlib.suppress(httpx.TransportError):
+                await _in_call(
+                    sink, lambda: client.post("https://gw.example/x", json={})
+                )
+        await client.aclose()
+        outcomes = [line["outcome"] for line in sink.lines]
+        assert outcomes == [str(s) for s in statuses] + ["connection_error", "2xx"]
+
+        log = TaskRequestLog(
+            tmp_path, subject=None, judges={}, max_bytes=1 << 20, max_files=1
+        )
+        for line in sink.lines:
+            log.record(line)
+        counts = log.counts()
+        assert counts is not None
+        [summary] = counts["infer"].values()
+        assert sum(summary["outcomes"].values()) == summary["attempts"] == len(script)
+        assert all(n == 1 for n in summary["outcomes"].values())

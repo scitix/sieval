@@ -469,4 +469,4 @@ class TestRequestRecord:
         assert overflow["status"] == 400
         assert overflow["outcome"] == CONTEXT_OVERFLOW
         assert busy["status"] == 503
-        assert busy["outcome"] == "5xx"
+        assert busy["outcome"] == "503"
