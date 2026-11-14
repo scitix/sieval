@@ -42,8 +42,7 @@ class RequestSummary(TypedDict):
     retried_calls: int
     max_attempts: int
     outcomes: dict[str, int]
-    #: Attempts by the provider's own error code; attempts without one are
-    #: not counted, so this does not partition attempts.
+    #: Attempts by provider error code; not a partition (codeless ones skip).
     error_codes: dict[str, int]
     retry_wait_s_total: float
     in_flight: dict[str, LimiterPeak]

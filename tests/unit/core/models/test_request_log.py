@@ -1021,6 +1021,8 @@ class TestProviderErrorCode:
             # Google without a status: its code, unless only the HTTP status.
             (400, {"error": {"code": 400, "message": "bad"}}, None),
             (500, {"error": {"code": 13, "message": "internal"}}, "13"),
+            # A gateway wrapping its upstream's status: still only a status.
+            (502, {"error": {"code": 500, "message": "upstream"}}, None),
             # No usable code: free text, an empty or non-token value, no error.
             (400, {"error": {"message": "x", "type": "bad request: try again"}}, None),
             (400, {"error": {"message": "x", "code": ""}}, None),
@@ -1038,7 +1040,7 @@ class TestProviderErrorCode:
     def test_reads_each_providers_shape(
         self, status: int, body: JSONValue, code: str | None
     ) -> None:
-        assert rl.provider_error_code(json.dumps(body).encode(), status) == code
+        assert rl.provider_error_code(json.dumps(body).encode()) == code
 
     @pytest.mark.parametrize(
         "body",
@@ -1049,7 +1051,7 @@ class TestProviderErrorCode:
         ],
     )
     def test_a_proxys_page_has_no_code(self, body: bytes) -> None:
-        assert rl.provider_error_code(body, 502) is None
+        assert rl.provider_error_code(body) is None
 
 
 def _recorded(
@@ -1239,7 +1241,7 @@ class TestErrorCodeOnTheWire:
         )
 
     @pytest.mark.anyio
-    async def test_an_error_body_that_breaks_is_a_connection_error(self) -> None:
+    async def test_a_broken_error_body_keeps_its_status(self) -> None:
         class _Broken(httpx.AsyncByteStream):
             async def __aiter__(self):
                 yield b'{"error":'

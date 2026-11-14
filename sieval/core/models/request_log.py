@@ -439,11 +439,10 @@ def retry_after_header_s(response: httpx.Response) -> float | None:
 
 
 def status_outcome(status: int) -> str:
-    """The outcome of a status: ``2xx``, an error status as its code (``"401"``,
-    ``"503"``), else ``other``. Readers group codes; this does not.
+    """``2xx``, an error status as itself (``"401"``), else ``other``.
 
-    A refused over-long prompt is relabelled ``context_overflow`` when its call
-    ends (``CallScope.mark_context_overflow``).
+    A refused over-long prompt becomes ``context_overflow`` when its call ends
+    (``CallScope.mark_context_overflow``).
     """
 
     if 200 <= status < 300:
@@ -453,23 +452,19 @@ def status_outcome(status: int) -> str:
     return "other"
 
 
-#: What an error code may look like: one token, no spaces, so no free text.
+#: One token, so never free text.
 _ERROR_CODE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}")
-#: Placeholders some gateways write where no code exists.
+#: Placeholders some gateways write for "no code".
 _NO_CODE = frozenset({"none", "null", "undefined"})
 
 
-def provider_error_code(body: bytes, status: int) -> str | None:
-    """The provider's own code for an error *body*; ``None`` when it has none.
+def provider_error_code(body: bytes) -> str | None:
+    """The provider's own code for an error *body*, or ``None``.
 
-    The ``error`` object's ``status`` (Google: ``PERMISSION_DENIED``), else its
-    ``code`` (OpenAI, New API: ``insufficient_quota``), else its ``type``
-    (Anthropic: ``authentication_error``; OpenAI without a code). With no
-    ``error`` object, the body's own ``code`` then ``type`` (vLLM, SGLang:
-    ``{"object": "error", "type": "BadRequestError", "code": 400}``). A Google
-    stream error is a one-item list. A value that only repeats *status*, is not
-    one short token, or is a placeholder is skipped; a body that is not JSON (a
-    proxy's page) has no code. The message is never read.
+    Tried in order: ``error.status`` (Google), ``error.code`` (OpenAI),
+    ``error.type`` (Anthropic); with no ``error`` object, the top-level
+    ``code`` then ``type`` (vLLM, SGLang). A value counts only as one short
+    token that is not an HTTP status; the message is never read.
     """
 
     try:
@@ -486,20 +481,21 @@ def provider_error_code(body: bytes, status: int) -> str | None:
     else:
         candidates = (payload.get("code"), payload.get("type"))
     for value in candidates:
-        code = _error_code(value, status)
+        code = _error_code(value)
         if code is not None:
             return code
     return None
 
 
-def _error_code(value: object, status: int) -> str | None:
+def _error_code(value: object) -> str | None:
     if isinstance(value, bool) or not isinstance(value, str | int):
         return None
     code = str(value).strip()
     if (
-        code == str(status)
+        _ERROR_CODE.fullmatch(code) is None
         or code.lower() in _NO_CODE
-        or _ERROR_CODE.fullmatch(code) is None
+        # Any HTTP status, this one or a wrapped upstream's, says nothing new.
+        or (code.isdigit() and 100 <= int(code) <= 599)
     ):
         return None
     return code
@@ -651,17 +647,15 @@ class RecordingAsyncClient(httpx.AsyncClient):
             request.extensions = extensions
         _finish_response(attempt, response)
         if response.is_error:
-            # The caller reads an error body whole anyway (the SDK, every
-            # dialect); reading it first leaves it cached for them.
+            # Read once so every attempt, retried or not, records its code;
+            # the final caller reuses the cached bytes.
             try:
                 await response.aread()
             except BaseException as exc:
                 _finish_error(attempt, exc)
                 await response.aclose()
                 raise
-            attempt.error_code = provider_error_code(
-                response.content, response.status_code
-            )
+            attempt.error_code = provider_error_code(response.content)
         # An error status ends here: a retry loop closes its body only after
         # the backoff, which would bill the wait as latency.
         if stream and attempt.outcome == "2xx":

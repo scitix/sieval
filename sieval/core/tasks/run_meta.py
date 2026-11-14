@@ -358,12 +358,9 @@ class LimiterPeak(TypedDict):
 class RequestCounts(TypedDict):
     """One phase x model's model requests in a run: calls, attempts, outcomes.
 
-    ``outcomes`` partitions attempts: ``2xx``, an error status as its code
-    (``"401"``, ``"503"``), ``context_overflow``, ``timeout_<phase>``,
-    ``connection_error``, ``cancelled`` or ``other``. ``error_codes`` counts the
-    attempts whose error body named a provider code (``insufficient_quota``).
-    Runs by SiEval 0.16 and earlier have no ``error_codes`` and folded every
-    other error status into ``4xx`` and ``5xx``.
+    ``outcomes`` partitions attempts, an error status as itself (``"401"``);
+    ``error_codes`` counts only attempts with a provider code. Runs by 0.16 and
+    earlier have no ``error_codes`` and fold statuses into ``4xx``/``5xx``.
     """
 
     calls: int
