@@ -714,23 +714,23 @@ class Model:
         prepared = self._dialect.prepare(projected, audit)
         audit.finish(prepared)
 
-        # Before observe_call reads the limiters, so a pending budget is logged.
-        budget = await self._pool.admission()
+        # Before observe_call reads the limiters, so a pending gate is logged.
+        gate = await self._pool.admission()
         with observe_call(
             model_meta=self.meta,
             model=self._request_log_model(),
             n=projected.sampling.n,
             limiters=self._request_log_limiters(),
         ) as call:
-            tokens = (
-                budget.weight(projected.sampling.n, projected.sampling.max_tokens)
-                if budget is not None
-                else None
-            )
-            async with self._pool.acquire(self._limiter, tokens=tokens):
+            async with self._pool.acquire(
+                self._limiter,
+                size=(projected.sampling.n, projected.sampling.max_tokens),
+            ):
                 if call is not None:
                     call.admitted()
                 response = await self._dialect.execute(prepared)
+                if gate is not None:
+                    gate.completed(response.usage)
             if call is not None:
                 call.usage = response.usage
         self._dialect.output_contract.validate(
@@ -752,7 +752,7 @@ class Model:
 
     def _request_log_limiters(self) -> dict[str, LimiterLoad]:
         """The pool's shared quota, the model-local cap when it differs, and
-        the KV budget."""
+        the ``auto`` gate's limits."""
 
         shared = self._pool.shared_limiter
         limiters: dict[str, LimiterLoad] = {}
@@ -760,8 +760,9 @@ class Model:
             limiters["model_shared"] = shared
         if self._limiter is not None and self._limiter is not shared:
             limiters["model_local"] = self._limiter
-        if self._pool.token_budget is not None:
-            limiters["kv_tokens"] = self._pool.token_budget
+        gate = self._pool.gate
+        if gate is not None:
+            limiters.update(gate.record_limiters())
         return limiters
 
     def _run_request_checks(
