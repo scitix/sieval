@@ -58,7 +58,10 @@ def _refuse(question: str) -> Callable[[httpx.Request], httpx.Response | None]:
             return None
         if json.loads(request.content)["messages"][-1]["content"] != question:
             return None
-        return httpx.Response(400, json={"error": {"message": "bad request"}})
+        return httpx.Response(
+            400,
+            json={"error": {"message": "bad request", "type": "invalid_request_error"}},
+        )
 
     return before
 
@@ -218,7 +221,8 @@ class TestRequestRecords:
         assert runs[0]["requests"]["infer"]["org/candidate"] == {
             "calls": 2,
             "attempts": 2,
-            "outcomes": {"2xx": 1, "4xx": 1},
+            "outcomes": {"2xx": 1, "400": 1},
+            "error_codes": {"invalid_request_error": 1},
             "in_flight": runs[0]["requests"]["infer"]["org/candidate"]["in_flight"],
         }
         assert runs[0]["requests"]["judge"]["gemini-judge"]["calls"] == 1

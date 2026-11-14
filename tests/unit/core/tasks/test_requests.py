@@ -88,9 +88,31 @@ class TestSummary:
                 in_flight={"task": {"borrowed": 4, "total": 4}},
             )
         )
-        log.record(_line(attempt=2, attempts=3, outcome="5xx", retry_after_s=2.0))
+        log.record(
+            _line(
+                attempt=2,
+                attempts=3,
+                outcome="503",
+                error_code="overloaded_error",
+                retry_after_s=2.0,
+            )
+        )
         log.record(_line(attempt=3, attempts=3, latency_s=2.5, queue_s=None))
         log.record(_line(phase="judge", model={"id": "j"}, outcome="timeout_read"))
+        for _ in range(2):
+            log.record(
+                _line(
+                    phase="judge",
+                    model={"id": "j"},
+                    outcome="403",
+                    error_code="insufficient_quota",
+                )
+            )
+        # A line without a code, or from before codes were recorded, adds none.
+        log.record(_line(phase="judge", model={"id": "j"}, outcome="401"))
+        log.record(
+            _line(phase="judge", model={"id": "j"}, outcome="401", error_code=None)
+        )
 
         summary = log.summary()
         assert summary is not None
@@ -101,7 +123,8 @@ class TestSummary:
         assert cand["attempts"] == 3
         assert cand["retried_calls"] == 1
         assert cand["max_attempts"] == 3
-        assert cand["outcomes"] == {"2xx": 1, "429": 1, "5xx": 1}
+        assert cand["outcomes"] == {"2xx": 1, "429": 1, "503": 1}
+        assert cand["error_codes"] == {"overloaded_error": 1}
         assert cand["retry_wait_s_total"] == 3.5
         assert cand["in_flight"] == {"task": {"peak": 4, "limit": 4}}
         assert cand["latency"]["count"] == 3
@@ -110,14 +133,16 @@ class TestSummary:
         assert cand["queue"]["count"] == 2
         assert cand["connect"]["count"] == 3
         judge = by_phase["judge"]["j"]
-        assert judge["outcomes"] == {"timeout_read": 1}
+        assert judge["outcomes"] == {"401": 2, "403": 2, "timeout_read": 1}
+        assert judge["error_codes"] == {"insufficient_quota": 2}
 
         counts = log.counts()
         assert counts is not None
         assert counts["infer"]["cand"] == {
             "calls": 1,
             "attempts": 3,
-            "outcomes": {"2xx": 1, "429": 1, "5xx": 1},
+            "outcomes": {"2xx": 1, "429": 1, "503": 1},
+            "error_codes": {"overloaded_error": 1},
             "in_flight": {"task": {"peak": 4, "limit": 4}},
         }
 

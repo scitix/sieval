@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Request outcomes name the exact HTTP status; readers matching `4xx` or `5xx` must adapt (#293).** In `requests.jsonl` and the request summaries (`profile.json` `requests`, `report.json` `sieval.requests`, `meta.json` `runs[].requests`), an error status is now its own code: `400`, `401`, `402`, `403`, `404`, `408`, `413`, `422`, `429`, `500`, `502`, `503`, `504` and any other. The `4xx` and `5xx` keys are gone; group the codes yourself (for example 401/403 as a refused key, 402 as an exhausted balance, 502/503/504 as a gateway or provider error). `2xx`, `context_overflow` (which still wins over the status), `timeout_<phase>`, `connection_error`, `cancelled` and `other` are unchanged, and `outcomes` still partitions attempts, so the sum of the non-`2xx` keys is the same failure count as before. Directories written by 0.16 and earlier keep their `4xx`/`5xx` keys and resume as before: `RESULT_SCHEMA_VERSION` stays 1, since no shard, `.idx`, score or identity changes and no resume reads the request counts.
+
+### Added
+
+- **The provider's own error code, per attempt and summed (#293).** Each `requests.jsonl` line gains `error_code`, read from the error body when the provider names one: OpenAI and OpenAI-compatible `error.code`, else `error.type` (`insufficient_quota`, `invalid_api_key`, New API's `insufficient_user_quota`); vLLM's and SGLang's top-level `type` (`BadRequestError`) when the only `code` is the status number; Anthropic's `error.type` (`authentication_error`, `overloaded_error`); Google's `error.status` (`PERMISSION_DENIED`, `RESOURCE_EXHAUSTED`). A proxy's text or HTML page, free text, or a code that only repeats the status records `null`. The request summaries gain `error_codes`, counted per phase and model beside `outcomes` (`{"insufficient_quota": 197}`); it covers only attempts that carry a code. The message itself is never recorded. Error bodies are read once by the recording client and stay readable to the SDK and dialects, so no extra request is made.
+
 ## [0.16.0] - 2026-11-10
 
 A minor bump with a breaking change: one rule now decides whether a context
