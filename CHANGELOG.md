@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-14
+
+A minor bump with a breaking change for readers of request summaries: an
+error status is recorded as its exact code and the provider's error code is
+kept beside it (#293, #294). `4xx` and `5xx` no longer appear in new
+directories; readers group the codes themselves. Older directories keep
+their keys and resume as before: `RESULT_SCHEMA_VERSION` stays 1 and
+`identity` stays schema 5.
+
 ### Changed
 
 - **Request outcomes name the exact HTTP status (#293).** In `requests.jsonl` and the request summaries (`profile.json`, `report.json` `sieval.requests`, `meta.json` `runs[].requests`), an error status is its own key (`"401"`, `"402"`, `"503"`, …); `4xx` and `5xx` are gone. Readers matching them must group the codes themselves (`400 <= int(k) < 500`); the non-`2xx` total is unchanged. Older directories keep their keys and resume as before (`RESULT_SCHEMA_VERSION` stays 1: no resume reads these counts).
@@ -799,6 +808,7 @@ Mainstream benchmarks registered in `sieval/meta/index.json`:
 - Project-wide preflight (`scripts/check_preflight.py`): links, deps, tasks, datasets, imports, examples, meta-index sync, version.
 - Tooling: `ruff`, `ty`, `mypy strict`, `pytest`.
 
+[0.17.0]: https://github.com/scitix/sieval/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/scitix/sieval/compare/v0.15.7...v0.16.0
 [0.15.7]: https://github.com/scitix/sieval/compare/v0.15.6...v0.15.7
 [0.15.6]: https://github.com/scitix/sieval/compare/v0.15.5...v0.15.6
