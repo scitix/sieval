@@ -4961,8 +4961,7 @@ tasks:
     def test_named_model_refuses_api_base_env(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Only an inline role binding takes ``api_base_env``, as the issue
-        scopes it; a ``models:`` entry is refused, not silently ignored."""
+        """A ``models:`` entry refuses ``api_base_env`` instead of ignoring it."""
 
         monkeypatch.setenv("CANDIDATE_URL", "https://candidate.example/v1")
         config_path = self._config(
@@ -5026,9 +5025,7 @@ tasks:
         monkeypatch: pytest.MonkeyPatch,
         forms: list[tuple[str, dict[str, str]]],
     ) -> None:
-        """The same resolved URL on the same surface, written or named under
-        any variable, is one binding: same id, config and plan fingerprints,
-        and the same call key."""
+        """One URL on one surface, literal or via any variable, is one binding."""
 
         from sieval.core.tasks.run_meta import call_key
 
@@ -5072,7 +5069,7 @@ tasks:
     def test_api_base_env_value_change_changes_the_binding(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The URL, not the variable name, is what identifies the endpoint."""
+        """The URL, not the variable name, identifies the binding."""
 
         ids: list[str] = []
         for url in ("https://a.example/v1", "https://b.example/v1"):

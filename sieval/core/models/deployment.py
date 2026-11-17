@@ -192,10 +192,8 @@ class Deployment:
     topology: DeploymentTopology | None
     metrics_url: str | None
     facts: ServingFacts
-    #: The environment variable ``api_base`` was read from, when the config
-    #: named one (``api_base_env``). Where the endpoint came from, not what it
-    #: is: left out of :attr:`fingerprint`, so naming the variable and writing
-    #: its value are one deployment.
+    #: The variable ``api_base`` was read from; provenance only, so not in
+    #: :attr:`fingerprint`.
     api_base_env: str | None = None
 
     def __post_init__(self) -> None:
