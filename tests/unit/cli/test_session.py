@@ -4781,6 +4781,316 @@ tasks:
         ):
             session.prepare_prelaunch()
 
+    @staticmethod
+    def _judged_config(grader: str) -> str:
+        """A config whose inline grader is *grader*, indented under ``grader:``."""
+
+        body = "\n".join(f"        {line}" for line in grader.strip().splitlines())
+        return f"""
+models:
+  candidate:
+    name: org/candidate
+    api_key: candidate-key
+tasks:
+  judged:
+    class: fake.JudgeTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+    args:
+      grader:
+{body}
+"""
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "placement",
+        [
+            "api_base_env: SIEVAL_JUDGE_GENAI_API",
+            "args:\n  api_base_env: SIEVAL_JUDGE_GENAI_API",
+        ],
+    )
+    async def test_inline_api_base_env_calls_the_url_in_the_variable(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        placement: str,
+    ) -> None:
+        import httpx
+        from openai import AsyncOpenAI
+
+        from sieval.core.models import connection_factory
+
+        monkeypatch.setenv("SIEVAL_JUDGE_GENAI_API", "https://judge-env.example/v1")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://wrong.example/v1")
+        hosts: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            hosts.append(str(request.url))
+            return httpx.Response(400, json={"error": {"message": "stop"}})
+
+        real_openai = AsyncOpenAI
+
+        def openai_client(**kwargs: Any) -> AsyncOpenAI:
+            kwargs["http_client"] = RecordingOpenAIClient(
+                timeout=kwargs["timeout"], transport=httpx.MockTransport(handler)
+            )
+            return real_openai(**kwargs)
+
+        monkeypatch.setattr(connection_factory, "AsyncOpenAI", openai_client)
+        config_path = self._config(
+            tmp_path,
+            self._judged_config(
+                f"model: judge-model\napi_key: judge-key\n{placement}\nmax_tokens: 16"
+            ),
+        )
+        session = EvalSession(config_path)
+        with patch(
+            "sieval.cli.session.resolve_task_class",
+            return_value=self.JudgeTask,
+        ):
+            session._setup_prelaunch_reconciliation()
+            session._setup_postlaunch_reconciliation()
+            session._setup_models()
+        grader = session._bound_task_role_models["judged"]["grader"]
+
+        with pytest.raises(Exception):  # noqa: B017 - the 400 only ends the call
+            await grader.agenerate("hi")
+        await session._close_owned_model_resources()
+
+        assert hosts
+        assert all(h.startswith("https://judge-env.example/v1/") for h in hosts)
+        meta = grader.meta()
+        assert meta["api_base"] == "https://judge-env.example/v1"
+        assert meta["api_base_env"] == "SIEVAL_JUDGE_GENAI_API"
+
+    def test_literal_api_base_records_no_variable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            self._judged_config(
+                "model: judge-model\napi_key: k\napi_base: https://judge.example/v1"
+            ),
+        )
+        session = EvalSession(config_path)
+        with (
+            patch(
+                "sieval.cli.session.resolve_task_class",
+                return_value=self.JudgeTask,
+            ),
+            patch("sieval.core.models.connection_factory.AsyncOpenAI"),
+        ):
+            session._setup_prelaunch_reconciliation()
+            session._setup_postlaunch_reconciliation()
+            session._setup_models()
+        meta = session._bound_task_role_models["judged"]["grader"].meta()
+        assert meta["api_base"] == "https://judge.example/v1"
+        assert "api_base_env" not in meta
+
+    @pytest.mark.parametrize(
+        ("grader", "env", "message"),
+        [
+            pytest.param(
+                "model: g\napi_base: https://a.example/v1\napi_base_env: JUDGE_URL",
+                {"JUDGE_URL": "https://a.example/v1"},
+                r"Task 'judged' grader sets both 'api_base' and 'api_base_env'",
+                id="both-top-level",
+            ),
+            pytest.param(
+                "model: g\napi_base_env: JUDGE_URL\nargs:\n"
+                "  api_base: https://a.example/v1",
+                {"JUDGE_URL": "https://a.example/v1"},
+                r"Task 'judged' grader sets both 'api_base' and 'api_base_env'",
+                id="both-across-surfaces",
+            ),
+            pytest.param(
+                "model: g\napi_base_env: JUDGE_URL\nargs:\n  api_base_env: JUDGE_URL",
+                {"JUDGE_URL": "https://a.example/v1"},
+                r"Task 'judged' grader sets 'api_base_env' both at the top level",
+                id="env-on-both-surfaces",
+            ),
+            pytest.param(
+                "model: g\napi_base_env: JUDGE_URL",
+                {},
+                r"Task 'judged' grader reads its api_base from environment "
+                r"variable JUDGE_URL, which is unset",
+                id="unset",
+            ),
+            pytest.param(
+                "model: g\nargs:\n  api_base_env: JUDGE_URL",
+                {"JUDGE_URL": ""},
+                r"Task 'judged' grader reads its api_base from environment "
+                r"variable JUDGE_URL, which is empty",
+                id="empty",
+            ),
+            pytest.param(
+                "model: g\napi_base_env: 'A=B'",
+                {},
+                r"Task 'judged' grader 'api_base_env' must name an environment "
+                r"variable, got 'A=B'",
+                id="invalid-name",
+            ),
+        ],
+    )
+    def test_inline_api_base_env_refusals_fail_at_plan_time(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        grader: str,
+        env: dict[str, str],
+        message: str,
+    ) -> None:
+        monkeypatch.delenv("JUDGE_URL", raising=False)
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        config_path = self._config(tmp_path, self._judged_config(grader))
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.session.resolve_task_class",
+                return_value=self.JudgeTask,
+            ),
+            patch("sieval.core.models.connection_factory.AsyncOpenAI") as client,
+            pytest.raises(ValueError, match=message),
+        ):
+            session.prepare_prelaunch()
+        client.assert_not_called()
+
+    def test_named_model_refuses_api_base_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ``models:`` entry refuses ``api_base_env`` instead of ignoring it."""
+
+        monkeypatch.setenv("CANDIDATE_URL", "https://candidate.example/v1")
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  candidate:
+    name: org/candidate
+    api_base_env: CANDIDATE_URL
+tasks:
+  chat:
+    class: fake.ChatTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.session.resolve_task_class",
+                return_value=self.ChatTask,
+            ),
+            pytest.raises(ValueError, match=r"Root model 'candidate'.*api_base_env"),
+        ):
+            session.prepare_prelaunch()
+
+    @pytest.mark.parametrize(
+        "forms",
+        [
+            pytest.param(
+                [
+                    ("api_base: https://judge.example/v1", {}),
+                    (
+                        "api_base_env: JUDGE_URL",
+                        {"JUDGE_URL": "https://judge.example/v1"},
+                    ),
+                    (
+                        "api_base_env: OTHER_URL",
+                        {"OTHER_URL": "https://judge.example/v1"},
+                    ),
+                ],
+                id="top-level",
+            ),
+            pytest.param(
+                [
+                    ("args:\n  api_base: https://judge.example/v1", {}),
+                    (
+                        "args:\n  api_base_env: JUDGE_URL",
+                        {"JUDGE_URL": "https://judge.example/v1"},
+                    ),
+                ],
+                id="args",
+            ),
+        ],
+    )
+    def test_api_base_env_and_literal_api_base_share_the_binding_identity(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        forms: list[tuple[str, dict[str, str]]],
+    ) -> None:
+        """One URL on one surface, literal or via any variable, is one binding."""
+
+        from sieval.core.tasks.run_meta import call_key
+
+        observed: list[tuple[object, ...]] = []
+        with patch("sieval.core.models.connection_factory.AsyncOpenAI"):
+            for placement, env in forms:
+                for name, value in env.items():
+                    monkeypatch.setenv(name, value)
+                config_path = self._config(
+                    tmp_path,
+                    self._judged_config(
+                        f"model: org/grader\napi_key: k\ntemperature: 0\n{placement}"
+                    ),
+                )
+                session = EvalSession(config_path)
+                with patch(
+                    "sieval.cli.session.resolve_task_class",
+                    return_value=self.JudgeTask,
+                ):
+                    result = session.prepare_prelaunch()
+                    session._setup_postlaunch_reconciliation()
+                    session._setup_models()
+                bindings = session._task_requirement_contexts["judged"].model_bindings
+                grader = bindings["grader"]
+                assert isinstance(grader, InlineModelBinding)
+                assert "api_base_env" not in repr(grader.config)
+                bound = session._bound_task_role_models["judged"]["grader"]
+                observed.append(
+                    (
+                        grader.binding_id,
+                        grader.config,
+                        result.binding_plans[grader.binding_id].fingerprint,
+                        bound.deployment.fingerprint,
+                        call_key(bound.meta()),
+                    )
+                )
+
+        assert len(observed) == len(forms)
+        assert all(entry == observed[0] for entry in observed)
+
+    def test_api_base_env_value_change_changes_the_binding(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The URL, not the variable name, identifies the binding."""
+
+        ids: list[str] = []
+        for url in ("https://a.example/v1", "https://b.example/v1"):
+            monkeypatch.setenv("JUDGE_URL", url)
+            config_path = self._config(
+                tmp_path,
+                self._judged_config("model: org/grader\napi_base_env: JUDGE_URL"),
+            )
+            session = EvalSession(config_path)
+            with patch(
+                "sieval.cli.session.resolve_task_class",
+                return_value=self.JudgeTask,
+            ):
+                session.prepare_prelaunch()
+            ids.append(
+                session._task_requirement_contexts["judged"]
+                .model_bindings["grader"]
+                .binding_id
+            )
+        assert ids[0] != ids[1]
+
     @pytest.mark.parametrize(
         "placement",
         [

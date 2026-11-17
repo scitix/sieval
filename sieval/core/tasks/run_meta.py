@@ -538,7 +538,7 @@ def aggregate_digest(
 
 
 #: ``ModelMeta`` keys that say where a model was reached, not which model it is.
-_CALL_KEY_EXCLUDED = frozenset({"api_base", "provenance"})
+_CALL_KEY_EXCLUDED = frozenset({"api_base", "api_base_env", "provenance"})
 
 
 def call_key(model_meta: Mapping) -> str:

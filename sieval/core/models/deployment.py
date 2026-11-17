@@ -30,6 +30,7 @@ from .admission import PendingTokenBudget, TokenBudget
 BINDING_RESOURCE_KEYS = frozenset(
     {
         "api_base",
+        "api_base_env",
         "api_key",
         "api_key_env",
         "authorization",
@@ -191,6 +192,9 @@ class Deployment:
     topology: DeploymentTopology | None
     metrics_url: str | None
     facts: ServingFacts
+    #: The variable ``api_base`` was read from; provenance only, so not in
+    #: :attr:`fingerprint`.
+    api_base_env: str | None = None
 
     def __post_init__(self) -> None:
         if self.engine_source not in ("deployment", "config", "unknown"):

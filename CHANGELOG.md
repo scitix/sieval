@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`api_base_env` for inline judge endpoints (#298).** An inline `grader` / `extractor` may name the variable holding its URL, top level or in `args`. Conflicts and an unset or empty variable are refused at plan time. The resolved URL is the binding identity, so a literal `api_base` with the same URL resumes the same outputs; call records add `api_base_env`.
+
 ## [0.17.0] - 2026-11-14
 
 A minor bump with a breaking change for readers of request summaries: an

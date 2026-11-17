@@ -43,8 +43,10 @@ from sieval.cli._filter_spec import (
 )
 from sieval.cli.dry_run_modes import RUN, DryRunMode, DryRunRecord, ServiceCheck
 from sieval.cli.resolution import (
+    ENV_VAR_NAME,
     TASK_MODEL_ROLES,
     binding_resource_argument_paths,
+    configured_api_base_env,
     default_dialect,
     derive_model_type,
     finalize_inline_model_binding,
@@ -1189,7 +1191,6 @@ _INFERENCE_RUNNER_CONFIG_KEYS = ("max_iterations", "max_retries")
 #: A model's credential, by value or by variable name. Neither is an inference
 #: input, and both are one credential scope.
 _CREDENTIAL_KEYS = ("api_key", "api_key_env")
-_ENV_VAR_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 #: A launched engine is unauthenticated; the OpenAI SDK still demands a key.
 _LAUNCHED_ENGINE_CREDENTIAL = "local"
 
@@ -1219,7 +1220,7 @@ def _configured_credential(
             "variable that holds it"
         )
     if env_name is not None:
-        if not isinstance(env_name, str) or not _ENV_VAR_NAME.fullmatch(env_name):
+        if not isinstance(env_name, str) or not ENV_VAR_NAME.fullmatch(env_name):
             raise ValueError(
                 f"{subject} 'api_key_env' must name an environment variable, "
                 f"got {env_name!r}"
@@ -4019,13 +4020,16 @@ class EvalSession:
                     "but no realized Deployment handoff"
                 )
             config: Mapping[str, object] = root_config
+            api_base_env = None
         else:
             source = self._source_for_binding(binding.binding_id)
             if not isinstance(source, Mapping):
                 raise ValueError(
                     f"Inline binding '{binding.binding_id}' lost its config source"
                 )
-            config = cast(Mapping[str, object], source)
+            # Holds ``api_base_env`` resolved: call the URL the identity names.
+            config = binding.config
+            api_base_env = configured_api_base_env(cast(Mapping[str, object], source))
 
         if binding.dialect_id is None:
             raise ValueError(f"Model binding '{binding.binding_id}' has no dialect")
@@ -4041,6 +4045,7 @@ class EvalSession:
             topology=None,
             metrics_url=None,
             facts=ServingFacts(),
+            api_base_env=api_base_env,
         )
 
     def _setup_postlaunch_reconciliation(self) -> None:
@@ -4197,6 +4202,7 @@ class EvalSession:
         args = dict(raw)
         for key in (
             "api_base",
+            "api_base_env",
             "api_key",
             "api_key_env",
             "client_timeout",
@@ -4485,6 +4491,7 @@ class EvalSession:
             for key in (
                 "model",
                 "api_base",
+                "api_base_env",
                 "api_key",
                 "api_key_env",
                 "client_timeout",
