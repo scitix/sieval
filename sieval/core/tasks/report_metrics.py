@@ -13,8 +13,13 @@ from dataclasses import dataclass
 from functools import cache
 from typing import Literal
 
-#: Keys the runner adds to a generative task's report.
-RUNNER_GEN_METRICS = frozenset({"n_truncated", "n_scored_rollouts"})
+from .consts import FINISH_REASON_TASK_TAGS
+
+#: Keys the runner adds to reports of tasks tagged ``gen`` or ``decisions``.
+RUNNER_FINISH_METRICS = frozenset({"n_truncated", "n_scored_rollouts"})
+
+#: Historical public spelling retained for existing imports.
+RUNNER_GEN_METRICS = RUNNER_FINISH_METRICS
 
 #: What :func:`~sieval.core.tasks.metrics.sampling_report` can write; the vote
 #: keys only with votes.
@@ -110,8 +115,8 @@ def declared_report_metrics(
     *table* entry under its :func:`class_path`, answers. Unknown when a nearer
     class defines ``report`` (its keys are its own), when ``report`` comes from
     another module (a patch, or a shared function bound in the class body: wrap
-    it in a ``def``), or when the attribute is ``None``. A generative task also
-    gets :data:`RUNNER_GEN_METRICS`.
+    it in a ``def``), or when the attribute is ``None``. A task tagged ``gen``
+    or ``decisions`` also gets :data:`RUNNER_FINISH_METRICS`.
 
     Raises:
         TypeError: if a ``report_metrics`` attribute is not a
@@ -138,7 +143,9 @@ def declared_report_metrics(
             return None
         if _patched(mro[report_at]):
             return None
-        if "gen" in getattr(task_cls, "tags", ()):
-            found = found | RUNNER_GEN_METRICS
+        if not frozenset(getattr(task_cls, "tags", ())).isdisjoint(
+            FINISH_REASON_TASK_TAGS
+        ):
+            found = found | RUNNER_FINISH_METRICS
         return found
     return None

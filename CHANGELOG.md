@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Provider-neutral decision IR: role-free `ContextInput`, explicit `JsonPart`,
+  predicate/choice/score questions, typed answers and per-question refusals.
+  The `decisions` capability supports task requirement aggregation, request
+  auditing and output validation. All existing dialects reject decision requests;
+  the OpenRouter Decisions dialect and production tasks are separate follow-ups.
+- `build_model_call_meta_from_response()` records canonical `Model.arun()` calls
+  in the existing stage metadata and profiler without a legacy text projection.
+  Typed decision records preserve structured JSON null, optional outputs,
+  response provenance and reported usage zeroes across disk reloads.
+  Canonical and legacy calls share an explicit, typed usage conversion that
+  omits unreported fields and preserves reported zeroes without type casts.
+  The runner automatically records decision responses and lists of calls when a
+  task omits metadata; explicit stage metadata and hooks retain their precedence.
+  Explicit `model_calls` replaces the full automatic list under the existing
+  generation override contract. The guide documents that incomplete replacements
+  can discard usage and finish information; changing that shared contract is
+  outside this extension.
+- Decision responses can record one call-level finish reason without text
+  placeholders; canonical decision finish evidence reaches truncation detection
+  and report counts. Tasks tagged `decisions` participate in truncation and
+  context-overflow detection and receive truncation counts without a `gen` tag;
+  their pre-run metric declarations include the same counts.
+  The updated rule schema rotates `rules_hash`, so resume rechecks anomalies.
+  Default model profiles verify decisions at response time.
+  Tasks declaring decisions must have a `gen` or `decisions` diagnostic tag;
+  construction rejects missing tags instead of omitting diagnostics silently.
+- Tasks apply their required probabilities/confidence through a local model view
+  before request lowering and answer validation, without strengthening other
+  consumers sharing that model. Model configuration guarantees apply to all
+  decision calls through that binding and combine with task and request flags.
+  Decision capability form sets are serving requirements, not request allowlists,
+  and are canonicalized so declaration order does not change inference identity.
+
+Existing generation semantics, unused binding fingerprints and the result
+directory layout are unchanged. `RESULT_SCHEMA_VERSION` remains 1; strict resume
+checks remain in force.
+
 ## [0.17.0] - 2026-11-14
 
 A minor bump with a breaking change for readers of request summaries: an

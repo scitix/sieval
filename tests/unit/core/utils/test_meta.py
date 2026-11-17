@@ -1,22 +1,161 @@
 """
 Tests for sieval.core.utils.meta — build_model_call_meta, build_stage_meta.
 
-AI-Generated Code - Claude Opus 4.6 (Anthropic)
+AI-Generated Code - GPT-6 (OpenAI)
 """
 
 import time
 
-from sieval.core.models import ModelMeta, ModelOutput
+import pytest
+
+from sieval.core.models import (
+    ModelMeta,
+    ModelOutput,
+    Response,
+    UsageStats,
+)
+from sieval.core.models._legacy_bridge import response_to_model_output
 from sieval.core.tasks.consts import TaskStage
 from sieval.core.utils.meta import (
     build_model_call_meta,
     build_model_call_meta_from_mapping,
+    build_model_call_meta_from_response,
     build_stage_meta,
     collect_versions,
     count_scored_rollouts,
     count_truncated_rollouts,
     report_versions,
 )
+
+
+@pytest.mark.parametrize(
+    "counts, expected",
+    [
+        (
+            UsageStats(),
+            {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+        ),
+        (
+            UsageStats(
+                input_tokens=10, output_tokens=0, total_tokens=10, cached_tokens=0
+            ),
+            {
+                "input_tokens": 10,
+                "output_tokens": 0,
+                "total_tokens": 10,
+                "cached_tokens": 0,
+            },
+        ),
+        (
+            UsageStats(
+                reasoning_tokens=0,
+                cached_tokens=0,
+                accepted_prediction_tokens=0,
+                rejected_prediction_tokens=0,
+                reported_total_tokens=0,
+            ),
+            {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "reasoning_tokens": 0,
+                "cached_tokens": 0,
+                "accepted_prediction_tokens": 0,
+                "rejected_prediction_tokens": 0,
+                "reported_total_tokens": 0,
+            },
+        ),
+        (
+            UsageStats(
+                input_tokens=10,
+                output_tokens=3,
+                total_tokens=13,
+                reasoning_tokens=5,
+                cached_tokens=2,
+                accepted_prediction_tokens=1,
+                rejected_prediction_tokens=4,
+                reported_total_tokens=18,
+            ),
+            {
+                "input_tokens": 10,
+                "output_tokens": 3,
+                "total_tokens": 13,
+                "reasoning_tokens": 5,
+                "cached_tokens": 2,
+                "accepted_prediction_tokens": 1,
+                "rejected_prediction_tokens": 4,
+                "reported_total_tokens": 18,
+            },
+        ),
+    ],
+)
+def test_canonical_and_legacy_call_metadata_share_usage_contract(counts, expected):
+    model: ModelMeta = {"model": "model", "api_base": None, "default_params": {}}
+    response = Response(
+        texts=("answer",),
+        usage=counts,
+        request_params={"key": "value"},
+        finish_reasons=("length",),
+        finish_reason_sources=("test.call",),
+        response_model="served",
+        system_fingerprint="fingerprint",
+    )
+    output = response_to_model_output(model, response)
+    canonical = build_model_call_meta_from_response(model, response)
+    assert canonical == build_model_call_meta(output)
+    assert canonical["usage"] == expected
+
+
+def test_decision_finish_metadata_reaches_rollout_counts():
+    from sieval.core.models import DecisionResult, RefusalAnswer
+
+    model: ModelMeta = {"model": "model", "api_base": None, "default_params": {}}
+    response = Response(
+        texts=(),
+        decisions=DecisionResult((RefusalAnswer("q"),)),
+        finish_reasons=("length",),
+    )
+    stage_meta = {
+        TaskStage.INFERRED.value: [
+            build_stage_meta(
+                model_calls=[build_model_call_meta_from_response(model, response)]
+            )
+        ]
+    }
+    assert count_scored_rollouts([stage_meta]) == 1
+    assert count_truncated_rollouts([stage_meta]) == 1
+
+
+def test_native_response_metadata_preserves_usage_and_after_call_provenance():
+    from sieval.core.models import (
+        GenModel,
+        ModelProvenance,
+        Response,
+        UsageStats,
+    )
+    from sieval.core.utils.meta import build_model_call_meta_from_response
+
+    model = GenModel(model="example", api_key="test")
+    response = Response(
+        texts=(),
+        usage=UsageStats(input_tokens=17, output_tokens=0, total_tokens=17),
+        request_params={"question": "Is it damaged?"},
+        response_model="served-model",
+    )
+    provenance = model._provenance(response)
+    from dataclasses import replace
+
+    response = replace(response, provenance=provenance)
+    before = model.meta()
+    call = build_model_call_meta_from_response(before, response)
+    assert call["usage"] == {"input_tokens": 17, "output_tokens": 0, "total_tokens": 17}
+    assert "cached_tokens" not in call["usage"]
+    assert call["request_params"] == response.request_params
+    assert call["request_params"] is not response.request_params
+    assert call["response_model"] == "served-model"
+    assert isinstance(call["model"]["provenance"], ModelProvenance)
+    assert call["model"]["provenance"] == provenance
+    assert "provenance" not in before
 
 
 class TestBuildModelCallMeta:

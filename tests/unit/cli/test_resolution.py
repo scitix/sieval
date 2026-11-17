@@ -9,6 +9,7 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 import sys
 import types
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -297,6 +298,43 @@ class TestDeriveModelType:
         empty = self._requirements()
         assert derive_model_type("m", "gen", empty) == "gen"
         assert derive_model_type("m", None, empty) == "chat"
+
+    def test_context_input_uses_canonical_model_without_a_legacy_kind(self):
+        context = self._requirements(InputKind.CONTEXT)
+        assert derive_model_type("m", None, context) is None
+        for legacy_type in ("chat", "gen"):
+            with pytest.raises(ValueError, match="context"):
+                derive_model_type("m", legacy_type, context)
+
+    def test_context_binding_requires_an_explicit_dialect(self):
+        with pytest.raises(ValueError, match="explicit dialect"):
+            default_dialect(None, "remote", self._requirements(InputKind.CONTEXT))
+        binding = InlineModelBinding(
+            binding_id="inline",
+            root_deployment_key="root",
+            requested_model_id="model",
+            config={},
+        )
+        with pytest.raises(ValueError, match="explicit dialect"):
+            finalize_inline_model_binding(binding, None)
+
+    def test_context_cannot_bind_a_generation_dialect(self):
+        with pytest.raises(ValueError, match="context"):
+            validate_model_type_dialect("model", None, "openai_chat")
+
+    def test_explicit_context_dialect_finalizes_a_canonical_binding(self, monkeypatch):
+        from sieval.core.models.dialect_registry import get_dialect_spec
+
+        spec = replace(get_dialect_spec("openai_chat"), input_kinds=("context",))
+        monkeypatch.setattr("sieval.cli.resolution.get_dialect_spec", lambda _: spec)
+        binding = InlineModelBinding(
+            binding_id="inline",
+            root_deployment_key="root",
+            requested_model_id="model",
+            config={},
+            dialect_id="test_decisions",
+        )
+        assert finalize_inline_model_binding(binding, None) == binding
 
     def test_normalized_task_evidence_is_authoritative(self):
         completion = self._requirements(InputKind.COMPLETION)

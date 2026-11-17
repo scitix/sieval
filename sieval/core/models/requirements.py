@@ -15,6 +15,7 @@ from types import MappingProxyType
 from sieval.core.types import JSONValue
 
 from ._shared import copy_json_value, validate_nonempty_string
+from .capabilities import DecisionsOptions
 
 
 class InputKind(StrEnum):
@@ -22,6 +23,7 @@ class InputKind(StrEnum):
 
     COMPLETION = "completion"
     CHAT = "chat"
+    CONTEXT = "context"
 
 
 class InputModality(StrEnum):
@@ -55,8 +57,13 @@ class TaskRequirements:
     min_top_logprobs: int | None = None
     function_tools: bool = False
     min_context: int | None = None
+    decisions: DecisionsOptions | None = None
 
     def __post_init__(self) -> None:
+        if self.decisions is not None and not isinstance(
+            self.decisions, DecisionsOptions
+        ):
+            raise TypeError("decisions must be DecisionsOptions or None")
         if self.input is not None and not isinstance(self.input, InputKind):
             raise TypeError("input must be an InputKind or None")
 
@@ -209,6 +216,8 @@ class AggregatedTaskRequirements:
     sampled_logprobs: bool = False
     min_top_logprobs: int | None = None
     min_context: int | None = None
+    decisions: DecisionsOptions | None = None
+    decisions_sources: frozenset[str] = frozenset()
     input_sources: Mapping[InputKind, frozenset[str]] = field(default_factory=dict)
     modality_sources: Mapping[InputModality, frozenset[str]] = field(
         default_factory=dict
@@ -219,6 +228,15 @@ class AggregatedTaskRequirements:
     min_context_sources: Mapping[int, frozenset[str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if self.decisions is not None and not isinstance(
+            self.decisions, DecisionsOptions
+        ):
+            raise TypeError("decisions must be DecisionsOptions or None")
+        object.__setattr__(
+            self,
+            "decisions_sources",
+            _validate_and_freeze_sources(self.decisions_sources, "decisions_sources"),
+        )
         inputs = frozenset(self.input)
         if any(not isinstance(item, InputKind) for item in inputs):
             raise TypeError("input must contain only InputKind values")
@@ -304,12 +322,33 @@ def aggregate_task_requirements(
     minimum: int | None = None
     context_sources: dict[int, set[str]] = {}
     context: int | None = None
+    decisions: DecisionsOptions | None = None
+    decisions_sources: set[str] = set()
 
     for requirement in requirements:
         if not isinstance(requirement, TaskModelRequirement):
             raise TypeError("requirements must contain TaskModelRequirement values")
         required = requirement.requires
         source = requirement.source_task
+        if required.decisions is not None:
+            previous = decisions or DecisionsOptions()
+            current = required.decisions
+            decisions = DecisionsOptions(
+                question_types=tuple(
+                    sorted(set(previous.question_types) | set(current.question_types))
+                ),
+                evidence_kinds=tuple(
+                    sorted(set(previous.evidence_kinds) | set(current.evidence_kinds))
+                ),
+                guidance_kinds=tuple(
+                    sorted(set(previous.guidance_kinds) | set(current.guidance_kinds))
+                ),
+                require_probabilities=previous.require_probabilities
+                or current.require_probabilities,
+                require_confidence=previous.require_confidence
+                or current.require_confidence,
+            )
+            decisions_sources.add(source)
 
         if required.input is not None:
             inputs.add(required.input)
@@ -337,6 +376,8 @@ def aggregate_task_requirements(
         sampled_logprobs=bool(sampled_logprobs_sources),
         min_top_logprobs=minimum,
         min_context=context,
+        decisions=decisions,
+        decisions_sources=frozenset(decisions_sources),
         input_sources={key: frozenset(value) for key, value in input_sources.items()},
         modality_sources={
             key: frozenset(value) for key, value in modality_sources.items()

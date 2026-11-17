@@ -38,8 +38,10 @@ from ._legacy_bridge import (
 from ._shared import named_json_value
 from .capabilities import (
     Capability,
+    DecisionsOptions,
     RequestDefaults,
 )
+from .decisions import DecisionParams
 from .deployment import (
     BINDING_RESOURCE_KEYS,
     ConnectionPool,
@@ -117,6 +119,7 @@ _LEGACY_CAPABILITY_MAP: Mapping[str, tuple[Capability, ...]] = {
 }
 
 _RESPONSE_CHANNEL_BY_CAPABILITY: Mapping[str, str] = {
+    "decisions": "decisions",
     "function_tools": "tool_calls",
     "hosted_tools": "server_tool_uses",
     "input_scoring": "input_scoring",
@@ -363,6 +366,7 @@ class Model:
         lifecycle_owner: "Model | None",
         provenance_projector: _ProvenanceProjector | None = None,
         provenance_plan: RuntimeBindingPlan | None = None,
+        decision_requirements: DecisionsOptions | None = None,
     ) -> None:
         if dialect.dialect_id != runtime_plan.dialect_id:
             raise ValueError("bound dialect does not match the runtime plan")
@@ -371,6 +375,7 @@ class Model:
         self._deployment = deployment
         self._pool = pool
         self._runtime_plan = runtime_plan
+        self._decision_requirements = decision_requirements
         self._dialect = dialect
         self._transport = dialect  # one-cycle private compatibility alias
         self._model = runtime_plan.requested_model_id
@@ -483,6 +488,26 @@ class Model:
         }
         return new_model
 
+    def with_decision_requirements(self, requirements: DecisionsOptions) -> Self:
+        """Return a task-local view enforcing required outputs on decision calls.
+
+        The shared runtime plan describes capability availability. This view
+        projects a task's probability/confidence guarantees before native
+        lowering, without changing other consumers of the same binding.
+        """
+        if not isinstance(requirements, DecisionsOptions):
+            raise TypeError("requirements must be DecisionsOptions")
+        previous = self._decision_requirements or DecisionsOptions()
+        result = copy.copy(self)
+        result._decision_requirements = replace(
+            requirements,
+            require_probabilities=previous.require_probabilities
+            or requirements.require_probabilities,
+            require_confidence=previous.require_confidence
+            or requirements.require_confidence,
+        )
+        return result
+
     def with_dialect(
         self,
         dialect_id: str,
@@ -522,6 +547,7 @@ class Model:
             lifecycle_owner=self._lifecycle_owner,
             provenance_projector=self._provenance_projector,
             provenance_plan=provenance_plan,
+            decision_requirements=self._decision_requirements,
         )
         return result
 
@@ -598,6 +624,7 @@ class Model:
             lifecycle_owner=None,
             provenance_projector=self._provenance_projector,
             provenance_plan=self._provenance_plan,
+            decision_requirements=self._decision_requirements,
         )
         return result
 
@@ -693,6 +720,30 @@ class Model:
             raise TypeError(f"arun requires Request, got {type(req).__name__}")
         self._require_provenance_plan()
         projected = _apply_request_defaults(req, self._runtime_plan.request_defaults)
+        if isinstance(projected.decisions, DecisionParams):
+            requirements = self._decision_requirements or DecisionsOptions()
+            declared = self._runtime_plan.declared_capabilities.get("decisions")
+            declaration: Mapping[str, JSONValue] = (
+                cast(Mapping[str, JSONValue], declared)
+                if isinstance(declared, Mapping)
+                else {}
+            )
+            # Configuration guarantees apply to every decision call on this
+            # binding. Aggregated task floors remain serving requirements;
+            # only the task-local view strengthens a consumer's calls.
+            params = projected.decisions
+            projected = replace(
+                projected,
+                decisions=replace(
+                    params,
+                    require_probabilities=params.require_probabilities
+                    or requirements.require_probabilities
+                    or declaration.get("require_probabilities") is True,
+                    require_confidence=params.require_confidence
+                    or requirements.require_confidence
+                    or declaration.get("require_confidence") is True,
+                ),
+            )
         validate_request_invariants(projected)
         validate_runtime_binding_plan(self._runtime_plan, projected)
         active_capabilities = active_request_capabilities(projected)

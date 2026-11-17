@@ -179,6 +179,7 @@ _ParamValue = str | int | float | bool
 
 
 _PR1_REQUEST_VERIFIERS = {
+    "decisions": "validate_response_channel",
     "input_scoring": "validate_response_channel",
     "sampled_logprobs": "validate_response_channel",
     "top_logprobs": "validate_response_channel",
@@ -1928,8 +1929,8 @@ class EvalSession:
         self._unmet_python_requires: dict[str, tuple[UnmetPythonRequirement, ...]] = {}
         self._task_model_requirements: tuple[TaskModelRequirement, ...] = ()
         self._aggregated_requirements: dict[str, AggregatedTaskRequirements] = {}
-        self._model_types_by_root: dict[str, Literal["chat", "gen"]] = {}
-        self._model_types_by_binding: dict[str, Literal["chat", "gen"]] = {}
+        self._model_types_by_root: dict[str, Literal["chat", "gen"] | None] = {}
+        self._model_types_by_binding: dict[str, Literal["chat", "gen"] | None] = {}
         self._prelaunch_binding_inputs: tuple[BindingReconcileInput, ...] = ()
         self._prelaunch_deployment_inputs: dict[str, DeploymentReconcileInput] = {}
         self._realized_deployments_by_root: dict[str, Deployment] = {}
@@ -2183,7 +2184,7 @@ class EvalSession:
     def _finalize_named_binding(
         self,
         binding: NamedModelBinding,
-        model_type: Literal["chat", "gen"],
+        model_type: Literal["chat", "gen"] | None,
         models_cfg: Mapping[str, dict[str, Any]],
         root_requirements: AggregatedTaskRequirements | None = None,
     ) -> NamedModelBinding:
@@ -3421,7 +3422,7 @@ class EvalSession:
             named_by_root.setdefault(binding.root_deployment_key, []).append(binding)
 
         finalized_named: dict[str, NamedModelBinding] = {}
-        model_types_by_root: dict[str, Literal["chat", "gen"]] = {}
+        model_types_by_root: dict[str, Literal["chat", "gen"] | None] = {}
         for root_key, root_bindings_list in named_by_root.items():
             root_bindings = tuple(root_bindings_list)
             root_name = self._model_config_chain(
@@ -3490,7 +3491,7 @@ class EvalSession:
         # use the shared resolver's historical zero-evidence Chat fallback;
         # borrowed legacy wrappers contribute their explicit ChatModel/GenModel
         # type without letting the dialect select it.
-        model_types_by_binding: dict[str, Literal["chat", "gen"]] = {}
+        model_types_by_binding: dict[str, Literal["chat", "gen"] | None] = {}
         finalized_inline: dict[str, InlineModelBinding] = {}
         for binding_id, binding in self._normalized_model_bindings.items():
             if isinstance(binding, NamedModelBinding):
@@ -4330,10 +4331,12 @@ class EvalSession:
     def _as_legacy_wrapper(
         self,
         model: Model,
-        model_type: Literal["chat", "gen"],
+        model_type: Literal["chat", "gen"] | None,
     ) -> Model:
         """Apply the one model-kind decision frozen during prelaunch."""
 
+        if model_type is None:
+            return model
         input_kind = InputKind.CHAT if model_type == "chat" else InputKind.COMPLETION
         wrapper_type: type[Model] = (
             ChatModel if input_kind is InputKind.CHAT else GenModel

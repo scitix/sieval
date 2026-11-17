@@ -130,6 +130,7 @@ anyio.run(main)
 - [Report Metrics](docs/guide/metrics.md) — `report.json` keys, the sampling family (`pass@k` / `pass^k` / `maj@k` / `self_consistency`), and which pairs must be read together
 - [Profiling & Observability](docs/guide/profiling.md) — stage timing, I/O metrics, token tracking
 - [Inference Management](docs/guide/infer.md) — full infer subcommand reference, and the services SiEval starts for tasks
+- [Decision IR](docs/guide/decision-ir.md) — typed decision evidence, questions, answers, and adapter extension contracts
 - [FAQ](docs/guide/faq.md) — common questions and troubleshooting
 
 ## Contributing

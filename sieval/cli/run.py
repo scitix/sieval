@@ -75,7 +75,10 @@ from sieval.cli.output import (
     cli_error_message,
     render,
 )
-from sieval.cli.resolution import resolve_config_model_types
+from sieval.cli.resolution import (
+    require_generation_model_type,
+    resolve_config_model_types,
+)
 from sieval.cli.services import SERVICE_LOG_DIR
 from sieval.cli.serving import (
     DEFAULT_GROUP,
@@ -279,7 +282,9 @@ class _RecordedPlans:
         if isinstance(models, dict):
             self._plans, self._models = plans, models
             self._capabilities = {
-                name: capability_model_type(kind) for name, kind in types.items()
+                name: capability_model_type(kind)
+                for name, kind in types.items()
+                if kind is not None
             }
 
     def plan_for(
@@ -371,8 +376,9 @@ async def _prepare_launch_batch(
         _refuse_explicit_endpoint(model_name, model_config)
 
         infer_dict = model_config.get("infer")
+        model_type = model_type_resolution.model_types_by_config[model_name]
         capability = capability_model_type(
-            model_type_resolution.model_types_by_config[model_name]
+            require_generation_model_type(model_name, model_type)
         )
         reused = (
             recorded.plan_for(

@@ -19,6 +19,7 @@ from sieval.core.models.capabilities import (
     CAPABILITY_KEYS,
     CapabilityIntent,
     CapabilityKey,
+    DecisionsOptions,
     HostedToolsOptions,
     ModelCapabilityEntry,
     ModelCapabilityProfile,
@@ -58,7 +59,11 @@ from sieval.core.models.reconcile import (
     _declaration_intent,
     _join_floor_intents,
     _json_sequence,
+    _merge_two_intents,
+    _required_task_outputs,
+    _task_intents,
     reconcile,
+    reconcile_binding,
 )
 from sieval.core.models.requirements import (
     AggregatedTaskRequirements,
@@ -85,6 +90,103 @@ class _Connection:
 
     async def aclose(self) -> None:
         self.close_calls += 1
+
+
+def test_decision_task_intent_and_output_requirements_preserve_optional_semantics():
+    requirements = AggregatedTaskRequirements(
+        input=frozenset({InputKind.CONTEXT}),
+        decisions=DecisionsOptions(
+            question_types=("predicate", "choice"),
+            evidence_kinds=("json",),
+            guidance_kinds=("null",),
+            require_probabilities=True,
+        ),
+        decisions_sources=frozenset({"task-b", "task-a"}),
+    )
+    intent = _task_intents(requirements)["decisions"]
+    assert intent.sources == ("task-a", "task-b")
+    assert intent.minimums == {
+        "question_types": ["choice", "predicate"],
+        "evidence_kinds": ["json"],
+        "guidance_kinds": ["null"],
+        "require_probabilities": True,
+    }
+    assert _required_task_outputs(requirements) == {"decisions"}
+    assert _task_intents(AggregatedTaskRequirements()) == {}
+
+
+def test_decision_declaration_cannot_omit_task_required_question_types():
+    task = _declaration_intent(
+        "decisions", DecisionsOptions(question_types=("choice", "score")), "task"
+    )
+    declared = _declaration_intent(
+        "decisions", DecisionsOptions(question_types=("choice",)), "config"
+    )
+    merged, reason = _merge_two_intents(task, declared)
+    assert merged == task
+    assert reason is not None and "score" in reason
+
+
+def test_decision_request_and_task_floors_join_forms_and_guarantees():
+    task = _declaration_intent(
+        "decisions",
+        DecisionsOptions(question_types=("choice",), require_confidence=True),
+        "task",
+    )
+    request = _declaration_intent(
+        "decisions",
+        DecisionsOptions(question_types=("score",), require_confidence=True),
+        "request",
+    )
+    joined = _join_floor_intents(task, request)
+    assert joined.minimums == {
+        "question_types": ["choice", "score"],
+        "require_confidence": True,
+    }
+    assert joined.sources == ("request", "task")
+
+
+def test_decision_requirement_is_rejected_by_existing_dialect_during_reconcile():
+    requirements = AggregatedTaskRequirements(
+        input=frozenset({InputKind.CHAT}),
+        decisions=DecisionsOptions(),
+        decisions_sources=frozenset({"decision-task"}),
+    )
+    result = reconcile_binding(_binding(requirements=requirements))
+    assert result.plan is None
+    assert any(
+        error.capability == "decisions" and "decision-task" in error.sources
+        for error in result.diagnostics
+    )
+
+
+def test_unused_extension_rows_keep_complete_diagnostics_and_stable_identity():
+    result = reconcile_binding(_binding())
+    assert result.plan is not None
+    plan = result.plan
+    assert "decisions" in plan.unavailable_capabilities
+    serialized = cast(
+        Mapping[str, JSONValue], plan.to_json_value()["unavailable_capabilities"]
+    )
+    assert isinstance(serialized, Mapping)
+    assert "decisions" not in serialized
+    extended = dataclasses.replace(
+        plan,
+        unavailable_capabilities={
+            **plan.unavailable_capabilities,
+            "future_capability": "unsupported",
+        },
+    )
+    assert extended.fingerprint == plan.fingerprint
+    explicit = dataclasses.replace(
+        extended, declared_capabilities={"future_capability": False}
+    )
+    assert explicit.fingerprint != extended.fingerprint
+    explicit_unavailable = cast(
+        Mapping[str, JSONValue], explicit.to_json_value()["unavailable_capabilities"]
+    )
+    assert isinstance(explicit_unavailable, Mapping)
+    assert explicit_unavailable["future_capability"] == "unsupported"
 
 
 def _profile(

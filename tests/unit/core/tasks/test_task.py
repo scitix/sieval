@@ -15,7 +15,7 @@ from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 
 from sieval.core.datasets import REPEAT_INDEX_COLUMN, Dataset
-from sieval.core.models import Model
+from sieval.core.models import DecisionsOptions, Model
 from sieval.core.models.chat_model import ChatModel
 from sieval.core.models.gen_model import GenModel
 from sieval.core.models.requirements import (
@@ -263,6 +263,45 @@ class TestRequiresCapabilityGate:
         )
         with pytest.raises(ValueError, match="top_logprobs"):
             _TopLogprobsTask(_SimpleDataset(), model)
+
+    @pytest.mark.parametrize(
+        "tags", [frozenset(), frozenset({"ppl"}), frozenset({"clp"})]
+    )
+    def test_decision_requirements_without_diagnostic_tags_are_rejected(self, tags):
+        class DecisionTask(_ConcreteTask):
+            requires = TaskRequirements(
+                input=InputKind.CHAT, decisions=DecisionsOptions()
+            )
+
+        DecisionTask.tags = tags
+        model = _MockChatModel()
+        cast(Any, model)._test_runtime_plan = SimpleNamespace(
+            dialect_id="openai_chat",
+            available_capabilities=frozenset({"decisions"}),
+            capability_minimums={},
+        )
+        with pytest.raises(ValueError, match="DecisionTask.*decisions.*tag"):
+            DecisionTask(_SimpleDataset(), model)
+
+    @pytest.mark.parametrize(
+        "tags",
+        [frozenset({"gen"}), frozenset({"decisions"}), frozenset({"gen", "decisions"})],
+    )
+    def test_decision_requirements_accept_either_finish_diagnostic_tag(self, tags):
+        class DecisionTask(_ConcreteTask):
+            requires = TaskRequirements(
+                input=InputKind.CHAT, decisions=DecisionsOptions()
+            )
+
+        DecisionTask.tags = tags
+        model = _MockChatModel()
+        cast(Any, model)._test_runtime_plan = SimpleNamespace(
+            dialect_id="openai_chat",
+            available_capabilities=frozenset({"decisions"}),
+            capability_minimums={},
+        )
+        task = DecisionTask(_SimpleDataset(), model)
+        assert task.tags == tags
 
 
 class TestModelRequirementsFor:

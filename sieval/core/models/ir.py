@@ -4,18 +4,20 @@ The request side is immutable runtime input.  The response side is a closed,
 additive persisted schema: every nested response record is decorated so resume
 rehydration preserves its concrete type.
 
-AI-Generated Code - GPT-5.6 (OpenAI)
+AI-Generated Code - GPT-6 (OpenAI)
 """
 
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Literal, cast
+from typing import Literal, NotRequired, TypedDict, cast
 
 from sieval.core.types import JSONValue
 from sieval.core.utils.serialization import sieval_record
 
 from ._engine_source import EngineSource
+from .content import JsonPart
+from .decisions import DecisionParams, DecisionResult
 
 # ---------------------------------------------------------------------------
 # Typed input
@@ -90,7 +92,28 @@ class ChatInput:
             raise ValueError("ChatInput.messages must not be empty")
 
 
-type ModelInput = CompletionInput | ChatInput
+type ContextPart = TextPart | JsonPart
+
+
+@dataclass(frozen=True)
+class ContextInput:
+    """Ordered evidence without conversation roles or tool-call semantics."""
+
+    parts: tuple[ContextPart, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.parts, tuple) or not self.parts:
+            raise ValueError("context parts must be a non-empty tuple")
+        for part in self.parts:
+            if not isinstance(part, TextPart | JsonPart):
+                raise TypeError("context parts must be TextPart or JsonPart")
+            if isinstance(part, TextPart) and not isinstance(part.text, str):
+                raise TypeError("context text must be a string")
+            if isinstance(part, JsonPart) and part.value is None:
+                raise ValueError("context JSON evidence must be an object or array")
+
+
+type ModelInput = CompletionInput | ChatInput | ContextInput
 
 
 @dataclass(frozen=True)
@@ -362,6 +385,7 @@ class Request:
     session: SessionParams = field(default_factory=SessionParams)
     scheduling: SchedulingParams = field(default_factory=SchedulingParams)
     dialect_options: DialectOptions | None = None
+    decisions: DecisionParams | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -472,6 +496,24 @@ class GroundingMetadata:
     rendered_content: str | None = None
 
 
+class ModelUsage(TypedDict):
+    """Token usage statistics from a single model API call.
+
+    The optional keys are breakdowns of the first two counts, not addends, and
+    are written only where the server reported them -- so an absent key means
+    "not reported", never zero. Read them with ``.get()``.
+    """
+
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    reasoning_tokens: NotRequired[int]
+    cached_tokens: NotRequired[int]
+    accepted_prediction_tokens: NotRequired[int]
+    rejected_prediction_tokens: NotRequired[int]
+    reported_total_tokens: NotRequired[int]
+
+
 @sieval_record
 @dataclass(frozen=True)
 class UsageStats:
@@ -499,6 +541,26 @@ class UsageStats:
     accepted_prediction_tokens: int | None = None
     rejected_prediction_tokens: int | None = None
     reported_total_tokens: int | None = None
+
+    def to_json_value(self) -> ModelUsage:
+        """Keep reported zeroes and omit unreported breakdowns."""
+
+        usage: ModelUsage = {
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "total_tokens": self.total_tokens,
+        }
+        if self.reasoning_tokens is not None:
+            usage["reasoning_tokens"] = self.reasoning_tokens
+        if self.cached_tokens is not None:
+            usage["cached_tokens"] = self.cached_tokens
+        if self.accepted_prediction_tokens is not None:
+            usage["accepted_prediction_tokens"] = self.accepted_prediction_tokens
+        if self.rejected_prediction_tokens is not None:
+            usage["rejected_prediction_tokens"] = self.rejected_prediction_tokens
+        if self.reported_total_tokens is not None:
+            usage["reported_total_tokens"] = self.reported_total_tokens
+        return usage
 
 
 @sieval_record
@@ -589,6 +651,7 @@ class Response:
     )
     session_id: str | None = field(default=None, metadata=_SINGULAR_CHANNEL)
     usage: UsageStats | None = field(default=None, metadata=_SINGULAR_CHANNEL)
+    decisions: DecisionResult | None = field(default=None, metadata=_SINGULAR_CHANNEL)
 
     request_params: Mapping[str, JSONValue] | None = field(
         default=None, metadata=_PROVENANCE
@@ -609,10 +672,12 @@ class Response:
             self.texts
         ):
             raise ValueError("Response.choice_logprobs must align with Response.texts")
-        if self.finish_reasons is not None and len(self.finish_reasons) != len(
-            self.texts
-        ):
-            raise ValueError("Response.finish_reasons must align with Response.texts")
+        finish_count = 1 if self.decisions is not None else len(self.texts)
+        if self.finish_reasons is not None and len(self.finish_reasons) != finish_count:
+            raise ValueError(
+                "Response.finish_reasons must align with one decision call "
+                "or Response.texts"
+            )
         if self.finish_reason_sources is not None and (
             self.finish_reasons is None
             or len(self.finish_reason_sources) != len(self.finish_reasons)

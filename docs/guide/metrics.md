@@ -548,11 +548,12 @@ silently-stopped extractor survives longest: no second rollout to disagree with.
 
 `n_truncated` — **rollouts** whose output was interrupted before completion,
 either by a token/context limit, output filtering, or refusal — and
-`n_scored_rollouts`, the rollouts scored in total, are reported by **every `gen`
-task**, on the same terms as `n_unextracted`: they describe the generation rather
-than the draw, so neither is confined to `n > 1`. Unlike every other key here
-the *runner* injects them, so a task cannot report zero truncation by having
-forgotten to look.
+`n_scored_rollouts`, the rollouts scored in total, are reported by **every task
+tagged `gen` or `decisions`**, on the same terms as `n_unextracted`: they describe
+the model output rather than the draw, so neither is confined to `n > 1`.
+Decision responses use one call-level finish reason without text placeholders.
+Unlike every other key here the *runner* injects them, so a task cannot report
+zero truncation by having forgotten to look.
 
 What counts: token/context-limit stops (`length`, `max_tokens`,
 `max_output_tokens`, `model_context_window_exceeded`, Google `MAX_TOKENS` /
@@ -572,10 +573,10 @@ total, so nothing here was divisible into it. `n_scored_rollouts` is the
 budget asked for. Deriving the rate, and deciding what threshold should warn,
 fail or annotate a score, is left to the reader.
 
-Both are omitted rather than zeroed in two cases: outside `gen`, where `ppl`/`clp`
-infer at `max_tokens=1` and finish every call the way a truncation does, so the
-count would equal the total and mean nothing; and when the reasons were never
-recorded, since resuming a run written with `record_meta=False` hydrates its
+Both are omitted rather than zeroed in two cases: outside `gen` and `decisions`,
+where `ppl`/`clp` infer at `max_tokens=1` and finish every call the way a truncation
+does, so the count would equal the total and mean nothing; and when the reasons
+were never recorded, since resuming a run written with `record_meta=False` hydrates its
 finals without per-stage metadata and a `0` would claim a clean run rather than an
 unmeasured one. `sieval_versions` reports that state in band as `"unknown"`; a
 count has no such value.
@@ -676,8 +677,8 @@ so a criterion naming a metric the task never reports can be refused before the 
 
 `names` are written as spelled; a `{placeholder}` in a pattern stands for one or
 more characters taken from the data. Either may be absent from a run whose data
-lacks it, or that cannot compute it. Only numeric keys are named; a generative
-task also gets the runner's `n_truncated` and `n_scored_rollouts`.
+lacks it, or that cannot compute it. Only numeric keys are named; a task tagged
+`gen` or `decisions` also gets the runner's `n_truncated` and `n_scored_rollouts`.
 
 Built-in tasks are declared in `sieval/meta/report_metrics.py`, not on the class,
 because a task module's source is in its stage identities. A plugin task declares

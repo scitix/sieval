@@ -31,6 +31,7 @@ type CapabilityKey = Literal[
     "multimodal_input",
     "prefill",
     "fim",
+    "decisions",
 ]
 
 CAPABILITY_KEYS: tuple[CapabilityKey, ...] = (
@@ -46,6 +47,7 @@ CAPABILITY_KEYS: tuple[CapabilityKey, ...] = (
     "multimodal_input",
     "prefill",
     "fim",
+    "decisions",
 )
 
 
@@ -297,6 +299,29 @@ class FimOptions:
     """Configuration for prefix/suffix fill-in-the-middle input."""
 
 
+@dataclass(frozen=True)
+class DecisionsOptions:
+    """Required decision semantics; empty forms leave the dialect unrestricted."""
+
+    question_types: tuple[str, ...] = ()
+    evidence_kinds: tuple[str, ...] = ()
+    guidance_kinds: tuple[str, ...] = ()
+    require_probabilities: bool = False
+    require_confidence: bool = False
+
+    def __post_init__(self) -> None:
+        for name, allowed in (
+            ("question_types", frozenset({"predicate", "choice", "score"})),
+            ("evidence_kinds", frozenset({"text", "json"})),
+            ("guidance_kinds", frozenset({"text", "json", "null"})),
+        ):
+            _validate_string_tuple(getattr(self, name), name, allowed=allowed)
+            object.__setattr__(self, name, tuple(sorted(getattr(self, name))))
+        for name in ("require_probabilities", "require_confidence"):
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f"{name} must be a boolean")
+
+
 type CapabilityOptions = (
     InputScoringOptions
     | SampledLogprobsOptions
@@ -310,6 +335,7 @@ type CapabilityOptions = (
     | MultimodalInputOptions
     | PrefillOptions
     | FimOptions
+    | DecisionsOptions
 )
 
 
@@ -339,6 +365,7 @@ CAPABILITY_SPECS: Mapping[CapabilityKey, CapabilitySpec] = MappingProxyType(
         "multimodal_input": CapabilitySpec("multimodal_input", MultimodalInputOptions),
         "prefill": CapabilitySpec("prefill", PrefillOptions),
         "fim": CapabilitySpec("fim", FimOptions),
+        "decisions": CapabilitySpec("decisions", DecisionsOptions),
     }
 )
 
@@ -347,6 +374,9 @@ _SEQUENCE_OPTIONS: frozenset[tuple[CapabilityKey, str]] = frozenset(
         ("hosted_tools", "kinds"),
         ("structured_output", "formats"),
         ("multimodal_input", "modalities"),
+        ("decisions", "question_types"),
+        ("decisions", "evidence_kinds"),
+        ("decisions", "guidance_kinds"),
     }
 )
 

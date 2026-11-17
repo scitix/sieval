@@ -15,6 +15,7 @@ from sieval.core.models.capabilities import (
     Capability,
     CapabilityConfigError,
     CapabilityIntent,
+    DecisionsOptions,
     DialectCapabilityBinding,
     DialectCapabilityStatus,
     FunctionToolsOptions,
@@ -52,6 +53,7 @@ EXPECTED_KEYS = (
     "multimodal_input",
     "prefill",
     "fim",
+    "decisions",
 )
 
 
@@ -69,7 +71,7 @@ class TestCapabilitySpecs:
     def test_stable_symbol_space_and_typed_specs(self) -> None:
         assert CAPABILITY_KEYS == EXPECTED_KEYS
         assert tuple(CAPABILITY_SPECS) == EXPECTED_KEYS
-        assert len({spec.options_type for spec in CAPABILITY_SPECS.values()}) == 12
+        assert len({spec.options_type for spec in CAPABILITY_SPECS.values()}) == 13
 
     def test_option_records_are_frozen(self) -> None:
         options = TopLogprobsOptions(minimum=8)
@@ -102,6 +104,43 @@ class TestCapabilitySpecs:
 
 
 class TestCapabilityNormalization:
+    def test_decision_forms_and_requirements_normalize_without_coercion(self):
+        normalized = normalize_capability_declarations(
+            {
+                "decisions": {
+                    "question_types": ["predicate", "choice"],
+                    "evidence_kinds": ["json"],
+                    "guidance_kinds": ["text", "null"],
+                    "require_probabilities": True,
+                }
+            },
+            dialect_id="test_decisions",
+            outcomes=_outcomes(),
+        )
+        assert normalized["decisions"] == DecisionsOptions(
+            question_types=("predicate", "choice"),
+            evidence_kinds=("json",),
+            guidance_kinds=("text", "null"),
+            require_probabilities=True,
+        )
+
+    @pytest.mark.parametrize(
+        "options",
+        [
+            {"question_types": ["generate"]},
+            {"evidence_kinds": ["image"]},
+            {"guidance_kinds": ["boolean"]},
+            {"require_confidence": 1},
+        ],
+    )
+    def test_invalid_decision_options_are_rejected(self, options):
+        with pytest.raises(CapabilityConfigError):
+            normalize_capability_declarations(
+                {"decisions": options},
+                dialect_id="test_decisions",
+                outcomes=_outcomes(),
+            )
+
     def test_missing_key_has_no_user_opinion(self) -> None:
         normalized = normalize_capability_declarations(
             {}, dialect_id="openai_chat", outcomes=_outcomes()

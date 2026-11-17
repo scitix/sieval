@@ -10,7 +10,7 @@ from pathlib import Path
 import orjson
 import pytest
 
-from sieval.core.models import ModelOutput
+from sieval.core.models import DecisionResult, ModelOutput, RefusalAnswer, Response
 from sieval.core.tasks.anomaly import (
     _DETECTION_RULES,
     TaskAnomalyDetector,
@@ -180,6 +180,20 @@ class TestDetectEmptyInferPpl:
 
 
 class TestDetectTruncatedOutput:
+    def test_decision_finish_reason_is_detected_without_empty_generation(
+        self, tmp_path
+    ):
+        response = Response(
+            texts=(),
+            decisions=DecisionResult((RefusalAnswer("q"),)),
+            finish_reasons=("length",),
+        )
+        ctx = _make_final_ctx(infer_result=TaskStageOutput(value=response))
+        assert detect_truncated_output(ctx) == {0}
+        assert detect_empty_infer_gen(ctx) == set()
+        detected = TaskAnomalyDetector(tmp_path).detect(ctx, {"decisions"})
+        assert detected["truncated_output"] == {0}
+
     def test_prompt_block_is_never_output_truncation(self, sample_model_meta):
         output = ModelOutput(
             model=sample_model_meta,
@@ -658,7 +672,7 @@ class TestRulesHashStability:
         fails you changed the rule set: update the value here in the same
         commit, so the rotation is in the diff.
         """
-        assert get_rules_hash() == "9212a6abb14db24e"
+        assert get_rules_hash() == "66b856d5840523e8"
 
     def test_the_rule_set_is_the_expected_size(self):
         # Guards the other direction: a rule silently dropped from the registry
@@ -820,6 +834,23 @@ class TestContextOverflow:
         ctx = _make_final_ctx(infer_result=self._overflowed(3))
         assert detect_context_overflow(ctx) == {0, 1, 2}
 
+    def test_decisions_tag_detects_context_overflow_without_duplicate_anomalies(
+        self, tmp_path
+    ):
+        response = Response(
+            texts=(),
+            decisions=DecisionResult((RefusalAnswer("q"),)),
+            finish_reasons=("context_overflow",),
+        )
+        ctx = _make_final_ctx(
+            infer_result=TaskStageOutput(value=response),
+            postprocess_result=RefusalAnswer("q"),
+        )
+        assert detect_context_overflow(ctx) == {0}
+        assert TaskAnomalyDetector(tmp_path).detect(ctx, {"decisions"}) == {
+            "context_overflow": {0}
+        }
+
     def test_a_later_turn_flags_the_rollout_once(self):
         answered = ModelOutput(
             model={"model": "m", "api_base": None, "default_params": {}},
@@ -855,6 +886,6 @@ class TestContextOverflow:
         assert detect_context_overflow(ctx) == set()
         assert detect_extraction_failure(ctx) == {0}
 
-    def test_is_gen_scoped(self):
+    def test_is_scoped_to_gen_and_decisions(self):
         rule = _DETECTION_RULES["context_overflow"]["definition"]
-        assert rule["applies_to"] == ["gen"]
+        assert rule["applies_to"] == ["gen", "decisions"]

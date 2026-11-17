@@ -1,4 +1,7 @@
-"""Helpers for building model-call and stage metadata dicts."""
+"""Helpers for building model-call and stage metadata dicts.
+
+AI-Generated Code - GPT-6 (OpenAI)
+"""
 
 import time
 from collections.abc import Iterable, Mapping
@@ -10,7 +13,10 @@ from sieval.core.models import (
     FINISH_SOURCE_CANDIDATE,
     FINISH_SOURCE_PROMPT_BLOCK,
     ModelCallMeta,
+    ModelMeta,
     ModelOutput,
+    Response,
+    UsageStats,
 )
 from sieval.core.tasks.consts import TaskStage
 from sieval.core.tasks.context import TaskStageMeta
@@ -69,20 +75,43 @@ def is_truncated_finish_reason(reason: str, source: str | None = None) -> bool:
 
 def build_model_call_meta(output: ModelOutput) -> ModelCallMeta:
     """Extract a ModelCallMeta dict from a ModelOutput."""
-    model_call: ModelCallMeta = {"model": output.model}
-    if output.usage:
-        model_call["usage"] = output.usage
+    return _model_call_meta(output.model, output)
+
+
+def build_model_call_meta_from_response(
+    model_meta: ModelMeta, response: Response
+) -> ModelCallMeta:
+    """Record a canonical arun call without a lossy legacy output projection.
+
+    Pass model.meta() after the call. The response carries the authoritative
+    after-call provenance; usage uses the same projection as legacy outputs.
+    """
+
+    model = model_meta.copy()
+    if response.provenance is not None:
+        model["provenance"] = response.provenance
+    return _model_call_meta(model, response)
+
+
+def _model_call_meta(model: ModelMeta, output: ModelOutput | Response) -> ModelCallMeta:
+    """Keep both call representations on the same persisted metadata contract."""
+    call: ModelCallMeta = {"model": model}
+    usage = output.usage
+    if isinstance(usage, UsageStats):
+        usage = usage.to_json_value()
+    if usage:
+        call["usage"] = usage
     if output.request_params is not None:
-        model_call["request_params"] = dict(output.request_params)
+        call["request_params"] = dict(output.request_params)
     if output.finish_reasons:
-        model_call["finish_reasons"] = output.finish_reasons
+        call["finish_reasons"] = list(output.finish_reasons)
     if output.finish_reason_sources is not None:
-        model_call["finish_reason_sources"] = list(output.finish_reason_sources)
+        call["finish_reason_sources"] = list(output.finish_reason_sources)
     if output.response_model is not None:
-        model_call["response_model"] = output.response_model
+        call["response_model"] = output.response_model
     if output.system_fingerprint is not None:
-        model_call["system_fingerprint"] = output.system_fingerprint
-    return model_call
+        call["system_fingerprint"] = output.system_fingerprint
+    return call
 
 
 def build_model_call_meta_from_mapping(data: Mapping) -> ModelCallMeta | None:

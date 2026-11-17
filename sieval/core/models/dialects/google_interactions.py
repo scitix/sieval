@@ -263,6 +263,9 @@ def _decisions() -> Mapping[CapabilityKey, DialectCapabilityDecision]:
             )
         ),
         "prefill": Unsupported("Interactions has no assistant-prefill field"),
+        "decisions": Unsupported(
+            "This dialect does not support typed decision requests"
+        ),
         "fim": Unsupported("Interactions has no completion suffix field"),
     }
     if set(decisions) != set(CAPABILITY_KEYS):
@@ -292,6 +295,7 @@ OUTPUT_CONTRACT = OutputContract(
         ),
         "grounding": OutputRule(Guarantee.NEVER),
         "session_id": OutputRule(Guarantee.NEVER),
+        "decisions": OutputRule(Guarantee.NEVER),
         "usage": OutputRule(Guarantee.BEST_EFFORT),
     },
     empty_outcome_finish_reasons=frozenset({"incomplete"}),

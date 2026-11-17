@@ -25,6 +25,7 @@ import yaml
 from loguru import logger
 
 from sieval.cli.infer.recipe import _resolve_recipe_params, resolve_infer_config
+from sieval.cli.resolution import ConfigModelTypeResolution
 from sieval.infer.introspect import GPUInfo, ModelIdentity
 from sieval.infer.recipes.registry import Recipe
 from sieval.infer.topology.models import DeploymentPlan
@@ -40,6 +41,19 @@ _MOCK_GPU = GPUInfo(model="NVIDIA H100-SXM5-80GB", count=1, memory_mib=81920)
 # Patch target for detect_local_gpu — must patch on the consumer module
 # since cli/infer.py binds the name at import time via `from ... import`.
 _GPU_PATCH = "sieval.cli.infer.recipe.detect_local_gpu"
+
+
+@pytest.mark.anyio
+async def test_context_binding_refuses_generation_serving_recipes(tmp_path):
+    yaml_path = _write_yaml(
+        tmp_path, {"decision": {"infer": {"backend": "sglang", "checkpoint": "unused"}}}
+    )
+    resolution = ConfigModelTypeResolution(
+        model_types_by_root={"root": None},
+        model_types_by_config={"decision": None},
+    )
+    with pytest.raises(ValueError, match="context.*serving"):
+        await resolve_infer_config(yaml_path, model_type_resolution=resolution)
 
 
 def _write_yaml(path: Path, models_cfg: dict) -> Path:

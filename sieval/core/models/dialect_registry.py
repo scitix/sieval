@@ -28,6 +28,7 @@ from .capabilities import (
     normalize_dialect_capability_outcomes,
 )
 from .connection_factory import CONNECTION_FACTORY_REGISTRY
+from .decisions import DecisionParams, PredicateQuestion
 from .deployment import ConnectionPool, Deployment, RouteIntent, resolve_route
 from .dialect import Dialect, active_request_leaves
 from .dialects.anthropic_messages import (
@@ -66,6 +67,7 @@ from .ir import (
     ChatInput,
     ChatMessage,
     CompletionInput,
+    ContextInput,
     ImagePart,
     Request,
     TextPart,
@@ -316,11 +318,21 @@ def _request_schema_leaves() -> frozenset[str]:
     )
     leaves = set(active_request_leaves(completion))
     leaves.update(active_request_leaves(chat))
+    leaves.update(
+        active_request_leaves(
+            Request(
+                ContextInput((TextPart("evidence"),)),
+                decisions=DecisionParams((PredicateQuestion("q", "Is it true?"),)),
+            )
+        )
+    )
     for item in fields(Request):
-        if item.name in {"input", "dialect_options"}:
+        if item.name in {"input", "dialect_options", "decisions"}:
             continue
         group = getattr(completion, item.name)
         leaves.update(f"{item.name}.{member.name}" for member in fields(group))
+    leaves.update(f"decisions.{item.name}" for item in fields(DecisionParams))
+    leaves.add("input.context.json")
     return frozenset(leaves)
 
 

@@ -1,4 +1,13 @@
+"""Shared pipeline stages, terminal reasons and task diagnostic scopes.
+
+AI-Generated Code - GPT-6 (OpenAI)
+"""
+
 from enum import StrEnum
+
+#: Task tags with meaningful output finish diagnostics. Anomaly rules, runner
+#: counts and their pre-run metric declarations must use the same scope.
+FINISH_REASON_TASK_TAGS = ("gen", "decisions")
 
 
 class TaskStage(StrEnum):
