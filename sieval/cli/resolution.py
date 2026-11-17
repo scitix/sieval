@@ -19,6 +19,8 @@ import hashlib
 import importlib
 import inspect
 import json
+import os
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -56,6 +58,8 @@ _TASK_MODEL_ROLE_SENTINELS: Mapping[str, frozenset[str]] = MappingProxyType(
 COMPOSITION_OWNED_TASK_ARGS = frozenset({"dataset", "model", "models_by_role", "name"})
 # Left out of an inline binding's identity: none changes what the model answers.
 _INLINE_CREDENTIAL_KEYS = frozenset({"api_key", "api_key_env", "authorization"})
+#: What ``api_key_env`` and ``api_base_env`` accept as a variable name.
+ENV_VAR_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 def is_task_model_role_sentinel(role: str, source: object) -> bool:
@@ -195,37 +199,106 @@ def validate_configured_engine_id(engine: object, *, context: str) -> str:
     return engine
 
 
+def configured_api_base_env(config: Mapping[str, object]) -> str | None:
+    """The variable *config* names with ``api_base_env``, top level or in
+    ``args``; ``None`` when it names none.
+
+    Reads only: :func:`resolve_api_base_env` is what checks the name.
+    """
+
+    args = config.get("args")
+    nested = cast(Mapping[str, object], args) if isinstance(args, Mapping) else {}
+    name = config.get("api_base_env", nested.get("api_base_env"))
+    return name if isinstance(name, str) else None
+
+
+def resolve_api_base_env(
+    config: Mapping[str, object],
+    subject: str,
+    environ: Mapping[str, str] | None = None,
+) -> str | None:
+    """The endpoint read from the variable *config*'s ``api_base_env`` names,
+    top level or in ``args``; ``None`` when it names none.
+
+    ``api_base`` beside it on either surface, the variable on both surfaces,
+    an invalid name, and an unset or empty variable are refused, so the
+    binding fails before any engine starts instead of calling a default
+    endpoint.
+    """
+
+    args = config.get("args")
+    nested = cast(Mapping[str, object], args) if isinstance(args, Mapping) else {}
+    if "api_base_env" not in config and "api_base_env" not in nested:
+        return None
+    if "api_base" in config or "api_base" in nested:
+        raise ValueError(
+            f"{subject} sets both 'api_base' and 'api_base_env'; keep one: "
+            "'api_base' is the endpoint itself, 'api_base_env' names the "
+            "environment variable that holds it"
+        )
+    if "api_base_env" in config and "api_base_env" in nested:
+        raise ValueError(
+            f"{subject} sets 'api_base_env' both at the top level and in "
+            "'args'; keep one"
+        )
+    name = config.get("api_base_env", nested.get("api_base_env"))
+    if not isinstance(name, str) or not ENV_VAR_NAME.fullmatch(name):
+        raise ValueError(
+            f"{subject} 'api_base_env' must name an environment variable, got {name!r}"
+        )
+    value = (os.environ if environ is None else environ).get(name)
+    if not value:
+        state = "empty" if value is not None else "unset"
+        raise ValueError(
+            f"{subject} reads its api_base from environment variable {name}, "
+            f"which is {state}; export {name} before the run"
+        )
+    return value
+
+
 def _safe_inline_model_config(
     config: Mapping[str, object],
+    api_base: str | None = None,
 ) -> dict[str, JSONValue]:
-    """Copy an inline binding without putting raw credentials in setup data."""
+    """Copy an inline binding without putting raw credentials in setup data.
 
-    safe: dict[str, JSONValue] = {}
-    for key, value in config.items():
-        if not isinstance(key, str):
-            raise TypeError("inline model config keys must be strings")
-        if key in _INLINE_CREDENTIAL_KEYS:
-            continue
-        if key == "args" and isinstance(value, Mapping):
-            value = {
-                nested_key: nested_value
-                for nested_key, nested_value in value.items()
-                if nested_key not in _INLINE_CREDENTIAL_KEYS
-            }
-        safe[key] = cast(JSONValue, copy.deepcopy(value))
-    return safe
+    ``api_base_env`` is written as the ``api_base`` it resolved to
+    (*api_base*), so naming the variable is the same binding as writing its
+    value.
+    """
+
+    def _copy(mapping: Mapping) -> dict:
+        out = {}
+        for key, value in mapping.items():
+            if key in _INLINE_CREDENTIAL_KEYS:
+                continue
+            if key == "api_base_env":
+                out["api_base"] = api_base
+                continue
+            out[key] = copy.deepcopy(value)
+        return out
+
+    if not all(isinstance(key, str) for key in config):
+        raise TypeError("inline model config keys must be strings")
+    safe = _copy(config)
+    args = config.get("args")
+    if isinstance(args, Mapping):
+        safe["args"] = _copy(args)
+    return cast(dict[str, JSONValue], safe)
 
 
 def normalize_inline_model_binding(
     task_name: str,
     role: str,
     raw_config: Mapping[str, object],
+    environ: Mapping[str, str] | None = None,
 ) -> InlineModelBinding:
     """Normalize one inline role binding identically before and inside a session."""
 
     allowed_inline = frozenset(
         {
             "api_base",
+            "api_base_env",
             "api_key",
             "api_key_env",
             "capabilities",
@@ -247,7 +320,14 @@ def normalize_inline_model_binding(
     nested = binding_resource_argument_paths(
         cast(Mapping[str, object], raw_args),
         allowed=frozenset(
-            {"api_base", "api_key", "api_key_env", "client_timeout", "max_retries"}
+            {
+                "api_base",
+                "api_base_env",
+                "api_key",
+                "api_key_env",
+                "client_timeout",
+                "max_retries",
+            }
         ),
     )
     paths = (*misplaced, *(f"args.{path}" for path in nested))
@@ -256,6 +336,7 @@ def normalize_inline_model_binding(
             f"Task '{task_name}' inline {role} places binding resource(s) "
             f"on an unsupported surface: {', '.join(paths)}"
         )
+    api_base = resolve_api_base_env(raw_config, f"Task '{task_name}' {role}", environ)
 
     model_config_extra(raw_config, f"Task '{task_name}' inline {role}")
     requested_model_id = raw_config.get("model")
@@ -263,7 +344,7 @@ def normalize_inline_model_binding(
         raise ValueError(
             f"Task '{task_name}' inline {role} model requires a non-empty 'model'"
         )
-    safe_config = _safe_inline_model_config(raw_config)
+    safe_config = _safe_inline_model_config(raw_config, api_base)
     encoded = json.dumps(
         safe_config,
         ensure_ascii=True,

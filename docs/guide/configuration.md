@@ -129,6 +129,30 @@ tasks:
 With neither set, `openai_chat` / `openai_completions` fall back to
 `OPENAI_API_KEY`, as the OpenAI client does.
 
+### Judge endpoint from the environment
+
+An inline `grader` / `extractor` may name the variable holding its endpoint
+with `api_base_env`, the counterpart of `api_key_env`, at the top level or in
+`args`. It is for a platform that sets the judge's URL per job:
+
+```yaml
+grader:
+    model: gemini-3-flash-preview
+    api_base_env: SIEVAL_JUDGE_GENAI_API
+    api_key_env: SIEVAL_JUDGE_API_KEY
+```
+
+- `api_base` beside it (on either surface), `api_base_env` on both surfaces,
+  and an unset or empty variable are refused before any engine starts,
+  naming the task, role and variable.
+- The resolved URL is recorded as `api_base` in each call's model record, with
+  the variable as `api_base_env` beside it.
+- The URL is the binding's identity, not the variable: naming a variable that
+  holds the URL a literal `api_base` wrote (on the same surface) is the same
+  binding, and a resume treats the outputs as the same.
+- A `models:` entry does not take it; `${VAR}` is still not expanded in
+  `api_base`.
+
 ## Client Timeout
 
 `client_timeout` sets the HTTP client's timeout per phase, in seconds. It is

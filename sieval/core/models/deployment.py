@@ -30,6 +30,7 @@ from .admission import PendingTokenBudget, TokenBudget
 BINDING_RESOURCE_KEYS = frozenset(
     {
         "api_base",
+        "api_base_env",
         "api_key",
         "api_key_env",
         "authorization",
@@ -191,6 +192,11 @@ class Deployment:
     topology: DeploymentTopology | None
     metrics_url: str | None
     facts: ServingFacts
+    #: The environment variable ``api_base`` was read from, when the config
+    #: named one (``api_base_env``). Where the endpoint came from, not what it
+    #: is: left out of :attr:`fingerprint`, so naming the variable and writing
+    #: its value are one deployment.
+    api_base_env: str | None = None
 
     def __post_init__(self) -> None:
         if self.engine_source not in ("deployment", "config", "unknown"):

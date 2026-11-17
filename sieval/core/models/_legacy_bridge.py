@@ -67,6 +67,8 @@ class ModelMeta(TypedDict):
 
     model: str
     api_base: str | None
+    #: The environment variable ``api_base`` was read from, when one was named.
+    api_base_env: NotRequired[str]
     default_params: dict[str, JSONValue]
     extra: NotRequired[dict[str, JSONValue]]
     provenance: NotRequired[ModelProvenance]

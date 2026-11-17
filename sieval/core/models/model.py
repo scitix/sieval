@@ -682,6 +682,8 @@ class Model:
                 for key, value in self._kwargs.items()
             },
         }
+        if self._deployment.api_base_env is not None:
+            result["api_base_env"] = self._deployment.api_base_env
         if self._extra:
             result["extra"] = dict(self._extra)
         return result

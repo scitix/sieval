@@ -45,6 +45,7 @@ from sieval.cli.dry_run_modes import RUN, DryRunMode, DryRunRecord, ServiceCheck
 from sieval.cli.resolution import (
     TASK_MODEL_ROLES,
     binding_resource_argument_paths,
+    configured_api_base_env,
     default_dialect,
     derive_model_type,
     finalize_inline_model_binding,
@@ -4019,13 +4020,17 @@ class EvalSession:
                     "but no realized Deployment handoff"
                 )
             config: Mapping[str, object] = root_config
+            api_base_env = None
         else:
             source = self._source_for_binding(binding.binding_id)
             if not isinstance(source, Mapping):
                 raise ValueError(
                     f"Inline binding '{binding.binding_id}' lost its config source"
                 )
-            config = cast(Mapping[str, object], source)
+            # The binding holds ``api_base_env`` resolved, as read when it was
+            # normalized: the endpoint called is the one its identity names.
+            config = binding.config
+            api_base_env = configured_api_base_env(cast(Mapping[str, object], source))
 
         if binding.dialect_id is None:
             raise ValueError(f"Model binding '{binding.binding_id}' has no dialect")
@@ -4041,6 +4046,7 @@ class EvalSession:
             topology=None,
             metrics_url=None,
             facts=ServingFacts(),
+            api_base_env=api_base_env,
         )
 
     def _setup_postlaunch_reconciliation(self) -> None:
@@ -4197,6 +4203,7 @@ class EvalSession:
         args = dict(raw)
         for key in (
             "api_base",
+            "api_base_env",
             "api_key",
             "api_key_env",
             "client_timeout",
@@ -4485,6 +4492,7 @@ class EvalSession:
             for key in (
                 "model",
                 "api_base",
+                "api_base_env",
                 "api_key",
                 "api_key_env",
                 "client_timeout",
