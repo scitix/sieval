@@ -8,6 +8,7 @@ from typing import ClassVar
 import pytest
 
 from sieval.core.tasks.report_metrics import (
+    RUNNER_FINISH_METRICS,
     RUNNER_GEN_METRICS,
     ReportMetrics,
     class_path,
@@ -17,6 +18,9 @@ from sieval.core.tasks.report_metrics import (
 
 
 class TestReportMetrics:
+    def test_historical_runner_metric_import_keeps_the_same_value(self):
+        assert RUNNER_GEN_METRICS is RUNNER_FINISH_METRICS
+
     def test_a_name_matches_as_a_name(self) -> None:
         declared = report_metrics("score", patterns=("score_{category}",))
         assert declared.match("score") == "name"
@@ -114,7 +118,17 @@ class TestDeclaredReportMetrics:
     def test_a_subclass_inherits_a_declaration_with_the_report(self) -> None:
         declared = declared_report_metrics(_Inherits)
         assert declared is not None
-        assert declared.names == {"score"} | RUNNER_GEN_METRICS
+        assert declared.names == {"score"} | RUNNER_FINISH_METRICS
+
+    @pytest.mark.parametrize("tags", [{"decisions"}, {"decisions", "gen"}])
+    def test_decision_task_declares_runner_finish_counts(
+        self, tags, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(_Inherits, "tags", frozenset(tags))
+        declared = declared_report_metrics(_Inherits)
+        assert declared is not None
+        assert declared.match("n_truncated") == "name"
+        assert declared.match("n_scored_rollouts") == "name"
 
     def test_a_report_below_the_declaration_is_unknown(self) -> None:
         # Its keys are its own; the declaration above never saw them.

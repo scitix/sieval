@@ -1,4 +1,7 @@
-"""Anomaly detection framework: decorator-based rule registration and reporting."""
+"""Anomaly detection framework: decorator-based rule registration and reporting.
+
+AI-Generated Code - GPT-6 (OpenAI)
+"""
 
 import json
 from collections.abc import Callable, Mapping
@@ -11,12 +14,14 @@ import orjson
 import xxhash
 from loguru import logger
 
-from sieval.core.models import ModelOutput
+from sieval.core.models import ModelOutput, Response
 from sieval.core.models.overflow import CONTEXT_OVERFLOW
 from sieval.core.tasks.context import TaskContext, TaskStage, TaskStageOutput
 from sieval.core.tasks.records import is_prediction_record
 from sieval.core.utils.atomic import aatomic_write
 from sieval.core.utils.meta import is_truncated_finish_reason
+
+from .consts import FINISH_REASON_TASK_TAGS
 
 
 # Schema
@@ -280,6 +285,20 @@ def _model_outputs(result: Any) -> tuple[ModelOutput, ...]:
     return ()
 
 
+def _finished_model_outputs(result: Any) -> tuple[ModelOutput | Response, ...]:
+    """Finish evidence from generation outputs or canonical decision calls."""
+    candidates = result if isinstance(result, list) else [result]
+    outputs: list[ModelOutput | Response] = []
+    for candidate in candidates:
+        if isinstance(candidate, ModelOutput) or (
+            isinstance(candidate, Response) and candidate.decisions is not None
+        ):
+            outputs.append(candidate)
+        else:
+            return ()
+    return tuple(outputs)
+
+
 @sieval_detection_rule(
     description="Inference result is empty for generation tasks (texts=[])",
     category="output_quality",
@@ -335,13 +354,13 @@ def detect_empty_infer_ppl(ctx: TaskContext) -> set[int]:
     category="output_quality",
     rationale=(
         "A token limit, output filter, or refusal cut the output short; only "
-        "a token limit is fixed by raising max_tokens. Scoped to gen: "
+        "a token limit is fixed by raising max_tokens. Scoped to gen and decisions: "
         "single-token logprob "
         "tasks (ppl/clp) infer with max_tokens=1 and always finish with "
-        "'length', so the signal is only meaningful for generation."
+        "'length', so the signal is meaningful for generation and decision calls."
     ),
     severity="info",
-    applies_to=["gen"],
+    applies_to=list(FINISH_REASON_TASK_TAGS),
     tags=["truncation", "length_limit", "output_filter", "incomplete_output"],
 )
 def detect_truncated_output(ctx: TaskContext) -> set[int]:
@@ -350,7 +369,7 @@ def detect_truncated_output(ctx: TaskContext) -> set[int]:
     # Unioned across calls: whichever turn was cut short, the rollout was. The
     # predicate is shared with the `n_truncated` report key so the two cannot drift.
     truncated: set[int] = set()
-    for output in _model_outputs(_unwrap_result(ctx.infer_result)):
+    for output in _finished_model_outputs(_unwrap_result(ctx.infer_result)):
         sources = output.finish_reason_sources or ()
         for index, reason in enumerate(output.finish_reasons or ()):
             source = sources[index] if index < len(sources) else None
@@ -369,7 +388,7 @@ def _overflowed_rollouts(ctx: TaskContext) -> set[int]:
         return set()
     return {
         index
-        for output in _model_outputs(_unwrap_result(ctx.infer_result))
+        for output in _finished_model_outputs(_unwrap_result(ctx.infer_result))
         for index, reason in enumerate(output.finish_reasons or ())
         if reason == CONTEXT_OVERFLOW
     }
@@ -385,7 +404,7 @@ def _overflowed_rollouts(ctx: TaskContext) -> set[int]:
         "retry can change it. A different serving context length, or a shorter "
         "prompt, is what would."
     ),
-    applies_to=["gen"],
+    applies_to=list(FINISH_REASON_TASK_TAGS),
     tags=["context_length", "input_length", "context_overflow"],
 )
 def detect_context_overflow(ctx: TaskContext) -> set[int]:

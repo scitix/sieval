@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import pytest
 
+from sieval.core.models.capabilities import DecisionsOptions
 from sieval.core.models.requirements import (
     AggregatedTaskRequirements,
     ExternalModelBinding,
@@ -47,6 +48,55 @@ def _requirement(
 
 
 class TestTaskRequirements:
+    def test_decision_requirements_participate_in_task_model_validation(self):
+        from sieval.core.tasks.task import _required_capabilities
+
+        assert _required_capabilities(
+            TaskRequirements(decisions=DecisionsOptions())
+        ) == {"decisions"}
+        assert TaskRequirements().decisions is None
+        with pytest.raises(TypeError, match="DecisionsOptions"):
+            TaskRequirements(decisions=cast(Any, True))
+
+    def test_decision_aggregation_unions_forms_and_retains_sources(self):
+        records = (
+            _requirement(
+                "a",
+                TaskRequirements(
+                    input=InputKind.CONTEXT,
+                    decisions=DecisionsOptions(
+                        question_types=("choice",),
+                        evidence_kinds=("text",),
+                        require_probabilities=True,
+                    ),
+                ),
+            ),
+            _requirement(
+                "b",
+                TaskRequirements(
+                    input=InputKind.CONTEXT,
+                    decisions=DecisionsOptions(
+                        question_types=("score",),
+                        evidence_kinds=("json",),
+                        guidance_kinds=("json", "null"),
+                        require_confidence=True,
+                    ),
+                ),
+            ),
+            _requirement("unspecified", TaskRequirements()),
+        )
+        combined = aggregate_task_requirements(records)
+        assert combined.decisions == DecisionsOptions(
+            question_types=("choice", "score"),
+            evidence_kinds=("json", "text"),
+            guidance_kinds=("json", "null"),
+            require_probabilities=True,
+            require_confidence=True,
+        )
+        assert combined.decisions_sources == {"a", "b"}
+        assert combined.input_sources[InputKind.CONTEXT] == {"a", "b"}
+        assert aggregate_task_requirements(reversed(records)) == combined
+
     def test_defaults_are_text_only_and_frozen(self) -> None:
         requires = TaskRequirements()
 

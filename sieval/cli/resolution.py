@@ -553,13 +553,16 @@ def derive_model_type(
     model_name: str,
     explicit_type: str | None,
     requirements: AggregatedTaskRequirements,
-) -> Literal["chat", "gen"]:
+) -> Literal["chat", "gen"] | None:
     """Derive one deployment root's legacy kind from normalized evidence.
 
     ``TaskModelRequirement.requires.input`` is the sole task-side authority.
     When that evidence exists, legacy YAML ``type:`` is a checked assertion.
     With no input evidence, an explicit value remains a compatibility fallback;
     otherwise the historical ``chat`` default applies.
+
+    Context input returns None for a canonical Model binding, requires an
+    explicit dialect and cannot assert a legacy chat/gen type.
 
     The resolver never inspects task ``model_type`` metadata, model wrapper
     classes, dialects, engines, URLs, or provider response shapes.
@@ -587,11 +590,18 @@ def derive_model_type(
         raise ValueError(
             f"Model deployment root '{model_name}' has conflicting normalized "
             f"input requirements:\n{evidence}\n"
-            "Chat and completion consumers must use separate root model configs."
+            "Consumers with different input kinds must use separate root model configs."
         )
 
     if kinds:
         input_kind = next(iter(kinds))
+        if input_kind is InputKind.CONTEXT:
+            if explicit_type is not None:
+                raise ValueError(
+                    f"Model '{model_name}' uses context input and cannot declare "
+                    f"legacy type: {explicit_type}; omit type and declare a dialect"
+                )
+            return None
         derived_type: Literal["chat", "gen"] = (
             "chat" if input_kind is InputKind.CHAT else "gen"
         )
@@ -622,9 +632,23 @@ def derive_model_type(
     return "chat"
 
 
+def require_generation_model_type(
+    model_name: str,
+    model_type: Literal["chat", "gen"] | None,
+) -> Literal["chat", "gen"]:
+    """Reject canonical context bindings at either generation-serving entry."""
+    if model_type is None:
+        raise ValueError(
+            f"Model {model_name!r} uses context input; generation serving recipes "
+            "cannot serve it. Configure an external endpoint "
+            "with an explicit dialect."
+        )
+    return model_type
+
+
 def validate_model_type_dialect(
     model_name: str,
-    model_type: Literal["chat", "gen"],
+    model_type: Literal["chat", "gen"] | None,
     dialect_id: str,
 ) -> None:
     """Require the single legacy model kind to match the dialect input contract.
@@ -636,12 +660,18 @@ def validate_model_type_dialect(
 
     if not isinstance(model_name, str) or not model_name:
         raise TypeError("model_name must be a non-empty string")
-    if model_type not in ("chat", "gen"):
+    if model_type not in (None, "chat", "gen"):
         raise ValueError(f"invalid model type {model_type!r}")
     if not isinstance(dialect_id, str) or not dialect_id:
         raise ValueError("dialect_id must be a non-empty string")
 
-    expected_input = "chat" if model_type == "chat" else "completion"
+    expected_input = (
+        "context"
+        if model_type is None
+        else "chat"
+        if model_type == "chat"
+        else "completion"
+    )
     accepted_inputs = get_dialect_spec(dialect_id).input_kinds
     if expected_input not in accepted_inputs:
         accepted = ", ".join(repr(item) for item in accepted_inputs)
@@ -655,7 +685,7 @@ def validate_model_type_dialect(
 
 def validate_omitted_dialect_migration(
     model_name: str,
-    model_type: Literal["chat", "gen"],
+    model_type: Literal["chat", "gen"] | None,
     engine_id: object | None,
     *,
     dialect_declared: bool,
@@ -684,7 +714,7 @@ def validate_omitted_dialect_migration(
 
 
 def default_dialect(
-    model_type: Literal["chat", "gen"],
+    model_type: Literal["chat", "gen"] | None,
     engine_id: object | None,
     requirements: AggregatedTaskRequirements,
 ) -> str:
@@ -696,6 +726,8 @@ def default_dialect(
     ``logprobs``, so only its native ``/generate`` path can score input.
     """
 
+    if model_type is None:
+        raise ValueError("context model bindings require an explicit dialect")
     if model_type == "chat":
         return "openai_chat"
     if engine_id == "sglang" and requirements.input_scoring:
@@ -705,7 +737,7 @@ def default_dialect(
 
 def finalize_inline_model_binding(
     binding: InlineModelBinding,
-    model_type: Literal["chat", "gen"],
+    model_type: Literal["chat", "gen"] | None,
 ) -> InlineModelBinding:
     """Resolve an omitted inline dialect from the frozen model-kind decision."""
 
@@ -713,6 +745,8 @@ def finalize_inline_model_binding(
         raise TypeError("binding must be an InlineModelBinding")
     dialect_id = binding.dialect_id
     if dialect_id is None:
+        if model_type is None:
+            raise ValueError("context model bindings require an explicit dialect")
         dialect_id = "openai_chat" if model_type == "chat" else "openai_completions"
     validate_model_type_dialect(binding.binding_id, model_type, dialect_id)
     return replace(binding, dialect_id=dialect_id)
@@ -720,10 +754,10 @@ def finalize_inline_model_binding(
 
 @dataclass(frozen=True)
 class ConfigModelTypeResolution:
-    """Legacy model kinds derived from normalized task requirement hooks."""
+    """Resolved legacy kinds; None identifies a canonical context binding."""
 
-    model_types_by_root: Mapping[str, Literal["chat", "gen"]]
-    model_types_by_config: Mapping[str, Literal["chat", "gen"]]
+    model_types_by_root: Mapping[str, Literal["chat", "gen"] | None]
+    model_types_by_config: Mapping[str, Literal["chat", "gen"] | None]
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -779,8 +813,8 @@ def resolve_config_model_types(
     for binding in bindings.values():
         by_root_bindings.setdefault(binding.root_deployment_key, []).append(binding)
 
-    by_root: dict[str, Literal["chat", "gen"]] = {}
-    by_config: dict[str, Literal["chat", "gen"]] = {}
+    by_root: dict[str, Literal["chat", "gen"] | None] = {}
+    by_config: dict[str, Literal["chat", "gen"] | None] = {}
     for root_key, root_bindings in by_root_bindings.items():
         root_name = chains[root_bindings[0].config_name][0][0]
         root_records = (

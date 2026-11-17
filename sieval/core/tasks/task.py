@@ -26,6 +26,7 @@ from sieval.core.models.requirements import (
 )
 from sieval.core.types import JSONValue
 
+from .consts import FINISH_REASON_TASK_TAGS
 from .context import TaskContext
 from .metrics import ProblemGrouping
 
@@ -50,6 +51,8 @@ def _dialect_input_shape(dialect_id: str) -> tuple[frozenset[str], frozenset[str
 
 def _required_capabilities(requires: TaskRequirements) -> frozenset[str]:
     capabilities: set[str] = set()
+    if requires.decisions is not None:
+        capabilities.add("decisions")
     if requires.input_scoring:
         capabilities.add("input_scoring")
     if requires.sampled_logprobs:
@@ -173,6 +176,17 @@ class Task[
         self._name = name
 
         self._validate_model_requirements()
+        requirements = self.requires.decisions
+        if requirements is not None and self.tags.isdisjoint(FINISH_REASON_TASK_TAGS):
+            raise ValueError(
+                f"{type(self).__name__} requires decisions but has no diagnostic tag. "
+                "Add 'decisions' or use the 'gen' protocol tag so finish diagnostics "
+                "and report counts are enabled."
+            )
+        if requirements is not None and (
+            requirements.require_probabilities or requirements.require_confidence
+        ):
+            self._model = model.with_decision_requirements(requirements)
 
     @classmethod
     def model_requirements_for(

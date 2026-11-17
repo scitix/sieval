@@ -164,6 +164,9 @@ CAPABILITY_DECISIONS: Mapping[str, DialectCapabilityDecision] = MappingProxyType
             )
         ),
         "prefill": Unsupported(_PREFILL_UNSUPPORTED_REASON),
+        "decisions": Unsupported(
+            "This dialect does not support typed decision requests"
+        ),
         "fim": Unsupported("Chat Completions has no completion suffix field"),
     }
 )
@@ -201,6 +204,7 @@ OUTPUT_CONTRACT = OutputContract(
         "citations": OutputRule(Guarantee.NEVER),
         "grounding": OutputRule(Guarantee.NEVER),
         "session_id": OutputRule(Guarantee.NEVER),
+        "decisions": OutputRule(Guarantee.NEVER),
         "usage": OutputRule(Guarantee.BEST_EFFORT),
     }
 )

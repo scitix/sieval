@@ -1,12 +1,16 @@
 """Unit tests for the provider-neutral model Request/Response records.
 
-AI-Generated Code - GPT-5.4 (OpenAI)
+AI-Generated Code - GPT-6 (OpenAI)
 """
 
 import dataclasses
+from typing import get_type_hints
 
 import pytest
 
+from sieval.core.models import ModelUsage
+from sieval.core.models import ir as model_ir
+from sieval.core.models._legacy_bridge import ModelUsage as LegacyModelUsage
 from sieval.core.models.ir import (
     CapabilityEvidence,
     ChatInput,
@@ -385,6 +389,52 @@ class TestResponseContract:
         schema["type"] = "array"
 
         assert params.schema == {"type": "object"}
+
+
+class TestUsageStats:
+    def test_usage_dictionary_type_and_conversion_belong_to_ir(self):
+        assert ModelUsage is model_ir.ModelUsage
+        assert LegacyModelUsage is ModelUsage
+        assert get_type_hints(UsageStats.to_json_value)["return"] is ModelUsage
+
+    def test_conversion_keeps_base_counts_and_returns_a_detached_dictionary(self):
+        counts = UsageStats(input_tokens=7, output_tokens=3, total_tokens=10)
+        converted = counts.to_json_value()
+        assert converted == {
+            "input_tokens": 7,
+            "output_tokens": 3,
+            "total_tokens": 10,
+        }
+        converted["input_tokens"] = 99
+        assert counts.input_tokens == 7
+        assert counts.to_json_value()["input_tokens"] == 7
+        assert UsageStats().to_json_value() == {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        }
+
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "reasoning_tokens",
+            "cached_tokens",
+            "accepted_prediction_tokens",
+            "rejected_prediction_tokens",
+            "reported_total_tokens",
+        ],
+    )
+    @pytest.mark.parametrize("value", [None, 0, 13])
+    def test_optional_usage_preserves_absence_zero_and_native_value(
+        self, field_name, value
+    ):
+        counts = UsageStats(
+            input_tokens=7, output_tokens=3, total_tokens=10, **{field_name: value}
+        )
+        expected = {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10}
+        if value is not None:
+            expected[field_name] = value
+        assert counts.to_json_value() == expected
 
 
 class TestImmutability:

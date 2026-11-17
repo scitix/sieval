@@ -17,6 +17,7 @@ from loguru import logger
 
 from sieval.cli.resolution import (
     ConfigModelTypeResolution,
+    require_generation_model_type,
     resolve_config_model_types,
 )
 from sieval.infer.config import ParamValue
@@ -127,7 +128,9 @@ async def resolve_infer_config(
         raise typer.BadParameter(
             f"Model {model_name!r} has no normalized model-kind resolution"
         ) from exc
-    capability = capability_model_type(resolved_model_type)
+    capability = capability_model_type(
+        require_generation_model_type(model_name, resolved_model_type)
+    )
 
     # Recipe resolution
     recipe_params: dict[str, ParamValue] | None = None

@@ -113,6 +113,9 @@ def _decisions() -> Mapping[CapabilityKey, DialectCapabilityDecision]:
         "fim": Supported(
             DialectCapabilityBinding("fim", request_leaves=("input.completion.suffix",))
         ),
+        "decisions": Unsupported(
+            "This dialect does not support typed decision requests"
+        ),
     }
     if set(decisions) != set(CAPABILITY_KEYS):
         raise AssertionError("OpenAI completions capability row is incomplete")
@@ -144,6 +147,7 @@ OUTPUT_CONTRACT = OutputContract(
         "citations": OutputRule(Guarantee.NEVER),
         "grounding": OutputRule(Guarantee.NEVER),
         "session_id": OutputRule(Guarantee.NEVER),
+        "decisions": OutputRule(Guarantee.NEVER),
         "usage": OutputRule(Guarantee.BEST_EFFORT),
     }
 )

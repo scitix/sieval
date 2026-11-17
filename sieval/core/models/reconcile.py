@@ -24,6 +24,7 @@ from .capabilities import (
     CapabilityConfigError,
     CapabilityIntent,
     CapabilityKey,
+    DecisionsOptions,
     DialectCapabilityStatus,
     FunctionToolsOptions,
     HostedToolsOptions,
@@ -398,6 +399,27 @@ class ReconcileBatch:
         object.__setattr__(self, "deployments", MappingProxyType(copied))
 
 
+# The original Model IR serialized these unavailable rows even when unused.
+# Keep that historical payload stable; unrequested extensions are omitted.
+# This is a frozen compatibility baseline, not the live capability inventory.
+_BINDING_FINGERPRINT_V1_CAPABILITIES = frozenset(
+    {
+        "input_scoring",
+        "sampled_logprobs",
+        "top_logprobs",
+        "reasoning",
+        "function_tools",
+        "hosted_tools",
+        "structured_output",
+        "stateful_session",
+        "opaque_continuation",
+        "multimodal_input",
+        "prefill",
+        "fim",
+    }
+)
+
+
 @dataclass(frozen=True)
 class BindingCapabilityPlan:
     """Dialect/model join for one binding, before root serving resolution."""
@@ -492,6 +514,9 @@ class BindingCapabilityPlan:
             "unavailable_capabilities": {
                 key: self.unavailable_capabilities[key]
                 for key in sorted(self.unavailable_capabilities)
+                if key in _BINDING_FINGERPRINT_V1_CAPABILITIES
+                or key in self.intents
+                or key in self.declared_capabilities
             },
             "capability_minimums": {
                 key: _thaw_json(self.capability_minimums[key])
@@ -1306,6 +1331,16 @@ def _task_intents(
     requirements: AggregatedTaskRequirements,
 ) -> dict[CapabilityKey, CapabilityIntent]:
     intents: dict[CapabilityKey, CapabilityIntent] = {}
+    if requirements.decisions is not None:
+        intent = _declaration_intent(
+            "decisions", requirements.decisions, "task.decisions"
+        )
+        intents["decisions"] = CapabilityIntent(
+            "decisions",
+            True,
+            minimums=intent.minimums,
+            sources=tuple(sorted(requirements.decisions_sources)),
+        )
     if requirements.input_scoring:
         intents["input_scoring"] = CapabilityIntent(
             "input_scoring",
@@ -1421,8 +1456,8 @@ def _join_floor_intents(
 ) -> CapabilityIntent:
     """Join a request floor with a task floor: the larger one serves both.
 
-    Where both set a minimum it is an integer (``top_logprobs``); anything
-    else is refused rather than resolved by picking a side.
+    Decision form sets are unioned and guarantees are joined with OR.
+    Numeric minima use the larger floor; incompatible forms are refused.
     """
 
     minimums = dict(task.minimums)
@@ -1431,6 +1466,15 @@ def _join_floor_intents(
         if current is None:
             minimums[name] = value
             continue
+        if task.key == "decisions":
+            if isinstance(current, bool) and isinstance(value, bool):
+                minimums[name] = current or value
+                continue
+            if isinstance(current, list) and isinstance(value, list):
+                minimums[name] = sorted(
+                    set(_json_sequence(current)) | set(_json_sequence(value))
+                )
+                continue
         if not all(
             isinstance(item, int) and not isinstance(item, bool)
             for item in (current, value)
@@ -1471,6 +1515,14 @@ def _declaration_intent(
         minimums["formats"] = list(value.formats)
     elif isinstance(value, MultimodalInputOptions) and value.modalities:
         minimums["modalities"] = list(value.modalities)
+    elif isinstance(value, DecisionsOptions):
+        for name in ("question_types", "evidence_kinds", "guidance_kinds"):
+            values = getattr(value, name)
+            if values:
+                minimums[name] = sorted(values)
+        for name in ("require_probabilities", "require_confidence"):
+            if getattr(value, name):
+                minimums[name] = True
     return CapabilityIntent(
         key=key,
         required=True,
@@ -1523,6 +1575,8 @@ def _required_task_outputs(
     requirements: AggregatedTaskRequirements,
 ) -> set[str]:
     channels: set[str] = set()
+    if requirements.decisions is not None:
+        channels.add("decisions")
     if requirements.input_scoring:
         channels.add("input_scoring")
     if requirements.sampled_logprobs:

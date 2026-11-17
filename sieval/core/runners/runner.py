@@ -1,4 +1,7 @@
-"""Single-task execution engine with dual-stream compute/storage architecture."""
+"""Single-task execution engine with dual-stream compute/storage architecture.
+
+AI-Generated Code - GPT-6 (OpenAI)
+"""
 
 import contextlib
 import os
@@ -21,7 +24,7 @@ from loguru import logger
 
 from sieval import __version__
 from sieval.core.datasets import repeat_index_of
-from sieval.core.models import ModelOutput
+from sieval.core.models import ModelOutput, Response
 from sieval.core.models.overflow import (
     CONTEXT_OVERFLOW,
     ContextOverflowError,
@@ -49,6 +52,7 @@ from sieval.core.tasks.consts import (
     CONTEXT_OVERFLOW_REASON,
     ENGINE_DIED_REASON,
     ENGINE_DIED_UNSENT_REASON,
+    FINISH_REASON_TASK_TAGS,
     NON_RETRIABLE_REASON,
     STAGE_DIRS,
     NonRetriableSampleError,
@@ -61,7 +65,7 @@ from sieval.core.tasks.context import (
     TaskStageOutput,
 )
 from sieval.core.tasks.loader import TaskLoader
-from sieval.core.tasks.meta import EvalMode, get_task_run_identity
+from sieval.core.tasks.meta import get_task_run_identity
 from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.core.tasks.profiler import TaskProfiler
 from sieval.core.tasks.progress import TaskProgress
@@ -117,7 +121,9 @@ from sieval.core.tasks.task import Task
 from sieval.core.types import JSONValue
 from sieval.core.utils.concurrency import CompositeLimiter
 from sieval.core.utils.meta import (
+    build_model_call_meta,
     build_model_call_meta_from_mapping,
+    build_model_call_meta_from_response,
     build_stage_meta,
     count_scored_rollouts,
     count_truncated_rollouts,
@@ -1599,15 +1605,38 @@ class TaskRunner:
             timing_s: float | None,
             inner: Any,
         ) -> TaskStageMeta:
-            # Handle single `ModelOutput` and `list[ModelOutput]`
+            # Auto-record legacy outputs and canonical decision responses.
             if isinstance(inner, ModelOutput):
                 return build_stage_meta(inner, timing_s=timing_s)
+            elif isinstance(inner, Response) and inner.decisions is not None:
+                return build_stage_meta(
+                    timing_s=timing_s,
+                    model_calls=[
+                        build_model_call_meta_from_response(
+                            self._task.model.meta(), inner
+                        )
+                    ],
+                )
             elif (
                 isinstance(inner, list)
                 and inner
-                and all(isinstance(item, ModelOutput) for item in inner)
+                and all(
+                    isinstance(item, ModelOutput)
+                    or (isinstance(item, Response) and item.decisions is not None)
+                    for item in inner
+                )
             ):
-                return build_stage_meta(*inner, timing_s=timing_s)
+                return build_stage_meta(
+                    timing_s=timing_s,
+                    model_calls=[
+                        build_model_call_meta(item)
+                        if isinstance(item, ModelOutput)
+                        else build_model_call_meta_from_response(
+                            self._task.model.meta(), item
+                        )
+                        for item in inner
+                    ],
+                )
             else:
                 # A stage whose value is a judgement record may still have called
                 # a model: an LLM grader runs inside `feedback`, which returns a
@@ -1864,14 +1893,15 @@ class TaskRunner:
         than per task because none is a fact about a task's metric: every task
         would have to remember, and the ones that forgot would look clean.
 
-        ``n_truncated`` and its denominator ``n_scored_rollouts`` go in for ``gen``
-        tasks only, and are omitted rather than zeroed elsewhere -- ``ppl``/``clp``
-        infer at ``max_tokens=1`` and so finish every call with ``length``, which
-        would make the count equal the total and mean nothing. The anomaly rule is
-        ``gen``-scoped for the same reason. They go in as a **pair or not at all**:
-        a count whose base is missing is not a share of anything, and both drop out
-        when any scored record is unmeasurable (see the ``record_meta=False`` resume
-        case on ``_scored_rollout_indices``).
+        ``n_truncated`` and its denominator ``n_scored_rollouts`` go in for tasks
+        tagged ``gen`` or ``decisions``, and are omitted rather than zeroed
+        elsewhere -- ``ppl``/``clp`` infer at ``max_tokens=1`` and so finish every
+        call with ``length``, which would make the count equal the total and mean
+        nothing. The anomaly rule is scoped to the same tags for that reason.
+        They go in as a **pair or not at all**: a count whose base is missing is
+        not a share of anything, and both drop out when any scored record is
+        unmeasurable (see the ``record_meta=False`` resume case on
+        ``_scored_rollout_indices``).
 
         Only finals are counted, matching both the anomaly detector (which runs on
         FINAL) and ``n_unextracted``: a FAILED sample has no score for a truncation
@@ -1923,7 +1953,7 @@ class TaskRunner:
                 (c.stage_meta for c in finals),
                 (c.stage_meta for c in fails),
             )
-            if EvalMode.GEN.value in self._task.tags:
+            if not self._task.tags.isdisjoint(FINISH_REASON_TASK_TAGS):
                 metas = [c.stage_meta for c in finals]
                 truncated = count_truncated_rollouts(metas)
                 scored = count_scored_rollouts(metas)

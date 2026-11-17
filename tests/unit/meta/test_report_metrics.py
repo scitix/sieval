@@ -14,8 +14,9 @@ import pkgutil
 import pytest
 
 import sieval.tasks
+from sieval.core.tasks.consts import FINISH_REASON_TASK_TAGS
 from sieval.core.tasks.meta import _TASK_CLASSES
-from sieval.core.tasks.report_metrics import RUNNER_GEN_METRICS, class_path
+from sieval.core.tasks.report_metrics import RUNNER_FINISH_METRICS, class_path
 from sieval.core.tasks.run_meta import GRADER_PACKAGES
 from sieval.core.tasks.task import Task
 from sieval.meta.report_metrics import BUILTIN_REPORT_METRICS, task_report_metrics
@@ -60,13 +61,15 @@ def test_every_task_declares_its_headline(registry: Registry) -> None:
     assert headless == ["t_eval_before_calling_0shot_gen"]
 
 
-def test_a_generative_task_gains_the_runner_keys(
+def test_a_task_with_finish_diagnostic_tags_gains_the_runner_keys(
     registry: Registry,
 ) -> None:
     for name, cls in registry.items():
         declared = task_report_metrics(cls)
         assert declared is not None
-        assert (declared.names >= RUNNER_GEN_METRICS) == ("gen" in cls.tags), name
+        assert (declared.names >= RUNNER_FINISH_METRICS) == (
+            not cls.tags.isdisjoint(FINISH_REASON_TASK_TAGS)
+        ), name
 
 
 def test_the_table_is_outside_every_stage_identity(

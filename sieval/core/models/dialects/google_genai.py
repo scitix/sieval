@@ -310,6 +310,9 @@ def _decisions() -> Mapping[CapabilityKey, DialectCapabilityDecision]:
             )
         ),
         "prefill": Unsupported("Gemini has no independent assistant-prefill field"),
+        "decisions": Unsupported(
+            "This dialect does not support typed decision requests"
+        ),
         "fim": Unsupported("Gemini generateContent has no completion suffix field"),
     }
     if set(decisions) != set(CAPABILITY_KEYS):
@@ -342,6 +345,7 @@ OUTPUT_CONTRACT = OutputContract(
         ),
         "grounding": OutputRule(Guarantee.BEST_EFFORT),
         "session_id": OutputRule(Guarantee.NEVER),
+        "decisions": OutputRule(Guarantee.NEVER),
         "usage": OutputRule(Guarantee.BEST_EFFORT),
     },
     empty_outcome_finish_reasons=_CHANNEL_OPTIONAL_FINISH_REASONS,

@@ -18,13 +18,16 @@ from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 from sieval.core.types import JSONValue
 
 from ._shared import copy_json_value, freeze_json_mapping, thaw_json_mapping
+from .decisions import DecisionParams, validate_decision_result
 from .ir import (
     ChatInput,
     ChoiceLogprobs,
     CompletionInput,
+    ContextInput,
     FunctionToolCall,
     ImagePart,
     InputScoringResult,
+    JsonPart,
     ReasoningOutput,
     Request,
     Response,
@@ -205,6 +208,16 @@ def _same_audit_value(left: object, right: object) -> bool:
 
 
 def _input_leaves(req: Request) -> dict[str, object]:
+    if isinstance(req.input, ContextInput):
+        result: dict[str, object] = {"input.context": req.input}
+        for part in req.input.parts:
+            result.setdefault(
+                "input.context.json"
+                if isinstance(part, JsonPart)
+                else "input.context.text",
+                True,
+            )
+        return result
     if isinstance(req.input, CompletionInput):
         result: dict[str, object] = {"input.completion": req.input.text}
         if req.input.suffix is not None:
@@ -249,6 +262,12 @@ def active_request_leaves(req: Request) -> dict[str, object]:
     """Return exact active semantic leaf paths for one concrete request."""
 
     active = _input_leaves(req)
+    if req.decisions is not None:
+        active["decisions.questions"] = req.decisions.questions
+        if req.decisions.require_probabilities:
+            active["decisions.require_probabilities"] = True
+        if req.decisions.require_confidence:
+            active["decisions.require_confidence"] = True
     grouped: dict[str, DataclassInstance] = {
         "sampling": req.sampling,
         "scoring": req.scoring,
@@ -464,6 +483,8 @@ def request_capability(path: str) -> str | None:
     if path in exact:
         return exact[path]
     prefixes = {
+        "input.context": "decisions",
+        "decisions.": "decisions",
         "reasoning.": "reasoning",
         "tools.functions": "function_tools",
         "tools.choice": "function_tools",
@@ -532,6 +553,8 @@ def active_request_capabilities(req: Request) -> frozenset[str]:
 
 def active_response_channels(req: Request) -> frozenset[str]:
     channels: set[str] = set()
+    if req.decisions is not None:
+        channels.add("decisions")
     if any(
         value is not None
         for value in (
@@ -575,6 +598,16 @@ def required_response_channels(req: Request) -> frozenset[str]:
 
 
 def validate_request_invariants(req: Request) -> None:
+    if req.decisions is not None and not isinstance(req.decisions, DecisionParams):
+        raise TypeError("decisions must be DecisionParams or None")
+    if isinstance(req.input, ContextInput) and req.decisions is None:
+        raise ValueError("context input requires decision questions")
+    if req.decisions is not None and isinstance(req.input, CompletionInput):
+        raise ValueError(
+            "decision evidence cannot have completion-continuation semantics"
+        )
+    if req.decisions is not None and req.scheduling.stream:
+        raise ValueError("decision requests do not support streaming")
     sampling = req.sampling
     for name in ("temperature", "top_p", "frequency_penalty", "presence_penalty"):
         value = getattr(sampling, name)
@@ -687,7 +720,8 @@ class OutputContract:
         required = set(required_response_channels(req))
         finish_reasons = response.finish_reasons
         empty_outcome = (
-            finish_reasons is not None
+            req.decisions is None
+            and finish_reasons is not None
             and bool(finish_reasons)
             and all(
                 reason in self.empty_outcome_finish_reasons for reason in finish_reasons
@@ -745,7 +779,20 @@ class OutputContract:
                 "top_logprobs were requested but input_scoring carries none"
             )
 
-        if len(response.texts) != req.sampling.n:
+        if req.decisions is not None:
+            if response.texts:
+                raise OutputContractError(
+                    "decision responses must not contain placeholder texts"
+                )
+            if response.decisions is None:
+                raise OutputContractError("required decisions channel is absent")
+            try:
+                validate_decision_result(req.decisions, response.decisions)
+            except (TypeError, ValueError) as exc:
+                raise OutputContractError(str(exc)) from exc
+        elif response.decisions is not None:
+            raise OutputContractError("decision answers require decision questions")
+        elif len(response.texts) != req.sampling.n:
             raise OutputContractError(
                 f"expected {req.sampling.n} choices, received {len(response.texts)}"
             )

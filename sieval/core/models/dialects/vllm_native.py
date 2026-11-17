@@ -124,6 +124,9 @@ def _decisions() -> Mapping[CapabilityKey, DialectCapabilityDecision]:
         ),
         "multimodal_input": Unsupported("this dialect sends text prompts only"),
         "prefill": Unsupported(_PREFILL_UNSUPPORTED),
+        "decisions": Unsupported(
+            "This dialect does not support typed decision requests"
+        ),
         "fim": Unsupported("vLLM refuses suffix: 'suffix is not currently supported'"),
     }
     if set(decisions) != set(CAPABILITY_KEYS):
@@ -158,6 +161,7 @@ OUTPUT_CONTRACT = OutputContract(
         "citations": OutputRule(Guarantee.NEVER),
         "grounding": OutputRule(Guarantee.NEVER),
         "session_id": OutputRule(Guarantee.NEVER),
+        "decisions": OutputRule(Guarantee.NEVER),
         "usage": OutputRule(Guarantee.BEST_EFFORT),
     }
 )

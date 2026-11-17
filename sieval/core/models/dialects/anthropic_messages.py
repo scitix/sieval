@@ -246,6 +246,9 @@ CAPABILITY_DECISIONS: Mapping[CapabilityKey, DialectCapabilityDecision] = (
             # Anthropic's final assistant message is a native prefill.  The
             # semantic is carried by ChatInput rather than a separate Request leaf.
             "prefill": Supported(DialectCapabilityBinding("prefill")),
+            "decisions": Unsupported(
+                "This dialect does not support typed decision requests"
+            ),
             "fim": Unsupported("Anthropic Messages has no completion suffix"),
         }
     )
@@ -269,6 +272,7 @@ OUTPUT_CONTRACT = OutputContract(
         "citations": OutputRule(Guarantee.NEVER),
         "grounding": OutputRule(Guarantee.NEVER),
         "session_id": OutputRule(Guarantee.NEVER),
+        "decisions": OutputRule(Guarantee.NEVER),
         "usage": OutputRule(Guarantee.BEST_EFFORT),
     }
 )

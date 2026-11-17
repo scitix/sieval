@@ -1766,6 +1766,7 @@ class TestPreflightRejections:
             "multimodal_input",
             "prefill",
             "fim",
+            "decisions",
         }
         assert (
             Capability.ServerTools

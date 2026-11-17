@@ -23,7 +23,15 @@ from sieval.core.datasets.meta import (
     DatasetMeta,
     Level1Category,
 )
-from sieval.core.models import ModelOutput, ModelProvenance
+from sieval.core.models import (
+    DecisionResult,
+    ModelCallMeta,
+    ModelOutput,
+    ModelProvenance,
+    PredicateAnswer,
+    Response,
+    UsageStats,
+)
 from sieval.core.runners.resume_gate import ResumeVersionError
 from sieval.core.runners.runner import (
     ResultDirExistsError,
@@ -53,6 +61,10 @@ from sieval.core.tasks.meta import (
 from sieval.core.tasks.requests import TaskRequestLog
 from sieval.core.tasks.run_meta import RESULT_SCHEMA_VERSION
 from sieval.core.tasks.task import Task
+from sieval.core.utils.meta import (
+    count_scored_rollouts,
+    count_truncated_rollouts,
+)
 from tests.conftest import (
     MockAlwaysFailModel,
     MockChatModel,
@@ -1995,6 +2007,181 @@ class TestRunnerInternalBranches:
         assert len(infer_meta["model_calls"]) == 2
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "shape", ["bare", "boxed", "list", "mixed", "explicit", "hook"]
+    )
+    async def test_decision_response_auto_meta_preserves_calls_and_explicit_overrides(
+        self, tmp_path, monkeypatch, shape
+    ):
+        model = MockChatModel(answers={"q": "a"})
+        task = MockTask(
+            dataset=MockDataset([{"question": "q", "answer": "a"}]),
+            model=model,
+            name="decision-auto-meta",
+        )
+        ctx = task.make_context(0, {"question": "q", "answer": "a"}).to_preprocessed(
+            "q"
+        )
+        response = Response(
+            texts=(),
+            decisions=DecisionResult((PredicateAnswer("q", 0.8),)),
+            finish_reasons=("length",),
+            finish_reason_sources=("test.finish",),
+            usage=UsageStats(input_tokens=10, output_tokens=2, total_tokens=12),
+            request_params={"call": "first"},
+            response_model="served-model",
+        )
+        expected_calls = 1
+        expected_params = [{"call": "first"}]
+        manual_call: ModelCallMeta = {
+            "model": {
+                "model": "explicit-model",
+                "api_base": None,
+                "default_params": {},
+            },
+            "finish_reasons": ["length"],
+            "finish_reason_sources": ["manual.finish"],
+            "request_params": {"call": "explicit"},
+            "usage": {"input_tokens": 20, "output_tokens": 4, "total_tokens": 24},
+        }
+        if shape == "boxed":
+            output = TaskStageOutput(value=response)
+        elif shape == "explicit":
+            output = TaskStageOutput(
+                value=response, meta={"model_calls": [manual_call]}
+            )
+            expected_params = [{"call": "explicit"}]
+        elif shape == "list":
+            output = [
+                response,
+                replace(
+                    response,
+                    finish_reasons=("stop",),
+                    request_params={"call": "second"},
+                ),
+            ]
+            expected_calls = 2
+            expected_params.append({"call": "second"})
+        elif shape == "mixed":
+            output = [
+                response,
+                ModelOutput(
+                    model=model.meta(),
+                    texts=["answer"],
+                    finish_reasons=["stop"],
+                    request_params={"call": "legacy"},
+                ),
+            ]
+            expected_calls = 2
+            expected_params.append({"call": "legacy"})
+        else:
+            output = response
+            if shape == "hook":
+                expected_params = [{"call": "explicit"}]
+
+        def hook(_value, _stage, _ctx):
+            return {"model_calls": [manual_call]}
+
+        runner = TaskRunner(
+            task,
+            make_config(tmp_path, stage_meta_hook=hook if shape == "hook" else None),
+        )
+
+        async def infer(_pre, _ctx):
+            return output
+
+        monkeypatch.setattr(task, "infer", infer)
+        send, recv = anyio.create_memory_object_stream[TaskContext](1)
+        async with send, recv:
+            await runner._execute_stage_logic(ctx, send, TaskAction.INFER)
+            inferred = await recv.receive()
+        assert inferred.stage is TaskStage.INFERRED
+        assert inferred.infer_result is output
+        calls = inferred.stage_meta["inferred"][-1]["model_calls"]
+        assert len(calls) == expected_calls
+        assert [call["request_params"] for call in calls] == expected_params
+        assert count_truncated_rollouts([inferred.stage_meta]) == 1
+        assert count_scored_rollouts([inferred.stage_meta]) == 1
+        if shape in ("explicit", "hook"):
+            assert calls == [manual_call]
+        else:
+            assert calls[0]["finish_reasons"] == ["length"]
+            assert calls[0]["finish_reason_sources"] == ["test.finish"]
+            assert calls[0]["usage"]["total_tokens"] == 12
+            assert calls[0]["response_model"] == "served-model"
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("output_kind", ["generation", "decision"])
+    @pytest.mark.parametrize("source", ["output", "hook"])
+    @pytest.mark.parametrize("replacement_shape", ["model_only", "empty", "altered"])
+    async def test_model_call_metadata_override_keeps_existing_replacement_contract(
+        self, tmp_path, monkeypatch, output_kind, source, replacement_shape
+    ):
+        model = MockChatModel(answers={"q": "a"})
+        task = MockTask(
+            dataset=MockDataset([{"question": "q", "answer": "a"}]),
+            model=model,
+            name="call-meta-override",
+        )
+        if output_kind == "decision":
+            response = Response(
+                texts=(),
+                decisions=DecisionResult((PredicateAnswer("q", 0.8),)),
+                finish_reasons=("length",),
+                finish_reason_sources=("native.finish",),
+                usage=UsageStats(input_tokens=7, output_tokens=3, total_tokens=10),
+            )
+        else:
+            response = ModelOutput(
+                model=model.meta(),
+                texts=["a"],
+                finish_reasons=["length"],
+                finish_reason_sources=["native.finish"],
+                usage={"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
+            )
+        calls: list[ModelCallMeta] = [{"model": model.meta()}]
+        if replacement_shape == "empty":
+            calls = []
+        elif replacement_shape == "altered":
+            calls[0].update(
+                usage={"input_tokens": 20, "output_tokens": 4, "total_tokens": 24},
+                finish_reasons=["stop"],
+                finish_reason_sources=["manual.finish"],
+            )
+        output = TaskStageOutput(
+            value=response,
+            meta={"model_calls": calls if source == "output" else []},
+        )
+
+        def hook(_value, _stage, _ctx):
+            return {"model_calls": calls}
+
+        runner = TaskRunner(
+            task,
+            make_config(tmp_path, stage_meta_hook=hook if source == "hook" else None),
+        )
+        record_usage = MagicMock()
+        monkeypatch.setattr(runner._profiler, "record_model_usage", record_usage)
+        ctx = task.make_context(0, {"question": "q", "answer": "a"}).to_preprocessed(
+            "q"
+        )
+
+        async def infer(_pre, _ctx):
+            return output
+
+        monkeypatch.setattr(task, "infer", infer)
+        send, recv = anyio.create_memory_object_stream[TaskContext](1)
+        async with send, recv:
+            await runner._execute_stage_logic(ctx, send, TaskAction.INFER)
+            inferred = await recv.receive()
+        assert inferred.stage is TaskStage.INFERRED
+        assert inferred.infer_result is output
+        assert inferred.stage_meta["inferred"][-1]["model_calls"] == calls
+        assert record_usage.call_count == int(replacement_shape == "altered")
+        if replacement_shape == "altered":
+            assert record_usage.call_args.args[0] == calls[0]["usage"]
+
+    @pytest.mark.anyio
     async def test_execute_stage_logic_taskstageoutput_meta_and_hook_contract(
         self, tmp_path, monkeypatch
     ):
@@ -2572,12 +2759,18 @@ class TestReportVersions:
         assert saved["sieval_versions"] == [__version__]
 
     @pytest.mark.anyio
-    async def test_non_dict_report_not_injected(self, tmp_path):
+    @pytest.mark.parametrize(
+        "tags", [frozenset(), frozenset({"gen"}), frozenset({"decisions"})]
+    )
+    async def test_non_dict_report_not_injected(self, tmp_path, tags, monkeypatch):
         model = MockChatModel(answers=DEFAULT_ANSWERS)
         task = ListReportTask(dataset=MockDataset(), model=model, name="listrep")
-        report = await TaskRunner(task, make_config(tmp_path)).arun()
+        monkeypatch.setattr(task, "tags", tags)
+        runner = TaskRunner(task, make_config(tmp_path))
+        report = await runner.arun()
 
         assert report == ["not", "a", "dict"]  # unchanged, no crash
+        assert orjson.loads((runner.root_dir / "report.json").read_bytes()) == report
 
     @pytest.mark.anyio
     async def test_none_report_not_saved(self, tmp_path):
