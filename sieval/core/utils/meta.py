@@ -1,4 +1,7 @@
-"""Helpers for building model-call and stage metadata dicts."""
+"""Helpers for building model-call and stage metadata dicts.
+
+AI-Generated Code - GPT-6.1 (OpenAI)
+"""
 
 import time
 from collections.abc import Iterable, Mapping

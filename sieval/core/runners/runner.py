@@ -1,4 +1,7 @@
-"""Single-task execution engine with dual-stream compute/storage architecture."""
+"""Single-task execution engine with dual-stream compute/storage architecture.
+
+AI-Generated Code - GPT-6.1 (OpenAI)
+"""
 
 import contextlib
 import os

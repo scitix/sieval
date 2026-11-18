@@ -1,4 +1,7 @@
-"""Task profiling: I/O timings, stage execution, and token usage statistics."""
+"""Task profiling: I/O timings, stage execution, and token usage statistics.
+
+AI-Generated Code - GPT-6.1 (OpenAI)
+"""
 
 import bisect
 import time
