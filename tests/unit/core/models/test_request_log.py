@@ -10,7 +10,8 @@ import time
 import types
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, cast
 
 import anyio
 import httpx
@@ -45,6 +46,7 @@ from sieval.core.models.request_log import (
     timeout_phase,
 )
 from sieval.core.tasks.requests import TaskRequestLog
+from sieval.core.tasks.run_meta import request_digest
 from sieval.core.types import JSONValue
 
 SECRET = "sk-SENTINEL-NEVER-RECORDED"
@@ -55,7 +57,9 @@ class _Sink:
         self.lines: list[dict[str, JSONValue]] = []
         self._roles = dict(roles or {})
 
-    def role_of(self, model_meta: Mapping[str, object]) -> str:
+    def role_of(
+        self, model_meta: Mapping[str, object], *, key: str | None = None
+    ) -> str:
         return self._roles.get(str(model_meta.get("model")), "subject")
 
     def record(self, line: dict[str, JSONValue]) -> None:
@@ -76,6 +80,20 @@ def _scope(
         limiters=limiters,
         run_start=0.0,
     )
+
+
+class _ExternalSubject:
+    def subject_meta(self) -> dict[str, JSONValue]:
+        return {"model": "remote", "revision": "v1"}
+
+    def call_key(self) -> str:
+        return "remote:v1"
+
+    def request_args(self) -> dict[str, JSONValue]:
+        return {"protocol": "v1"}
+
+    def serving(self) -> None:
+        return None
 
 
 def _chat_body(text: str = "hi") -> dict[str, Any]:
@@ -156,6 +174,135 @@ async def _call(client: openai.AsyncOpenAI, sink: _Sink) -> Any:
         return await client.chat.completions.create(
             model="m", messages=[{"role": "user", "content": "q"}]
         )
+
+
+class TestSubjectCall:
+    def test_record_detaches_nested_mutable_request_parameters(self) -> None:
+        body = {"items": [{"index": 0, "filter": None}]}
+        stage = _scope(_Sink())
+        with stage_scope(stage), rl.subject_call(_ExternalSubject()) as call:
+            call.record(request_params={"body": body})
+            body["items"][0]["index"] = 1
+        assert stage.model_calls[0]["request_params"] == {
+            "body": {"items": [{"index": 0, "filter": None}]}
+        }
+
+    def test_record_converts_nested_mapping_proxies_to_plain_json(self) -> None:
+        params = MappingProxyType(
+            {"body": MappingProxyType({"items": [MappingProxyType({"filter": None})]})}
+        )
+        stage = _scope(_Sink())
+        with stage_scope(stage), rl.subject_call(_ExternalSubject()) as call:
+            call.record(request_params=params)
+        assert json.loads(json.dumps(stage.model_calls[0]["request_params"])) == {
+            "body": {"items": [{"filter": None}]}
+        }
+
+    @pytest.mark.parametrize("n", [0, -1, 1.5, True])
+    def test_requires_positive_integer_n(self, n: object) -> None:
+        with (
+            pytest.raises(ValueError, match="n must be an integer >= 1"),
+            rl.subject_call(_ExternalSubject(), n=cast(int, n)),
+        ):
+            pass
+
+    def test_outside_a_stage_record_is_a_noop(self) -> None:
+        with rl.subject_call(_ExternalSubject()) as call:
+            call.record(usage={"input_tokens": 2})
+
+    def test_records_external_call_metadata_without_a_request_sink(self) -> None:
+        stage = StageScope(
+            sink=None,
+            task="t",
+            run="run-1",
+            stage="infer",
+            sample_id=7,
+            iteration=0,
+            repeat_index=None,
+            limiters={},
+            run_start=0.0,
+        )
+
+        with stage_scope(stage), rl.subject_call(_ExternalSubject()) as call:
+            call.record(
+                usage={"input_tokens": 2, "output_tokens": 1},
+                request_params={"body": {"question": "q"}},
+                response_model="remote-v1",
+            )
+
+        [model_call] = stage.model_calls
+        assert model_call["model"] == {"model": "remote", "revision": "v1"}
+        assert model_call["usage"] == {"input_tokens": 2, "output_tokens": 1}
+        assert model_call["request_params"] == {"body": {"question": "q"}}
+        assert model_call["response_model"] == "remote-v1"
+
+    def test_record_can_only_be_called_once(self) -> None:
+        stage = StageScope(
+            sink=None,
+            task="t",
+            run="run-1",
+            stage="infer",
+            sample_id=7,
+            iteration=0,
+            repeat_index=None,
+            limiters={},
+            run_start=0.0,
+        )
+        with stage_scope(stage), rl.subject_call(_ExternalSubject()) as call:
+            call.record()
+            with pytest.raises(RuntimeError, match="only once"):
+                call.record()
+
+    def test_records_a_plugin_defined_call_key(self) -> None:
+        class CustomKeySubject(_ExternalSubject):
+            def call_key(self) -> str:
+                return "remote:v1"
+
+        subject = CustomKeySubject()
+        stage = _scope(_Sink())
+        with stage_scope(stage), rl.subject_call(subject) as call:
+            call.record(request_params={"question": "q"})
+
+        [record] = stage.model_calls
+        assert record["call_key"] == "remote:v1"
+        assert request_digest(stage.model_calls, subject.call_key()) is not None
+
+    @pytest.mark.anyio
+    async def test_concurrent_calls_follow_entry_order_in_request_digest(self) -> None:
+        subject = _ExternalSubject()
+
+        async def record_calls(completion_order: tuple[int, int]):
+            stage = _scope(_Sink())
+            entered = [anyio.Event(), anyio.Event()]
+            release = [anyio.Event(), anyio.Event()]
+            finished = [anyio.Event(), anyio.Event()]
+
+            async def record_call(index: int):
+                with rl.subject_call(subject) as call:
+                    entered[index].set()
+                    await release[index].wait()
+                    call.record(request_params={"question": str(index)})
+                finished[index].set()
+
+            with stage_scope(stage):
+                async with anyio.create_task_group() as group:
+                    for index in (0, 1):
+                        group.start_soon(record_call, index)
+                        await entered[index].wait()
+                    for index in completion_order:
+                        release[index].set()
+                        await finished[index].wait()
+                records = rl.stage_model_calls()
+            assert [record["request_params"]["question"] for record in records] == [
+                "0",
+                "1",
+            ]
+            return request_digest(records, subject.call_key())
+
+        first = await record_calls((0, 1))
+        second = await record_calls((1, 0))
+        assert first is not None
+        assert first == second
 
 
 class TestSdkRetriesAreRecordedPerAttempt:

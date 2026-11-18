@@ -1,3 +1,8 @@
+"""Serialization for stage values and recorded JSON data.
+
+AI-Generated Code - GPT-6 (OpenAI)
+"""
+
 import importlib
 import warnings
 from collections.abc import Iterable
@@ -57,37 +62,48 @@ def register_types(
         _scanned_modules.add(module_name)
 
 
-def obj_to_dict(obj: Any, add_type: bool) -> Any:
-    """Convert *obj* to a JSON-compatible dict, optionally embedding type markers."""
+def obj_to_dict(obj: Any, add_type: bool, *, preserve_none: bool = False) -> Any:
+    """Convert to JSON-compatible data, optionally embedding type markers.
+
+    ``preserve_none`` retains explicit nulls in recorded JSON request data;
+    the default continues to omit absent optional fields.
+    """
     if obj is None or isinstance(obj, str | int | float | bool):
         return obj
     if isinstance(obj, dict):
-        return {k: obj_to_dict(v, add_type) for k, v in obj.items() if v is not None}
+        return {
+            k: obj_to_dict(v, add_type, preserve_none=preserve_none)
+            for k, v in obj.items()
+            if v is not None or preserve_none
+        }
     if isinstance(obj, list):
-        return [obj_to_dict(v, add_type) for v in obj]
+        return [obj_to_dict(v, add_type, preserve_none=preserve_none) for v in obj]
     if isinstance(obj, tuple):
         return {
             "__sieval_cls__": "tuple",
-            "items": [obj_to_dict(v, add_type) for v in obj],
+            "items": [
+                obj_to_dict(v, add_type, preserve_none=preserve_none) for v in obj
+            ],
         }
     if isinstance(obj, set):
         return {
             "__sieval_cls__": "set",
             "items": [
-                obj_to_dict(v, add_type) for v in sorted(obj, key=lambda x: repr(x))
+                obj_to_dict(v, add_type, preserve_none=preserve_none)
+                for v in sorted(obj, key=lambda x: repr(x))
             ],
         }
     data = {}
     if hasattr(obj, "__dict__"):
         for k, v in vars(obj).items():
-            if v is not None:
-                data[k] = obj_to_dict(v, add_type)
+            if v is not None or preserve_none:
+                data[k] = obj_to_dict(v, add_type, preserve_none=preserve_none)
     elif hasattr(obj, "__slots__"):
         for s in obj.__slots__:
             with suppress(AttributeError):
                 v = getattr(obj, s)
-                if v is not None:
-                    data[s] = obj_to_dict(v, add_type)
+                if v is not None or preserve_none:
+                    data[s] = obj_to_dict(v, add_type, preserve_none=preserve_none)
     else:
         return repr(obj)
     if add_type and getattr(obj.__class__, "__sieval_record__", False):

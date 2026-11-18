@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, ClassVar, NotRequired, Self, TypedDict
 import orjson
 from loguru import logger
 
-from sieval.core.models import ModelUsage
 from sieval.core.utils.atomic import aatomic_write
 
 from .context import TaskContext
@@ -308,7 +307,7 @@ class TaskProfiler:
 
     def record_model_usage(
         self,
-        usage: dict[str, int] | ModelUsage | None,
+        usage: Mapping[str, object] | None,
         stage_name: str | None = None,
     ) -> None:
         if not usage or not self._profile_usage or not stage_name:

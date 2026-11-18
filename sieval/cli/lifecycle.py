@@ -15,7 +15,11 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-from sieval.cli.resolution import TASK_MODEL_ROLES, validate_named_config_map
+from sieval.cli.resolution import (
+    TASK_MODEL_ROLES,
+    config_task_candidates,
+    validate_named_config_map,
+)
 from sieval.core.runners.barriers import (
     BARRIER_STAGES,
     ITERATION_BARRIERS,
@@ -192,18 +196,19 @@ def check_lifecycles_cover_calls(
 
     Without this a sample's call reaches no engine and fails with a connection
     error, one per sample, after the engine has been started too late or
-    stopped too early. A task without ``model:`` in a config with one model
-    runs on that model, as the session resolves it, and is checked the same.
+    stopped too early. Candidate resolution follows the session, including
+    tasks that explicitly declare no candidate model.
     """
     if not lifecycles:
         return
     models = validate_named_config_map("models", config.get("models", {}))
     tasks = validate_named_config_map("tasks", config.get("tasks", {}))
-    only = next(iter(models)) if len(models) == 1 else None
+    candidates = config_task_candidates(config)
     problems = []
     for task_name, task in sorted(tasks.items()):
         args = task.get("args") or {}
-        named = {"model": task.get("model") or only}
+        candidate = candidates.get(task_name)
+        named = {"model": (task.get("model") or candidate[0]) if candidate else None}
         if isinstance(args, Mapping):
             named["grader"] = args.get("grader")
         for role, name in named.items():

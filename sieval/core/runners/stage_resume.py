@@ -37,9 +37,11 @@ AI-Generated Code - Claude Opus 5.5 (Anthropic)
 import os
 import shutil
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
 
+from sieval.core.models import EvalSubject, Model
 from sieval.core.tasks.consts import TaskStage
 from sieval.core.tasks.context import TaskContext
 from sieval.core.tasks.run_meta import (
@@ -288,6 +290,39 @@ def task_preprocess_identity(task: "Task", code: StageCode) -> PreprocessIdentit
     return preprocess_identity(code, task.grader_args(), splits)
 
 
+@dataclass(frozen=True)
+class SubjectInferenceInputs:
+    """Bound-model inputs applicable to the actual evaluation subject."""
+
+    context_limit: int | None = None
+    recipe: Mapping[str, JSONValue] | None = None
+    stated_serving: Mapping[str, JSONValue] | None = None
+    checkpoint_numerics: Mapping[str, JSONValue] | None = None
+
+
+def subject_inference_inputs(
+    subject: EvalSubject,
+    *,
+    context_limit: int | None = None,
+    recipe: Mapping[str, JSONValue] | None = None,
+    stated_serving: Mapping[str, JSONValue] | None = None,
+    checkpoint_numerics: Mapping[str, JSONValue] | None = None,
+) -> SubjectInferenceInputs:
+    """Keep Model binding inputs only when the subject is a Model.
+
+    For an external subject these describe a helper, not the measured system.
+    Its inference identity comes from its own request and task arguments.
+    """
+    if not isinstance(subject, Model):
+        return SubjectInferenceInputs()
+    return SubjectInferenceInputs(
+        context_limit=context_limit,
+        recipe=recipe,
+        stated_serving=stated_serving,
+        checkpoint_numerics=checkpoint_numerics,
+    )
+
+
 def task_resume_plan(
     task: "Task",
     recorded_meta: Mapping[str, Any] | None,
@@ -306,7 +341,18 @@ def task_resume_plan(
     read. *runner_keys* holds :data:`~sieval.core.tasks.run_meta.INFERENCE_RUNNER_KEYS`
     and the rest as the runner is given them. Reads files, starts nothing and
     calls no model.
+
+    The serving inputs describe a bound Model. An independent external subject
+    excludes them, even when the task also binds a helper Model.
     """
+    subject = task.subject
+    inputs = subject_inference_inputs(
+        subject,
+        context_limit=context_limit,
+        recipe=recipe,
+        stated_serving=stated_serving,
+        checkpoint_numerics=checkpoint_numerics,
+    )
     task_cls = type(task)
     judges = judge_identities(task.judge_models(), task.judge_prompts())
     services = service_identities(task_cls.services)
@@ -318,12 +364,14 @@ def task_resume_plan(
     current: dict[str, Any] = {
         "preprocess": task_preprocess_identity(task, code["preprocess"]),
         "inference": inference_identity(
-            model=task.model,
+            model=subject,
             task_args=task.inference_args(),
             runner_keys=runner_keys,
-            context_limit=context_limit,
-            numerics=served_numerics(recipe, stated_serving, checkpoint_numerics),
-            parsers=served_parsers(recipe, stated_serving),
+            context_limit=inputs.context_limit,
+            numerics=served_numerics(
+                inputs.recipe, inputs.stated_serving, inputs.checkpoint_numerics
+            ),
+            parsers=served_parsers(inputs.recipe, inputs.stated_serving),
         ),
         **grading,
     }
@@ -332,12 +380,12 @@ def task_resume_plan(
         current,
         legacy_grader_keys(task_cls, judges, services, args),
         legacy_inference_digest(
-            model=task.model,
+            model=subject,
             task_args=task.inference_args(),
             runner_keys=runner_keys,
-            recipe=recipe,
+            recipe=inputs.recipe,
         ),
-        checkpoint_numerics,
+        inputs.checkpoint_numerics,
     )
 
 

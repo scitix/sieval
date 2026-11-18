@@ -22,6 +22,7 @@ import json
 import os
 import re
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -68,6 +69,15 @@ def is_task_model_role_sentinel(role: str, source: object) -> bool:
     return isinstance(source, str) and source in _TASK_MODEL_ROLE_SENTINELS.get(
         role, ()
     )
+
+
+def task_requires_model(task_class: type[Any]) -> bool:
+    """Read the task's explicit candidate-model requirement declaration."""
+
+    value = getattr(task_class, "requires_model", True)
+    if not isinstance(value, bool):
+        raise TypeError(f"{task_class.__name__}.requires_model must be a boolean")
+    return value
 
 
 def validate_task_config_args(
@@ -846,7 +856,10 @@ def resolve_config_model_types(
         except ValueError:
             # Normal configuration validation owns malformed/missing references.
             continue
-        roots_with_unresolved_task_classes.add(bindings[model_name].root_deployment_key)
+        if model_name is not None:
+            roots_with_unresolved_task_classes.add(
+                bindings[model_name].root_deployment_key
+            )
 
     by_root_bindings: dict[str, list[NamedModelBinding]] = {}
     for binding in bindings.values():
@@ -938,9 +951,18 @@ def config_task_candidates(
 
     out: dict[str, tuple[str, AggregatedTaskRequirements]] = {}
     for task_name, task_config in tasks.items():
+        task_class = None
+        class_spec = task_config.get("class")
+        if isinstance(class_spec, str) and class_spec:
+            with suppress(ImportError, AttributeError):
+                task_class = resolve_task_class(class_spec)
         try:
-            model_name = _config_task_model_name(task_name, task_config, models)
+            model_name = _config_task_model_name(
+                task_name, task_config, models, task_class=task_class
+            )
         except ValueError:
+            continue
+        if model_name is None:
             continue
         candidate = bindings[model_name]
         out[task_name] = (
@@ -983,11 +1005,23 @@ def _config_task_records(
             continue
 
         try:
-            model_name = _config_task_model_name(task_name, task_config, models)
+            model_name = _config_task_model_name(
+                task_name, task_config, models, task_class=task_class
+            )
         except ValueError:
             if skip_unbound:
                 continue
             raise
+        if model_name is None:
+            context = _config_requirement_context(
+                task_name, task_config, task_class, None, datasets, bindings
+            )
+            requirement_hook = getattr(task_class, "model_requirements_for", None)
+            if callable(requirement_hook):
+                records[task_name] = validate_task_model_requirements(
+                    task_class, context, requirement_hook(context)
+                )
+            continue
         context = _config_requirement_context(
             task_name,
             task_config,
@@ -1082,16 +1116,25 @@ def _config_task_model_name(
     task_name: str,
     task_config: Mapping[str, Any],
     models: Mapping[str, dict[str, Any]],
-) -> str:
+    *,
+    task_class: type[Any] | None = None,
+) -> str | None:
     model_ref = task_config.get("model")
     if model_ref is not None and not isinstance(model_ref, str):
         raise ValueError(f"Task '{task_name}': 'model' must be a string reference")
     if model_ref:
+        if task_class is not None and not task_requires_model(task_class):
+            raise ValueError(
+                f"Task '{task_name}' declares requires_model=False and cannot "
+                "configure 'model'"
+            )
         if model_ref not in models:
             raise ValueError(
                 f"Task '{task_name}' references unknown model '{model_ref}'"
             )
         return model_ref
+    if task_class is not None and not task_requires_model(task_class):
+        return None
     if len(models) == 1:
         return next(iter(models))
     if not models:
@@ -1105,7 +1148,7 @@ def _config_requirement_context(
     task_name: str,
     task_config: Mapping[str, Any],
     task_class: type[Any],
-    candidate: NamedModelBinding,
+    candidate: NamedModelBinding | None,
     datasets: Mapping[str, dict[str, Any]],
     named: Mapping[str, NamedModelBinding] | None = None,
 ) -> RequirementContext:
@@ -1116,9 +1159,9 @@ def _config_requirement_context(
         raise ValueError(f"Task '{task_name}' args must be a dictionary")
     validate_task_config_args(task_name, raw_args, task_class=task_class)
     task_args = copy.deepcopy(dict(raw_args))
-    model_bindings: dict[str, NamedModelBinding | InlineModelBinding] = {
-        "candidate": candidate
-    }
+    model_bindings: dict[str, NamedModelBinding | InlineModelBinding] = {}
+    if candidate is not None:
+        model_bindings["candidate"] = candidate
 
     for role in TASK_MODEL_ROLES:
         role_source = task_args.get(role)
@@ -1126,6 +1169,10 @@ def _config_requirement_context(
             # Preserve the sentinel as task data. The task requirement hook
             # projects only the candidate, and task construction resolves the
             # extractor after candidate ``infer_args`` have been applied.
+            if candidate is None:
+                raise ValueError(
+                    f"Task '{task_name}' {role}: 'self' requires a candidate model"
+                )
             continue
         task_args.pop(role, None)
         if role_source is None:

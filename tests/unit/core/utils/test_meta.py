@@ -242,6 +242,15 @@ class TestBuildModelCallMetaFromMapping:
             build_model_call_meta_from_mapping({"usage": {"input_tokens": 1}}) is None
         )
 
+    def test_external_subject_key_survives_metadata_reconstruction(self):
+        flattened = {
+            "model": {"model": "external", "revision": "v1"},
+            "call_key": "external-service:v1",
+            "request_params": {"question": "q"},
+            "usage": {"input_tokens": 7, "output_tokens": 3},
+        }
+        assert build_model_call_meta_from_mapping(flattened) == flattened
+
     def test_absent_optional_fields_are_omitted_not_nulled(self):
         call = build_model_call_meta_from_mapping({"model": _model_meta("m")})
         assert call == {"model": _model_meta("m")}

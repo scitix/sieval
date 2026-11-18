@@ -25,7 +25,23 @@ from sieval.cli.lifecycle import (
     runs_before_stop,
     visible_devices,
 )
+from sieval.core.models.requirements import InputKind, TaskRequirements
+from sieval.core.tasks.task import Task
 from sieval.infer.backends.translator import BackendCommand
+
+
+class _ModelLessGradedTask(Task):
+    requires_model = False
+
+    def __init__(self, dataset, model, grader=None, models_by_role=None):
+        super().__init__(dataset, model)
+        self._grader = grader
+
+    @classmethod
+    def model_requirements_for(cls, context):
+        return cls._bind_role_requirement(
+            context, "grader", TaskRequirements(input=InputKind.CHAT)
+        )
 
 
 class TestParseLifecycle:
@@ -178,6 +194,31 @@ class TestCallsCovered:
             "tasks": {"t": {}},
         }
         check_lifecycles_cover_calls(config, model_lifecycles(config))
+
+    @pytest.mark.parametrize("available", [True, False])
+    def test_only_grader_is_checked_in_feedback_for_a_model_less_task(self, available):
+        config = {
+            "models": {
+                "grader": {
+                    "model": "judge",
+                    "path": "/judge",
+                    "lifecycle": (
+                        {"from": "inference"} if available else {"until": "postprocess"}
+                    ),
+                }
+            },
+            "tasks": {
+                "external": {
+                    "class": f"{__name__}._ModelLessGradedTask",
+                    "args": {"grader": "grader"},
+                }
+            },
+        }
+        if available:
+            check_lifecycles_cover_calls(config, model_lifecycles(config))
+        else:
+            with pytest.raises(LifecycleError, match="grader 'grader' in feedback"):
+                check_lifecycles_cover_calls(config, model_lifecycles(config))
 
     @pytest.mark.parametrize(
         "life",

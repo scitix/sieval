@@ -22,8 +22,10 @@ produced the current ``report.json``:
                  so a ``stop`` or ``max_tokens`` a task passes at call time
                  counts. Only what defines a request counts there: its body
                  and whether it streamed, never the method, path, query or
-                 model name. The model under test, how it is served and the
-                 SiEval version are left out.
+                 model name. A bound ``Model``'s identity, serving and the
+                 SiEval version are left out; an external ``EvalSubject`` adds
+                 its stable ``call_key()`` because it has no separate model
+                 binding.
 ``postprocess``  The code ``postprocess`` reaches (:func:`stage_code`), the
                  task class and its ``grader_args()``.
 ``feedback``     The same for ``feedback``, plus every judge and service.
@@ -34,9 +36,10 @@ A change to one stage reruns it and every stage after it; a ``preprocess``
 change restarts every sample.
 
 How the candidate is served is recorded per run in ``runs[].serving``
-(:func:`serving_fingerprint`) and never compared. The model under test is
+(:func:`serving_fingerprint`) and never compared. A bound ``Model`` is
 compared apart from ``inference``: by ``weights`` when both runs state them,
-else by ``model``.
+else by ``model``. An external ``EvalSubject`` has no separate model binding,
+so its stable ``call_key()`` is included in the inference identity instead.
 
 What the served model computes with is compared, though: ``inference``
 keeps ``numerics`` (:func:`served_numerics`) beside the digest, not in it,
@@ -86,6 +89,7 @@ from typing import Any, Literal, NotRequired, TypedDict, cast
 from loguru import logger
 
 from sieval.core.models import REQUEST_ENVELOPE_HTTP, REQUEST_ENVELOPE_KEY, Model
+from sieval.core.models.subject import EvalSubject, ServingFingerprint, subject_call_key
 from sieval.core.types import JSONValue
 
 from .services import SERVICE_ENDPOINT_ENV, ServiceIdentity
@@ -212,29 +216,6 @@ class InferenceIdentity(TypedDict):
     numerics: NotRequired[Numerics]
     parsers: NotRequired[Parsers]
     request_key: NotRequired[str]
-
-
-class ServingFingerprint(TypedDict):
-    """How one run served the candidate (``runs[].serving``); never compared.
-
-    ``recipe`` is the serving plan of an engine the run launched, without its
-    checkpoint or host; ``stated`` is what the caller declared about an
-    endpoint (:data:`STATED_SERVING_KEYS`), as given. ``group`` is the key of
-    the serving group the orchestration layer launched that engine for.
-    ``lifecycles`` maps each launched model that declares one to its
-    ``lifecycle`` (``from`` / ``until`` a barrier stage). ``context`` labels the
-    window the task was served at; it is not compared (the window is already
-    ``context_limit``, a scaling ``model_overrides``).
-    """
-
-    engine: str
-    engine_version: str | None
-    launch: Literal["in_run", "external"]
-    recipe: dict[str, JSONValue] | None
-    stated: NotRequired[dict[str, JSONValue]]
-    group: NotRequired[str]
-    lifecycles: NotRequired[dict[str, dict[str, str]]]
-    context: NotRequired[dict[str, JSONValue]]
 
 
 #: What a caller may state about how an external endpoint serves the model.
@@ -537,10 +518,6 @@ def aggregate_digest(
     }
 
 
-#: ``ModelMeta`` keys that say where a model was reached, not which model it is.
-_CALL_KEY_EXCLUDED = frozenset({"api_base", "api_base_env", "provenance"})
-
-
 def call_key(model_meta: Mapping) -> str:
     """Which model made a call: its ``ModelMeta`` without endpoint or provenance.
 
@@ -548,9 +525,19 @@ def call_key(model_meta: Mapping) -> str:
     address or deployment. Two models alike in name, sampling and ``extra`` are
     the same model as far as a run's results go.
     """
-    return canonical_json(
-        {k: v for k, v in model_meta.items() if k not in _CALL_KEY_EXCLUDED}
-    )
+    return subject_call_key(model_meta)
+
+
+def model_call_key(call: Mapping[str, object]) -> str | None:
+    """Read an external subject's explicit key, or derive a legacy Model key."""
+
+    model = call.get("model")
+    if not isinstance(model, Mapping):
+        return None
+    if "call_key" in call:
+        key = call["call_key"]
+        return key if isinstance(key, str) and key else None
+    return call_key(model)
 
 
 #: Keys of a flat request body that say how it was sent, or name the model,
@@ -607,16 +594,16 @@ def request_digest(
 ) -> str | None:
     """Digest what the calls *candidate* made asked for.
 
-    *candidate* is the model under test's :func:`call_key`; a judge called
-    from the same stage is left out. Each call counts by
+    *candidate* is the subject's ``call_key()``; external call records carry it
+    explicitly, while legacy Model records derive it from their metadata.
+    A judge called from the same stage is left out. Each call counts by
     :func:`request_definition`. ``None`` when no candidate call was recorded,
     or one has no ``request_params``: what was sent is then unknown, not
     "nothing".
     """
     sent = []
     for call in model_calls:
-        model = call.get("model")
-        if not isinstance(model, Mapping) or call_key(model) != candidate:
+        if model_call_key(call) != candidate:
             continue
         params = call.get("request_params")
         if not isinstance(params, Mapping):
@@ -635,25 +622,12 @@ def request_digest(
 # ---------------------------------------------------------------------------
 
 
-def model_request_args(model: Model) -> dict[str, JSONValue]:
-    """A model's resolved request arguments without its name or endpoint.
-
-    Reads the builder defaults and ``extra`` from ``Model.meta()``, plus the
-    runtime plan's capability defaults and the dialect.
-    """
-    meta = model.meta()
-    args: dict[str, JSONValue] = {"params": dict(meta["default_params"])}
-    if "extra" in meta:
-        args["extra"] = dict(meta["extra"])
-    plan = model.runtime_plan
-    if plan is not None:
-        if plan.request_defaults.values:
-            args["request_defaults"] = plan.request_defaults.to_json_value()
-        args["dialect"] = plan.dialect_id
-    return args
+def model_request_args(model: EvalSubject) -> JSONValue:
+    """A subject's resolved request identity, without its name or endpoint."""
+    return model.request_args()
 
 
-def request_key(*, model: Model, task_args: Mapping[str, JSONValue]) -> str:
+def request_key(*, model: EvalSubject, task_args: Mapping[str, JSONValue]) -> str:
     """Digest what a task asks, the same for every model under one dialect.
 
     :func:`model_request_args` and the task's inference arguments, without the
@@ -662,29 +636,36 @@ def request_key(*, model: Model, task_args: Mapping[str, JSONValue]) -> str:
     the window, numerics and runner keys, so no resume compares it.
     """
     args = model_request_args(model)
-    args.pop("extra", None)
-    params = args.get("params")
-    if isinstance(params, dict):
-        args["params"] = {k: v for k, v in params.items() if k not in _TRANSPORT_KEYS}
+    if isinstance(args, Mapping):
+        args = dict(args)
+        args.pop("extra", None)
+        params = args.get("params")
+        if isinstance(params, Mapping):
+            args["params"] = {
+                k: v for k, v in params.items() if k not in _TRANSPORT_KEYS
+            }
     return digest({"model_args": args, "task_args": dict(task_args)})
 
 
 def inference_identity(
     *,
-    model: Model,
+    model: EvalSubject,
     task_args: Mapping[str, JSONValue],
     runner_keys: Mapping[str, JSONValue],
     context_limit: int | None,
     numerics: Numerics | None = None,
     parsers: Parsers | None = None,
 ) -> InferenceIdentity:
-    """Digest what the candidate is asked, leaving out which model and how served.
+    """Digest the request and any subject identity needed for safe resume.
 
     *context_limit* is its context window in tokens, ``None`` when unknown.
     *numerics* is :func:`served_numerics` and *parsers* :func:`served_parsers`,
     kept beside the digest as values, since a key may be unknown. What was
     actually sent is folded per sample into ``requests`` at the end.
-    ``request_key`` is not part of ``digest``.
+
+    A :class:`Model`'s identity and serving are compared outside this digest.
+    An external :class:`EvalSubject` has no separate model binding, so its
+    stable ``call_key()`` is included. ``request_key`` is not part of ``digest``.
     """
     payload = {
         "model_args": model_request_args(model),
@@ -692,6 +673,8 @@ def inference_identity(
         "runner": {key: runner_keys.get(key) for key in INFERENCE_RUNNER_KEYS},
         "context_limit": context_limit,
     }
+    if not isinstance(model, Model):
+        payload["subject"] = model.call_key()
     identity: InferenceIdentity = {
         "digest": digest(payload),
         "request_key": request_key(model=model, task_args=task_args),
@@ -705,7 +688,7 @@ def inference_identity(
 
 def legacy_inference_digest(
     *,
-    model: Model,
+    model: EvalSubject,
     task_args: Mapping[str, JSONValue],
     runner_keys: Mapping[str, JSONValue],
     recipe: Mapping[str, JSONValue] | None,
@@ -716,7 +699,9 @@ def legacy_inference_digest(
     """
     payload = {
         "model_args": model_request_args(model),
-        "engine": model.deployment.engine.engine_id,
+        "engine": model.deployment.engine.engine_id
+        if isinstance(model, Model)
+        else None,
         "task_args": dict(task_args),
         "runner": {key: runner_keys.get(key) for key in INFERENCE_RUNNER_KEYS},
         "recipe": dict(recipe) if recipe is not None else None,

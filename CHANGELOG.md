@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`EvalSubject` for tasks that evaluate a system outside `Model` (#299).** A
+  plugin can declare `requires_model = False`, provide its own subject identity
+  and serving facts, and use `subject_call()` with `RecordingAsyncClient` to
+  record external calls, usage and request parameters. The CLI no longer
+  requires a placeholder model for these tasks; existing `Model` task identities
+  and result schema stay unchanged. External request parameters preserve
+  explicit JSON nulls in shards and request digests across grading-only resumes.
 - **`api_base_env` for inline judge endpoints (#298).** An inline `grader` / `extractor` may name the variable holding its URL, top level or in `args`. Conflicts and an unset or empty variable are refused at plan time. The resolved URL is the binding identity, so a literal `api_base` with the same URL resumes the same outputs; call records add `api_base_env`.
 
 ## [0.17.0] - 2026-11-14

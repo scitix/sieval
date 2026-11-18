@@ -7954,7 +7954,9 @@ class TestModelExtraPlacement:
         model = session.models["m"]
         assert model.extra == {"sequence_wrappers": _WRAPPERS}
         # The inference identity reads ``extra`` from the bound model.
-        assert model_request_args(model)["extra"] == {"sequence_wrappers": _WRAPPERS}
+        arguments = model_request_args(model)
+        assert isinstance(arguments, dict)
+        assert arguments["extra"] == {"sequence_wrappers": _WRAPPERS}
         assert "extra" not in model._kwargs
 
     @pytest.mark.parametrize("native", [False, True], ids=["openai", "sglang-native"])

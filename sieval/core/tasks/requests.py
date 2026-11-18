@@ -21,7 +21,7 @@ from typing import NotRequired, TypedDict
 import anyio
 import anyio.to_thread
 
-from sieval.core.models import Model
+from sieval.core.models import EvalSubject, Model
 from sieval.core.types import JSONValue
 
 from .profiler import ProfileTimingStats, compute_timing_stats
@@ -146,7 +146,7 @@ class TaskRequestLog:
         self,
         root_dir: Path,
         *,
-        subject: Model | None,
+        subject: EvalSubject | None,
         judges: Mapping[str, Model],
         max_bytes: int,
         max_files: int,
@@ -167,8 +167,8 @@ class TaskRequestLog:
         self._roles: dict[str, str] = {}
         self._roles_by_name: dict[str, str] = {}
         if subject is not None:
-            meta = subject.meta()
-            self._roles[call_key(meta)] = "subject"
+            meta = subject.subject_meta()
+            self._roles[subject.call_key()] = "subject"
             self._roles_by_name[str(meta.get("model"))] = "subject"
         for role, judge in sorted(judges.items()):
             meta = judge.meta()
@@ -178,8 +178,10 @@ class TaskRequestLog:
 
     # ── RequestSink ──────────────────────────────────────────────────────────
 
-    def role_of(self, model_meta: Mapping[str, object]) -> str:
-        key = call_key(model_meta)
+    def role_of(
+        self, model_meta: Mapping[str, object], *, key: str | None = None
+    ) -> str:
+        key = call_key(model_meta) if key is None else key
         role = self._resolved.get(key)
         if role is None:
             role = self._roles.get(key) or self._roles_by_name.get(

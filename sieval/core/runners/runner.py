@@ -21,7 +21,7 @@ from loguru import logger
 
 from sieval import __version__
 from sieval.core.datasets import repeat_index_of
-from sieval.core.models import ModelOutput
+from sieval.core.models import Model, ModelOutput
 from sieval.core.models.overflow import (
     CONTEXT_OVERFLOW,
     ContextOverflowError,
@@ -30,7 +30,13 @@ from sieval.core.models.overflow import (
     is_recorded_context_overflow,
     overflow_scope,
 )
-from sieval.core.models.request_log import StageScope, stage_scope, timeout_phase
+from sieval.core.models.request_log import (
+    StageScope,
+    stage_model_calls,
+    stage_scope,
+    timeout_phase,
+)
+from sieval.core.models.subject import EvalSubject, validate_eval_subject
 from sieval.core.runners.barriers import (
     ACTION_STAGE,
     ITERATION_BARRIERS,
@@ -96,6 +102,7 @@ from sieval.core.tasks.run_meta import (
     judge_identities,
     legacy_grader_keys,
     legacy_inference_digest,
+    model_call_key,
     numerics_differences,
     parsers_differences,
     preprocess_key,
@@ -148,6 +155,7 @@ from .stage_resume import (
     recorded_grader,
     recorded_identity,
     recorded_sample_digests,
+    subject_inference_inputs,
     task_preprocess_identity,
 )
 
@@ -582,6 +590,8 @@ class TaskRunner:
         # unknown; refuse it before any work.
         validate_judge_model_ref()
         self._task = task
+        # Setup may resolve or replace the subject; do not read it here.
+        self._resolved_subject: EvalSubject | None = None
         self._config = config or TaskRunnerConfig()
         self._inference_recipe = inference_recipe
         self._context_limit = context_limit
@@ -826,6 +836,38 @@ class TaskRunner:
     def run(self) -> Any:
         return anyio.run(self.arun)
 
+    @property
+    def _subject(self) -> EvalSubject:
+        if self._resolved_subject is not None:
+            return self._resolved_subject
+        # Read-only identity readers may run before setup. Never cache that view.
+        return self._task.subject
+
+    def _resolve_subject(self) -> None:
+        subject = self._task.subject
+        self._resolved_subject = (
+            validate_eval_subject(subject)
+            if isinstance(self._task, Task)
+            else cast(EvalSubject, subject)
+        )
+        inputs = subject_inference_inputs(
+            subject,
+            context_limit=self._context_limit,
+            recipe=self._inference_recipe,
+            stated_serving=self._stated_serving,
+            checkpoint_numerics=self._checkpoint_numerics,
+        )
+        self._context_limit = inputs.context_limit
+        self._inference_recipe = inputs.recipe
+        self._stated_serving = inputs.stated_serving
+        self._checkpoint_numerics = inputs.checkpoint_numerics
+        if not isinstance(subject, Model):
+            # These facts describe the bound Model. An independent subject
+            # supplies its own identity and serving, even if the task uses a Model.
+            self._weights = None
+            self._serving_group = None
+            self._served_context = None
+
     async def arun(self) -> Any:
         """Execute the full task pipeline asynchronously.
 
@@ -840,6 +882,7 @@ class TaskRunner:
         try:
             # 0. Lifecycle Setup
             await self._task.setup()
+            self._resolve_subject()
 
             # Before any identity is written, fast resume's included.
             if self._recorded is not None:
@@ -1165,7 +1208,11 @@ class TaskRunner:
         inference identity equals this run's for the same model. A sample whose
         data or prompt changed was restarted by the plan already.
         """
-        if self._task.context_overflow != "score":
+        if (
+            not self._task.requires_model
+            or not isinstance(self._subject, Model)
+            or self._task.context_overflow != "score"
+        ):
             return
         if self._inference_matches(inference) is not True or self._model_differs():
             return
@@ -1517,7 +1564,7 @@ class TaskRunner:
             judges = {}
         self._request_log = TaskRequestLog(
             self._root_dir,
-            subject=self._task.model,
+            subject=self._subject,
             judges=judges,
             max_bytes=self._config.request_log_max_bytes,
             max_files=self._config.request_log_max_files,
@@ -1525,8 +1572,6 @@ class TaskRunner:
 
     def _stage_scope(self, ctx: TaskContext, action: TaskAction) -> StageScope | None:
         """What a model call made in this stage is recorded against."""
-        if self._request_log is None:
-            return None
         key = action.value
         limiters = {
             "global": self._shared_global_limiter,
@@ -1601,13 +1646,17 @@ class TaskRunner:
         ) -> TaskStageMeta:
             # Handle single `ModelOutput` and `list[ModelOutput]`
             if isinstance(inner, ModelOutput):
-                return build_stage_meta(inner, timing_s=timing_s)
+                return build_stage_meta(
+                    inner, timing_s=timing_s, model_calls=stage_model_calls()
+                )
             elif (
                 isinstance(inner, list)
                 and inner
                 and all(isinstance(item, ModelOutput) for item in inner)
             ):
-                return build_stage_meta(*inner, timing_s=timing_s)
+                return build_stage_meta(
+                    *inner, timing_s=timing_s, model_calls=stage_model_calls()
+                )
             else:
                 # A stage whose value is a judgement record may still have called
                 # a model: an LLM grader runs inside `feedback`, which returns a
@@ -1621,7 +1670,8 @@ class TaskRunner:
                         for output in iter_grader_outputs(inner)
                         if (call := build_model_call_meta_from_mapping(output))
                         is not None
-                    ],
+                    ]
+                    + list(stage_model_calls()),
                 )
 
         def _get_stage_meta_hook(stage: TaskStage) -> TaskStageMetaHook | None:
@@ -1774,7 +1824,11 @@ class TaskRunner:
         declaring ``context_overflow = "fail"`` fails the sample instead, as
         non-retriable.
         """
-        model = self._task.model
+        subject = self._subject
+        if not self._task.requires_model or not isinstance(subject, Model):
+            return await self._task.infer(ctx.preprocess_result, ctx), []
+
+        model = subject
         pre = ctx.preprocess_result
         replay = self._overflow_replays.pop(ctx.sample_id, None)
         if replay is not None:
@@ -2360,6 +2414,8 @@ class TaskRunner:
         test_set = self._task.dataset.test_set
         size = len(test_set) if test_set else 0
         if not (self._resumed_from_existing or self._run_from is not None):
+            if self.setup_unreached is None:
+                self._resolve_subject()
             return {
                 "start": "fresh",
                 "recorded": None,
@@ -2370,6 +2426,9 @@ class TaskRunner:
                 "to_infer": size,
                 "to_grade": size,
             }
+        # A fresh plan needs no identity when setup could not reach a service.
+        # A resume must resolve its subject before comparing recorded inference.
+        self._resolve_subject()
         recorded = self._recorded_dir()
         reusable = (
             await self._reusable_report() if self._resumed_from_existing else None
@@ -2827,7 +2886,10 @@ class TaskRunner:
         )
 
     def _model_name(self) -> str:
-        return self._task.model.meta()["model"]
+        model = self._subject.subject_meta().get("model")
+        if not isinstance(model, str) or not model:
+            raise ValueError("task.subject.subject_meta() must include a model name")
+        return model
 
     def _recorded_model(self) -> str | None:
         model = (self._recorded or {}).get("model")
@@ -2890,7 +2952,7 @@ class TaskRunner:
     def _inference_identity(self) -> InferenceIdentity | None:
         try:
             return inference_identity(
-                model=self._task.model,
+                model=self._subject,
                 task_args=self._task.inference_args(),
                 runner_keys=self._runner_keys(),
                 context_limit=self._context_limit,
@@ -2910,7 +2972,7 @@ class TaskRunner:
         when the model's arguments cannot be read."""
         try:
             return request_key(
-                model=self._task.model, task_args=self._task.inference_args()
+                model=self._subject, task_args=self._task.inference_args()
             )
         except (TypeError, ValueError, AttributeError) as exc:
             logger.warning("Request key unavailable: {}", exc)
@@ -2926,7 +2988,7 @@ class TaskRunner:
             return None
         try:
             return legacy_inference_digest(
-                model=self._task.model,
+                model=self._subject,
                 task_args=self._task.inference_args(),
                 runner_keys=self._runner_keys(),
                 recipe=self._inference_recipe,
@@ -2953,8 +3015,11 @@ class TaskRunner:
 
     def _serving(self) -> ServingFingerprint | None:
         try:
+            subject = self._subject
+            if not isinstance(subject, Model):
+                return subject.serving()
             return serving_fingerprint(
-                self._task.model,
+                subject,
                 self._inference_recipe,
                 self._stated_serving,
                 group=self._serving_group,
@@ -3090,7 +3155,7 @@ class TaskRunner:
             except (TypeError, ValueError, AttributeError) as exc:
                 logger.warning("Judge models unavailable: {}", exc)
                 judges = {}
-            candidate = call_key(self._task.model.meta())
+            candidate = self._subject.call_key()
             for role, model in judges.items():
                 key = call_key(model.meta())
                 # A judge configured exactly like the candidate is the same
@@ -3102,7 +3167,10 @@ class TaskRunner:
             reported = call.get("response_model")
             if not isinstance(model, dict) or not isinstance(reported, str):
                 continue
-            for role in self._judge_roles.get(call_key(model), ()):
+            key = model_call_key(call)
+            if key is None:
+                continue
+            for role in self._judge_roles.get(key, ()):
                 if reported:
                     self._judge_versions.setdefault(role, reported)
 
@@ -3154,7 +3222,7 @@ class TaskRunner:
         without its ``model_calls`` on record (a resume of a ``record_meta=False``
         run, or a call the dialect did not echo) is unknown, and so is the stage.
         """
-        candidate = call_key(self._task.model.meta())
+        candidate = self._subject.call_key()
         entries = []
         for ctx in self._contexts.values():
             calls = [
