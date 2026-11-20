@@ -86,6 +86,7 @@ from .request_log import (
     request_timeout_scope,
     request_timeout_seconds,
 )
+from .subject import ServingFingerprint, SubjectMeta, subject_call_key
 
 
 class ModelQuotaSnapshot(TypedDict):
@@ -687,6 +688,41 @@ class Model:
         if self._extra:
             result["extra"] = dict(self._extra)
         return result
+
+    def subject_meta(self) -> SubjectMeta:
+        """Return this model's existing persisted identity as an eval subject."""
+
+        return cast(SubjectMeta, self.meta())
+
+    def call_key(self) -> str:
+        """Return the same stable key used by request-digest reconciliation."""
+
+        return subject_call_key(self.subject_meta())
+
+    def request_args(self) -> JSONValue:
+        """Return the resolved request arguments used in inference identity."""
+
+        meta = self.meta()
+        args: dict[str, JSONValue] = {"params": dict(meta["default_params"])}
+        if "extra" in meta:
+            args["extra"] = dict(meta["extra"])
+        plan = self.runtime_plan
+        if plan is not None:
+            if plan.request_defaults.values:
+                args["request_defaults"] = plan.request_defaults.to_json_value()
+            args["dialect"] = plan.dialect_id
+        return args
+
+    def serving(self) -> ServingFingerprint:
+        """Return the deployment facts; the runner adds run-specific serving data."""
+
+        deployment = self.deployment
+        return {
+            "engine": deployment.engine.engine_id,
+            "engine_version": deployment.facts.engine_version,
+            "launch": "external" if deployment.deployment_id is None else "in_run",
+            "recipe": None,
+        }
 
     async def arun(self, req: Request) -> Response:
         """Execute the fixed pre-I/O audit, dialect call, and provenance flow."""

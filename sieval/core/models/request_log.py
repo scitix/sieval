@@ -35,8 +35,11 @@ from openai import DefaultAsyncHttpxClient
 
 from sieval.core.types import JSONValue
 
+from ._legacy_bridge import ModelCallMeta
+from ._shared import thaw_json_mapping
 from .ir import UsageStats
 from .overflow import CONTEXT_OVERFLOW, context_overflow_message
+from .subject import EvalSubject, SubjectMeta
 
 #: Headers a provider may name its request id under, in lookup order.
 REQUEST_ID_HEADERS = ("x-request-id", "request-id", "x-amzn-requestid")
@@ -125,7 +128,9 @@ def _retry_after_s(headers: httpx.Headers) -> float | None:
 class RequestSink(Protocol):
     """Where a run's attempt records go."""
 
-    def role_of(self, model_meta: Mapping[str, object]) -> str:
+    def role_of(
+        self, model_meta: Mapping[str, object], *, key: str | None = None
+    ) -> str:
         """``subject``, a judge role, or ``unknown``."""
         ...
 
@@ -158,7 +163,7 @@ def limiter_snapshot(limiter: LimiterLoad) -> dict[str, JSONValue]:
 class StageScope:
     """One stage of one sample, as the runner entered it."""
 
-    sink: RequestSink
+    sink: RequestSink | None
     task: str
     run: str | None
     stage: str
@@ -170,6 +175,13 @@ class StageScope:
     #: The run's ``time.monotonic()`` start, the base of ``offset_s``.
     run_start: float
     _calls: int = 0
+    _model_calls: dict[int, ModelCallMeta] = field(default_factory=dict)
+
+    @property
+    def model_calls(self) -> list[ModelCallMeta]:
+        """Completed calls in entry order, independent of response timing."""
+
+        return [self._model_calls[index] for index in sorted(self._model_calls)]
 
     def next_call(self) -> int:
         self._calls += 1
@@ -219,8 +231,39 @@ class CallScope:
     limiters: Mapping[str, LimiterLoad]
     entered: float
     queue_s: float | None = None
-    usage: UsageStats | None = None
+    usage: UsageStats | Mapping[str, JSONValue] | None = None
+    call_meta_model: SubjectMeta | None = None
+    call_meta_key: str | None = None
+    model_call: ModelCallMeta | None = None
     attempts: list[_Attempt] = field(default_factory=list)
+
+    def record(
+        self,
+        *,
+        usage: UsageStats | Mapping[str, JSONValue] | None = None,
+        request_params: Mapping[str, JSONValue] | None = None,
+        response_model: str | None = None,
+    ) -> None:
+        """Attach the subject call's result metadata for stage records and profiling."""
+
+        if self.call_meta_model is None:
+            raise RuntimeError("call.record() is available only inside subject_call()")
+        if self.model_call is not None:
+            raise RuntimeError("call.record() may be called only once per subject call")
+        model_call: ModelCallMeta = {"model": dict(self.call_meta_model)}
+        if self.call_meta_key is not None:
+            model_call["call_key"] = self.call_meta_key
+        normalized_usage = _usage_json(usage)
+        if normalized_usage is not None:
+            model_call["usage"] = normalized_usage
+            self.usage = normalized_usage
+        if request_params is not None:
+            model_call["request_params"] = thaw_json_mapping(
+                request_params, "request_params"
+            )
+        if response_model is not None:
+            model_call["response_model"] = response_model
+        self.model_call = model_call
 
     def mark_context_overflow(self, exc: BaseException) -> None:
         """Label the last attempt when *exc* refused the prompt as too long.
@@ -259,11 +302,7 @@ class CallScope:
 
     def lines(self) -> Iterator[dict[str, JSONValue]]:
         stage = self.stage
-        usage = (
-            {k: v for k, v in asdict(self.usage).items() if v is not None}
-            if self.usage is not None
-            else None
-        )
+        usage = _usage_json(self.usage)
         last = len(self.attempts)
         for index, attempt in enumerate(self.attempts):
             ended = attempt.ended if attempt.ended is not None else attempt.started
@@ -312,6 +351,16 @@ class CallScope:
                 "usage": usage if index == last - 1 and attempt.ok() else None,
                 "in_flight": attempt.in_flight,
             }
+
+
+def _usage_json(
+    usage: UsageStats | Mapping[str, JSONValue] | None,
+) -> dict[str, JSONValue] | None:
+    if usage is None:
+        return None
+    if isinstance(usage, UsageStats):
+        return {key: value for key, value in asdict(usage).items() if value is not None}
+    return {key: value for key, value in usage.items() if value is not None}
 
 
 _STAGE: contextvars.ContextVar[StageScope | None] = contextvars.ContextVar(
@@ -383,6 +432,8 @@ def observe_call(
     model: Mapping[str, JSONValue],
     n: int,
     limiters: Mapping[str, LimiterLoad],
+    call_meta_model: SubjectMeta | None = None,
+    call_meta_key: str | None = None,
 ) -> Iterator[CallScope | None]:
     """Open one call in the current stage; ``None`` outside a run.
 
@@ -390,10 +441,17 @@ def observe_call(
     """
 
     stage = _STAGE.get()
-    if stage is None:
+    if stage is None or (stage.sink is None and call_meta_model is None):
         yield None
         return
-    role = stage.sink.role_of(model_meta())
+    metadata = model_meta()
+    role = "unknown"
+    if stage.sink is not None:
+        role = (
+            stage.sink.role_of(metadata)
+            if call_meta_key is None
+            else stage.sink.role_of(metadata, key=call_meta_key)
+        )
     call = CallScope(
         stage=stage,
         call=stage.next_call(),
@@ -404,6 +462,8 @@ def observe_call(
         n=n,
         limiters=limiters,
         entered=time.monotonic(),
+        call_meta_model=call_meta_model,
+        call_meta_key=call_meta_key,
     )
     token = _CALL.set(call)
     try:
@@ -416,8 +476,72 @@ def observe_call(
         # A streamed body never closed ends with its call.
         for attempt in call.attempts:
             attempt.end()
-        for line in call.lines():
-            stage.sink.record(line)
+        if call.model_call is not None:
+            stage._model_calls[call.call] = call.model_call
+        if stage.sink is not None:
+            for line in call.lines():
+                stage.sink.record(line)
+
+
+@dataclass(frozen=True)
+class SubjectCall:
+    """Metadata hook for one external subject call."""
+
+    _scope: CallScope | None = field(repr=False)
+
+    def record(
+        self,
+        *,
+        usage: UsageStats | Mapping[str, JSONValue] | None = None,
+        request_params: Mapping[str, JSONValue] | None = None,
+        response_model: str | None = None,
+    ) -> None:
+        """Record a completed subject call when a SiEval stage is active."""
+
+        if self._scope is not None:
+            self._scope.record(
+                usage=usage,
+                request_params=request_params,
+                response_model=response_model,
+            )
+
+
+@contextmanager
+def subject_call(subject: EvalSubject, *, n: int = 1) -> Iterator[SubjectCall]:
+    """Record one external subject call inside the runner's current stage.
+
+    The task/stage limiters are already held by the runner. HTTP retries and
+    attempts are recorded by a :class:`RecordingAsyncClient` used in this scope.
+    """
+
+    if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+        raise ValueError("n must be an integer >= 1")
+    metadata = subject.subject_meta()
+    name = metadata.get("model")
+    if not isinstance(name, str) or not name:
+        raise TypeError("subject.subject_meta() must include a non-empty 'model' name")
+    key = subject.call_key()
+    if not isinstance(key, str) or not key:
+        raise TypeError("subject.call_key() must return a non-empty string")
+
+    with observe_call(
+        model_meta=lambda: metadata,
+        model={"id": name},
+        n=n,
+        limiters={},
+        call_meta_model=metadata,
+        call_meta_key=key,
+    ) as scope:
+        if scope is not None:
+            scope.admitted()
+        yield SubjectCall(scope)
+
+
+def stage_model_calls() -> tuple[ModelCallMeta, ...]:
+    """Return subject call metadata recorded in the current stage scope."""
+
+    stage = _STAGE.get()
+    return tuple(stage.model_calls) if stage is not None else ()
 
 
 def _iso(epoch: float) -> str:

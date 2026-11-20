@@ -43,6 +43,36 @@ def _log(tmp_path: Path, **kwargs: int) -> TaskRequestLog:
 
 
 class TestRoles:
+    def test_external_subject_key_distinguishes_a_judge_with_identical_metadata(
+        self, tmp_path: Path
+    ) -> None:
+        judge = ChatModel(api_key="k", model="same")
+
+        class ExternalSubject:
+            def subject_meta(self):
+                return judge.subject_meta()
+
+            def call_key(self):
+                return "external-service:v1"
+
+            def request_args(self):
+                return {}
+
+            def serving(self):
+                return None
+
+        subject = ExternalSubject()
+        log = TaskRequestLog(
+            tmp_path,
+            subject=subject,
+            judges={"grader": judge},
+            max_bytes=1,
+            max_files=0,
+        )
+        assert log.role_of(judge.meta()) == "grader"
+        assert log.role_of(subject.subject_meta(), key=subject.call_key()) == "subject"
+        assert log.role_of(judge.meta()) == "grader"
+
     def test_subject_and_judges_are_told_apart_by_call_key(
         self, tmp_path: Path
     ) -> None:

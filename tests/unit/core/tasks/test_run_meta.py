@@ -225,6 +225,16 @@ class TestRequestDigest:
         key = call_key(self.CANDIDATE)
         assert request_digest([self._call(self.CANDIDATE, x=object())], key) is None
 
+    def test_explicit_subject_call_key_takes_precedence_over_model_metadata(self):
+        subject_call = {
+            "model": self.JUDGE,
+            "call_key": "external:v1",
+            "request_params": {"question": "q"},
+        }
+
+        assert request_digest([subject_call], "external:v1") is not None
+        assert request_digest([subject_call], call_key(self.JUDGE)) is None
+
 
 class TestRequestDefinition:
     """Only the body and a stream flag define a request, for every dialect."""

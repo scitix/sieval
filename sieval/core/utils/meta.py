@@ -1,7 +1,11 @@
-"""Helpers for building model-call and stage metadata dicts."""
+"""Helpers for building model-call and stage metadata dicts.
+
+AI-Generated Code - GPT-6.1 (OpenAI)
+"""
 
 import time
 from collections.abc import Iterable, Mapping
+from typing import cast
 
 from packaging.version import InvalidVersion, Version
 
@@ -14,6 +18,7 @@ from sieval.core.models import (
 )
 from sieval.core.tasks.consts import TaskStage
 from sieval.core.tasks.context import TaskStageMeta
+from sieval.core.types import JSONValue
 
 #: Google candidate policy stops. ``promptFeedback.blockReason`` can use the
 #: same spellings, so these count only with a candidate source.
@@ -71,7 +76,7 @@ def build_model_call_meta(output: ModelOutput) -> ModelCallMeta:
     """Extract a ModelCallMeta dict from a ModelOutput."""
     model_call: ModelCallMeta = {"model": output.model}
     if output.usage:
-        model_call["usage"] = output.usage
+        model_call["usage"] = cast(Mapping[str, JSONValue], output.usage)
     if output.request_params is not None:
         model_call["request_params"] = dict(output.request_params)
     if output.finish_reasons:
@@ -101,11 +106,14 @@ def build_model_call_meta_from_mapping(data: Mapping) -> ModelCallMeta | None:
     model = data.get("model")
     if not isinstance(model, Mapping):
         return None
-    call: ModelCallMeta = {"model": dict(model)}  # type: ignore[typeddict-item]
+    call: ModelCallMeta = {"model": dict(model)}
+    key = data.get("call_key")
+    if isinstance(key, str):
+        call["call_key"] = key
     for key in ("usage", "request_params"):
         value = data.get(key)
         if isinstance(value, Mapping):
-            call[key] = dict(value)  # type: ignore[literal-required]
+            call[key] = dict(value)
     finish_reasons = data.get("finish_reasons")
     if finish_reasons:
         call["finish_reasons"] = list(finish_reasons)

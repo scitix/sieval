@@ -4,6 +4,7 @@ Tests for sieval.core.tasks.context — state machine, serialization, snapshot.
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -204,6 +205,40 @@ class TestTaskContextSerialize:
         # make copy 0 indistinguishable from an unrepeated row.
         d = replace(base_context, repeat_index=0).serialize(store_type_metadata=False)
         assert d["repeat_index"] == 0
+
+    @pytest.mark.parametrize("snapshot", [False, True])
+    @pytest.mark.parametrize("store_type_metadata", [False, True])
+    def test_external_request_nulls_survive_repeated_serialization(
+        self, base_context, snapshot, store_type_metadata
+    ):
+        params = {"filter": None, "nested": [{"value": None}], "count": 0}
+        meta = {
+            "model_calls": [
+                {
+                    "model": {"model": "service"},
+                    "call_key": "service:v1",
+                    "request_params": params,
+                },
+                {
+                    "model": {"model": "legacy"},
+                    "request_params": {"filter": None},
+                },
+            ],
+            "extra": {"optional": None},
+        }
+        for _ in range(2):
+            ctx = base_context.to_inferred("answer", meta=meta)
+            if snapshot:
+                ctx = ctx.make_snapshot()
+            stored = json.loads(json.dumps(ctx.serialize(store_type_metadata)))
+            meta = (
+                stored["meta_last"]
+                if snapshot
+                else stored["stage_meta"]["inferred"][-1]
+            )
+            assert meta["model_calls"][0]["request_params"] == params
+            assert meta["model_calls"][1]["request_params"] == {}
+            assert meta["extra"] == {}
 
 
 class TestTaskContextSnapshot:

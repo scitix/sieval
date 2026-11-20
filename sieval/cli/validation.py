@@ -32,6 +32,7 @@ from sieval.cli.resolution import (
     model_config_extra,
     resolve_dataset_class,
     resolve_task_class,
+    task_requires_model,
     validate_configured_engine_id,
     validate_task_config_args,
 )
@@ -550,6 +551,14 @@ def _validate_tasks(cfg: dict, result: ValidationResult) -> None:
         class_spec = tcfg.get("class") or tcfg.get("task") or tcfg.get("task_class")
         if not class_spec:
             result.errors.append(f"Task '{name}': missing required field 'class'")
+        task_class: type | None = None
+        if isinstance(class_spec, str) and class_spec:
+            try:
+                resolved_class = resolve_task_class(class_spec)
+                if isinstance(resolved_class, type):
+                    task_class = resolved_class
+            except Exception:
+                task_class = None
 
         ds_ref = tcfg.get("dataset")
         if isinstance(ds_ref, str):
@@ -574,16 +583,33 @@ def _validate_tasks(cfg: dict, result: ValidationResult) -> None:
             result.errors.append(f"Task '{name}': 'dataset' must be a string or dict")
 
         model_ref = tcfg.get("model")
+        try:
+            requires_model = (
+                task_requires_model(task_class) if task_class is not None else True
+            )
+        except TypeError as exc:
+            result.errors.append(str(exc))
+            requires_model = True
         if model_ref is not None:
             if not isinstance(model_ref, str):
                 result.errors.append(f"Task '{name}': 'model' must be a string")
             elif model_ref not in models:
                 result.errors.append(f"Task '{name}': model '{model_ref}' not found")
-        elif not models:
+            elif not requires_model:
+                result.errors.append(
+                    f"Task '{name}' declares requires_model=False and cannot "
+                    "configure 'model'"
+                )
+        elif requires_model and not models:
             result.errors.append(f"Task '{name}': no models defined in config")
-        elif len(models) > 1:
+        elif requires_model and len(models) > 1:
             result.errors.append(
                 f"Task '{name}': 'model' required when multiple models are defined"
+            )
+        elif not requires_model:
+            result.warnings.append(
+                f"Task '{name}' declares requires_model=False; it must provide its "
+                "own EvalSubject, and model capability reconciliation is skipped"
             )
 
         task_args = tcfg.get("args")
@@ -598,7 +624,9 @@ def _validate_tasks(cfg: dict, result: ValidationResult) -> None:
                 task_class: type | None = None
                 if isinstance(class_spec, str) and class_spec:
                     try:
-                        task_class = resolve_task_class(class_spec)
+                        resolved_class = resolve_task_class(class_spec)
+                        if isinstance(resolved_class, type):
+                            task_class = resolved_class
                     except Exception:
                         task_class = None
                 try:
@@ -1048,13 +1076,28 @@ def _capability_reconcile_check(
             }
         ]
 
+    detail = (
+        f"{len(result.binding_plans)} bindings, "
+        f"{len(result.deployment_plans)} deployment roots"
+    )
+    task_configs = session.config.get("tasks", {})
+    model_less_tasks = sorted(
+        name
+        for name, task_config in task_configs.items()
+        if isinstance(task_config, Mapping)
+        and isinstance(task_config.get("class"), str)
+        and not task_requires_model(resolve_task_class(task_config["class"]))
+    )
+    if model_less_tasks:
+        detail += (
+            "; no candidate model for "
+            + ", ".join(model_less_tasks)
+            + " (EvalSubject protocol is task-owned)"
+        )
     check: DryRunCheck = {
         "name": "capability_reconcile",
         "ok": True,
-        "detail": (
-            f"{len(result.binding_plans)} bindings, "
-            f"{len(result.deployment_plans)} deployment roots"
-        ),
+        "detail": detail,
         "plan": result.to_json_value(),
     }
     warnings = [

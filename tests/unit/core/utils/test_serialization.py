@@ -52,6 +52,11 @@ class SlotsOnly:
 
 
 class TestObjToDict:
+    def test_explicit_preserve_none_keeps_nested_json_nulls(self):
+        value = {"filter": None, "nested": [{"value": None}], "count": 0}
+        assert obj_to_dict(value, False, preserve_none=True) == value
+        assert obj_to_dict(value, False) == {"nested": [{}], "count": 0}
+
     def test_primitives_and_basic_collections(self):
         assert obj_to_dict(None, False) is None
         assert obj_to_dict(42, False) == 42

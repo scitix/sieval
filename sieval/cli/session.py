@@ -56,6 +56,7 @@ from sieval.cli.resolution import (
     resolve_dataset_class,
     resolve_key_function,
     resolve_task_class,
+    task_requires_model,
     validate_configured_engine_id,
     validate_model_type_dialect,
     validate_named_config_map,
@@ -1412,13 +1413,21 @@ def _stage_config(cfg: Mapping[str, Any], task_name: str, stage: str) -> object:
     """
     tasks = cfg.get("tasks") or {}
     task = tasks.get(task_name) or {}
+    task_class = None
+    task_spec = task.get("class")
+    if isinstance(task_spec, str) and task_spec:
+        try:
+            task_class = resolve_task_class(task_spec)
+        except (ImportError, AttributeError):
+            task_class = None
+    requires_model = task_requires_model(task_class) if task_class is not None else True
     models = cfg.get("models") or {}
     datasets = cfg.get("datasets") or {}
     if stage == "data":
         ref = task.get("dataset")
         return datasets.get(ref) if isinstance(ref, str) else ref
     model_name = task.get("model")
-    if model_name is None and len(models) == 1:
+    if requires_model and model_name is None and len(models) == 1:
         model_name = next(iter(models))
     chain = []
     seen: set[str] = set()
@@ -2083,16 +2092,25 @@ class EvalSession:
         task_name: str,
         task_cfg: Mapping[str, Any],
         models_cfg: Mapping[str, dict[str, Any]],
-    ) -> str:
+        *,
+        task_class: type[Any] | None = None,
+    ) -> str | None:
         model_ref = task_cfg.get("model")
         if model_ref is not None and not isinstance(model_ref, str):
             raise ValueError(f"Task '{task_name}': 'model' must be a string reference")
         if model_ref:
+            if task_class is not None and not task_requires_model(task_class):
+                raise ValueError(
+                    f"Task '{task_name}' declares requires_model=False and cannot "
+                    "configure 'model'"
+                )
             if model_ref not in models_cfg:
                 raise ValueError(
                     f"Task '{task_name}' references unknown model '{model_ref}'"
                 )
             return model_ref
+        if task_class is not None and not task_requires_model(task_class):
+            return None
         if len(models_cfg) == 1:
             return next(iter(models_cfg))
         if not models_cfg:
@@ -2342,7 +2360,7 @@ class EvalSession:
         task_name: str,
         task_cfg: Mapping[str, Any],
         task_class: type[Any],
-        candidate: NamedModelBinding,
+        candidate: NamedModelBinding | None,
         named: Mapping[str, NamedModelBinding] | None = None,
     ) -> RequirementContext:
         """*named* holds a binding per ``models:`` entry: a role that names one
@@ -2356,14 +2374,21 @@ class EvalSession:
             task_class=task_class,
         )
         json_task_args = dict(raw_task_args)
-        bindings: dict[str, NormalizedModelBinding] = {"candidate": candidate}
-        sources: dict[str, object] = {"candidate": candidate.config_name}
+        bindings: dict[str, NormalizedModelBinding] = {}
+        sources: dict[str, object] = {}
+        if candidate is not None:
+            bindings["candidate"] = candidate
+            sources["candidate"] = candidate.config_name
 
         for role in TASK_MODEL_ROLES:
             role_source = json_task_args.get(role)
             if is_task_model_role_sentinel(role, role_source):
                 # Keep the sentinel in task_args. Task construction resolves it
                 # against the candidate only after task infer_args are applied.
+                if candidate is None:
+                    raise ValueError(
+                        f"Task '{task_name}' {role}: 'self' requires a candidate model"
+                    )
                 continue
             json_task_args.pop(role, None)
             if role_source is None:
@@ -3378,14 +3403,22 @@ class EvalSession:
             check_service_names(declared, f"Task '{task_name}'")
             self._required_services |= declared
             self._task_services[task_name] = declared
-            model_name = self._task_model_config_name(task_name, task_cfg, models_cfg)
+            model_name = self._task_model_config_name(
+                task_name, task_cfg, models_cfg, task_class=task_class
+            )
+            candidate = named_by_config[model_name] if model_name is not None else None
             context = self._requirement_context_for_task(
                 task_name,
                 task_cfg,
                 task_class,
-                named_by_config[model_name],
+                candidate,
                 named_by_config,
             )
+            if candidate is None and context.infer_args:
+                raise ValueError(
+                    f"Task '{task_name}' declares requires_model=False and cannot "
+                    "configure 'infer_args'"
+                )
             self._task_requirement_contexts[task_name] = context
             self._check_python_requires(task_name, task_class, context)
             requirement_hook = getattr(task_class, "model_requirements_for", None)
@@ -3790,7 +3823,7 @@ class EvalSession:
 
             candidate = context.model_bindings.get("candidate")
             if candidate is None:
-                raise ValueError(f"Task '{task_name}' has no candidate binding")
+                continue
             if isinstance(candidate, ExternalModelBinding):
                 raise ValueError(
                     f"Task '{task_name}' candidate must be a named or inline binding"
@@ -4995,22 +5028,24 @@ class EvalSession:
                     f"Task '{task_name}' has no frozen requirement context"
                 ) from exc
             candidate = context.model_bindings.get("candidate")
-            if not isinstance(candidate, NamedModelBinding):
-                raise RuntimeError(
-                    f"Task '{task_name}' has no frozen named candidate binding"
-                )
-            try:
-                model = self.models[candidate.config_name]
-            except KeyError as exc:
-                raise RuntimeError(
-                    f"Task '{task_name}' frozen candidate model "
-                    f"'{candidate.config_name}' was not bound"
-                ) from exc
+            model: Model | None = None
+            if candidate is not None:
+                if not isinstance(candidate, NamedModelBinding):
+                    raise RuntimeError(
+                        f"Task '{task_name}' has no frozen named candidate binding"
+                    )
+                try:
+                    model = self.models[candidate.config_name]
+                except KeyError as exc:
+                    raise RuntimeError(
+                        f"Task '{task_name}' frozen candidate model "
+                        f"'{candidate.config_name}' was not bound"
+                    ) from exc
 
             infer_args = dict(context.infer_args)
-            if infer_args:
+            if infer_args and model is not None:
                 model = model.with_args(**cast(dict[str, Any], infer_args))
-            if self.deterministic:
+            if self.deterministic and model is not None:
                 # The frozen candidate decision already folded in this task's
                 # ``infer_args.seed``, so it is the single authority for the
                 # final seed and overrides whatever landed above.
@@ -5051,26 +5086,47 @@ class EvalSession:
             self.runner.add_task(
                 task,
                 config=runner_config,
-                inference_recipe=self._inference_recipe_for(candidate.config_name),
-                context_limit=self._context_limit_for(candidate.config_name),
-                weights=self._weights_for(candidate.config_name),
+                inference_recipe=(
+                    self._inference_recipe_for(candidate.config_name)
+                    if isinstance(candidate, NamedModelBinding)
+                    else None
+                ),
+                context_limit=(
+                    self._context_limit_for(candidate.config_name)
+                    if isinstance(candidate, NamedModelBinding)
+                    else None
+                ),
+                weights=(
+                    self._weights_for(candidate.config_name)
+                    if isinstance(candidate, NamedModelBinding)
+                    else None
+                ),
                 judge_weights=self._judge_weights_for(task_name),
                 lifecycles={
                     name: dict(life) for name, life in self._serving.lifecycles.items()
                 }
                 or None,
-                stated_serving=self._stated_serving_for(candidate.config_name),
-                checkpoint_numerics=self._checkpoint_numerics_for(
-                    candidate.config_name
+                stated_serving=(
+                    self._stated_serving_for(candidate.config_name)
+                    if isinstance(candidate, NamedModelBinding)
+                    else None
+                ),
+                checkpoint_numerics=(
+                    self._checkpoint_numerics_for(candidate.config_name)
+                    if isinstance(candidate, NamedModelBinding)
+                    else None
                 ),
                 resume_config_diff=list(self._resume_config_diff),
                 legacy_match=self._legacy_match_for(task_name, runner_config),
                 unserved_candidate=(
-                    self._root_model(candidate.config_name) in self._unlaunched_roots
+                    isinstance(candidate, NamedModelBinding)
+                    and self._root_model(candidate.config_name)
+                    in self._unlaunched_roots
                 ),
                 serving_group=(
                     self._serving.group
-                    if self._inference_recipe_for(candidate.config_name) is not None
+                    if isinstance(candidate, NamedModelBinding)
+                    and self._inference_recipe_for(candidate.config_name) is not None
                     else None
                 ),
                 engine_guard=self._engine_guard_for(task_name, context),
