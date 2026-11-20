@@ -93,9 +93,11 @@ subject before comparing the recorded inference identity.
 
 A task may bind a helper `Model` and provide an independent subject. Weights,
 context windows, numerics and parsers from that binding describe the helper;
-the subject supplies the measured system's identity and serving facts. Include
-any helper details that affect inference in the subject's `request_args()` or
-the task's `inference_args()`.
+the subject supplies the measured system's identity and serving facts. The
+helper's resolved request arguments are included in the inference identity, so
+changing parameters of a helper used during `infer()` refuses resume. Other
+helper details that affect inference belong in the subject's `request_args()`
+or the task's `inference_args()`.
 Both `TaskRunner.plan_run()` and `task_resume_plan()` apply this rule. Call
 `task_resume_plan()` after setup has resolved the subject.
 

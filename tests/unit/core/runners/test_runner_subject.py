@@ -1,6 +1,6 @@
 """Runner identity must describe the subject resolved by task setup.
 
-AI-Generated Code - GPT-6 (OpenAI)
+AI-Generated Code - GPT-6.1 (OpenAI)
 """
 
 import json
@@ -269,6 +269,53 @@ async def test_independent_subject_resume_ignores_helper_context_changes(tmp_pat
             context_limit=16384,
         )
         assert (await runner.plan_run())["start"] == "reuse"
+    finally:
+        await model.aclose()
+
+
+@pytest.mark.anyio
+async def test_independent_subject_resume_compares_helper_request_args(tmp_path):
+    model = MockChatModel()
+    dataset = MockDataset(samples=[{"question": "q", "answer": "v1"}])
+    try:
+        await TaskRunner(
+            _ModelWithSubjectTask(dataset, model.with_args(temperature=0.1)),
+            make_config(tmp_path),
+        ).arun()
+        runner = TaskRunner(
+            _ModelWithSubjectTask(dataset, model.with_args(temperature=0.9)),
+            make_config(tmp_path, resume=True),
+        )
+        with pytest.raises(StageResumeError, match="stage `inference` differs"):
+            await runner.plan_run()
+    finally:
+        await model.aclose()
+
+
+@pytest.mark.anyio
+async def test_public_resume_plan_compares_helper_request_args(tmp_path):
+    model = MockChatModel()
+    dataset = MockDataset(samples=[{"question": "q", "answer": "v1"}])
+    try:
+        initial = _ModelWithSubjectTask(dataset, model.with_args(temperature=0.1))
+        await TaskRunner(initial, make_config(tmp_path)).arun()
+        recorded = json.loads((tmp_path / "results" / "meta.json").read_text())
+        changed = _ModelWithSubjectTask(dataset, model.with_args(temperature=0.9))
+        await changed.setup()
+        try:
+            config = make_config(tmp_path, resume=True)
+            plan = task_resume_plan(
+                changed,
+                recorded,
+                runner_keys={
+                    "deterministic": config.deterministic,
+                    "max_iterations": config.max_iterations,
+                    "max_retries": config.max_retries,
+                },
+            )
+        finally:
+            await changed.shutdown()
+        assert plan["refused"] == "inference"
     finally:
         await model.aclose()
 

@@ -354,6 +354,9 @@ def task_resume_plan(
         checkpoint_numerics=checkpoint_numerics,
     )
     task_cls = type(task)
+    helper = (
+        task.model if task.requires_model and not isinstance(subject, Model) else None
+    )
     judges = judge_identities(task.judge_models(), task.judge_prompts())
     services = service_identities(task_cls.services)
     args = task.grader_args()
@@ -368,6 +371,7 @@ def task_resume_plan(
             task_args=task.inference_args(),
             runner_keys=runner_keys,
             context_limit=inputs.context_limit,
+            helper_model=helper,
             numerics=served_numerics(
                 inputs.recipe, inputs.stated_serving, inputs.checkpoint_numerics
             ),

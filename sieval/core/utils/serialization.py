@@ -1,6 +1,6 @@
 """Serialization for stage values and recorded JSON data.
 
-AI-Generated Code - GPT-6 (OpenAI)
+AI-Generated Code - GPT-6.1 (OpenAI)
 """
 
 import importlib

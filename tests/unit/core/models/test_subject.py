@@ -1,6 +1,6 @@
 """Contracts for evaluation subject identity.
 
-AI-Generated Code - GPT-6 (OpenAI)
+AI-Generated Code - GPT-6.1 (OpenAI)
 """
 
 from types import MappingProxyType

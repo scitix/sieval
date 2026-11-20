@@ -111,18 +111,6 @@ of another version. See [AGENTS.md](AGENTS.md#result-schema-version).
    type stubs and the registry, then `--check` both — CI fails on a stale `meta/index.json`
 6. Third-party evaluation code goes in `sieval/community/` with proper attribution
 
-## Promoting Plugin Capabilities into Core
-
-Keep a provider-specific capability in a plugin until all of these are true:
-
-1. At least two providers expose matching semantics
-2. The protocol is stable, not alpha or beta
-3. A working plugin consumer exists, with evidence from native provider calls
-
-Below that bar, the plugin route is supported. See the
-[EvalSubject guide](docs/guide/eval-subjects.md) for evaluating a service
-without binding a SiEval `Model`.
-
 ## Submitting Changes
 
 1. Fork the repo and create a feature branch

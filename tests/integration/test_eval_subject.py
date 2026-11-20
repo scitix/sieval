@@ -1,6 +1,6 @@
 """Contract tests for external EvalSubject tasks and model-less CLI runs.
 
-AI-Generated Code - GPT-6 (OpenAI)
+AI-Generated Code - GPT-6.1 (OpenAI)
 """
 
 import json
@@ -426,7 +426,9 @@ def test_fresh_cli_dry_run_rejects_a_missing_subject(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_model_implements_eval_subject_without_changing_model_identity() -> None:
-    model = MockChatModel()
+    # ``canonical_json`` historically accepted extended values in ``extra``.
+    # Keep the EvalSubject bridge byte-identical for those models too.
+    model = MockChatModel(extra={"tags": {"x"}})
     metadata = model.meta()
     legacy_model_args = {"params": dict(metadata["default_params"])}
     if "extra" in metadata:

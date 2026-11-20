@@ -1,6 +1,6 @@
 """Task pipeline state machine: context, stage outputs and ``meta.json`` types.
 
-AI-Generated Code - GPT-6 (OpenAI)
+AI-Generated Code - GPT-6.1 (OpenAI)
 """
 
 from dataclasses import dataclass, field, replace

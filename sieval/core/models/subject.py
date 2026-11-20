@@ -4,11 +4,13 @@ An evaluation subject may be a :class:`Model` called by SiEval, or an external
 system that a task calls through its own client. Its request arguments must
 include every stable subject detail whose change should invalidate inference.
 
-AI-Generated Code - GPT-6 (OpenAI)
+AI-Generated Code - GPT-6.1 (OpenAI)
 """
 
+import hashlib
 import json
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Literal, NotRequired, Protocol, TypedDict, runtime_checkable
 
 from sieval.core.types import JSONValue
@@ -17,7 +19,13 @@ type SubjectMeta = Mapping[str, JSONValue]
 
 
 class ServingFingerprint(TypedDict):
-    """How one run served an evaluation subject, when serving is known."""
+    """How one run served an evaluation subject, when serving is known.
+
+    ``recipe`` is the serving plan of an engine launched by the run, without
+    its checkpoint or host. ``stated`` carries caller-declared endpoint facts.
+    ``group`` identifies the serving group, ``lifecycles`` records launched
+    model lifecycles, and ``context`` records the served context window.
+    """
 
     engine: str
     engine_version: str | None
@@ -92,13 +100,55 @@ def subject_call_key(meta: Mapping[str, object]) -> str:
         separators=(",", ":"),
         ensure_ascii=True,
         allow_nan=True,
-        default=_mapping_json_value,
+        default=_subject_json_value,
     )
 
 
+def _subject_json_value(value: object) -> object:
+    """Encode the same extended values as the result identity encoder.
+
+    Model call keys are part of the legacy result identity. Keep this encoder
+    compatible with ``canonical_json`` without importing the module that
+    imports this protocol.
+    """
+
+    if isinstance(value, (set, frozenset)):
+        return sorted(_subject_canonical_json(item) for item in value)
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, bytes):
+        return {"__bytes__": hashlib.sha256(value).hexdigest()}
+    if isinstance(value, Mapping):
+        return dict(value)
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        return tolist()
+    tobytes = getattr(value, "tobytes", None)
+    if callable(tobytes):
+        raw = tobytes()
+        if isinstance(raw, bytes):
+            return {"__bytes__": hashlib.sha256(raw).hexdigest()}
+    if isinstance(value, datetime):
+        return value.isoformat()
+    raise TypeError(f"cannot encode {type(value).__name__} as a subject JSON value")
+
+
 def _mapping_json_value(value: object) -> object:
-    """Normalize a JSONValue Mapping implementation for the stdlib encoder."""
+    """Normalize a JSONValue Mapping implementation for validation."""
 
     if isinstance(value, Mapping):
         return dict(value)
     raise TypeError(f"cannot encode {type(value).__name__} as a subject JSON value")
+
+
+def _subject_canonical_json(value: object) -> str:
+    """Canonical text used when sorting set members in a subject key."""
+
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=True,
+        default=_subject_json_value,
+    )

@@ -716,7 +716,7 @@ class Model:
     def serving(self) -> ServingFingerprint:
         """Return the deployment facts; the runner adds run-specific serving data."""
 
-        deployment = self._deployment
+        deployment = self.deployment
         return {
             "engine": deployment.engine.engine_id,
             "engine_version": deployment.facts.engine_version,

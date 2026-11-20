@@ -653,6 +653,7 @@ def inference_identity(
     task_args: Mapping[str, JSONValue],
     runner_keys: Mapping[str, JSONValue],
     context_limit: int | None,
+    helper_model: Model | None = None,
     numerics: Numerics | None = None,
     parsers: Parsers | None = None,
 ) -> InferenceIdentity:
@@ -675,6 +676,8 @@ def inference_identity(
     }
     if not isinstance(model, Model):
         payload["subject"] = model.call_key()
+    if helper_model is not None:
+        payload["helper_model_args"] = model_request_args(helper_model)
     identity: InferenceIdentity = {
         "digest": digest(payload),
         "request_key": request_key(model=model, task_args=task_args),
@@ -1000,13 +1003,8 @@ def serving_fingerprint(
 ) -> ServingFingerprint:
     """How *model* is served. A *stated* ``engine_version`` fills one the
     deployment did not report."""
-    deployment = model.deployment
-    fingerprint: ServingFingerprint = {
-        "engine": deployment.engine.engine_id,
-        "engine_version": deployment.facts.engine_version,
-        "launch": "external" if deployment.deployment_id is None else "in_run",
-        "recipe": dict(recipe) if recipe is not None else None,
-    }
+    fingerprint: ServingFingerprint = model.serving()
+    fingerprint["recipe"] = dict(recipe) if recipe is not None else None
     if stated:
         fingerprint["stated"] = dict(stated)
         version = stated.get("engine_version")
