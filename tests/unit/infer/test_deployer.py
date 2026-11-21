@@ -1876,3 +1876,131 @@ class TestSglangLoadProbe:
     async def test_no_answer_is_none(self) -> None:
         load, _ = await self._probe({})
         assert load is None
+
+
+#: ``/metrics`` of an SGLang 0.5.13 engine at dp 2 under ``--enable-metrics``
+#: (trimmed): two ranks, three ``realtime_tokens_total`` modes.
+_METRICS = """\
+# HELP sglang:realtime_tokens_total Total number of tokens processed.
+# TYPE sglang:realtime_tokens_total counter
+sglang:realtime_tokens_total{model_name="m",tp_rank="0",mode="prefill_compute"} 1000.0
+sglang:realtime_tokens_total{model_name="m",tp_rank="0",mode="prefill_cache"} 9000.0
+sglang:realtime_tokens_total{model_name="m",tp_rank="0",mode="decode"} 500.0
+sglang:realtime_tokens_total{model_name="m",tp_rank="1",mode="prefill_compute"} 200.0
+sglang:realtime_tokens_total{model_name="m",tp_rank="1",mode="decode"} 300.0
+sglang:prompt_tokens_total{model_name="m"} 7.0
+sglang:generation_tokens_total{model_name="m"} 3.0
+sglang:num_retracted_requests_total{model_name="m",tp_rank="0"} 2.0
+sglang:num_retracted_requests_total{model_name="m",tp_rank="1"} 1.0
+sglang:num_queue_reqs{model_name="m"} 40.0
+vllm:other 5.0
+sglang:bad_value{a="b"} not-a-number
+"""
+
+
+class TestSglangThroughputProbe:
+    @staticmethod
+    async def _probe(routes: dict[str, object]):
+        from unittest.mock import patch as _patch
+
+        import httpx as _httpx
+
+        from sieval.infer.deployer import SglangThroughputProbe
+
+        seen: list[str] = []
+
+        def handler(request: _httpx.Request) -> _httpx.Response:
+            seen.append(request.url.path)
+            body = routes.get(request.url.path)
+            if body is None:
+                return _httpx.Response(404)
+            if isinstance(body, str):
+                return _httpx.Response(200, text=body)
+            return _httpx.Response(200, json=body)
+
+        real = _httpx.AsyncClient
+
+        def client(*_args, **kwargs):
+            return real(transport=_httpx.MockTransport(handler), **kwargs)
+
+        with _patch("sieval.infer.deployer.httpx.AsyncClient", client):
+            probe = SglangThroughputProbe("http://127.0.0.1:30000/v1")
+            try:
+                return await probe(), seen
+            finally:
+                await probe.aclose()
+
+    _LOADS = {
+        "loads": [
+            {"token_usage": 0.3, "max_running_requests": 512, "num_waiting_reqs": 9},
+            {"token_usage": 0.8, "max_running_requests": 512},
+            "x",
+        ]
+    }
+
+    @pytest.mark.anyio
+    async def test_reads_computed_tokens_retractions_and_loads(self) -> None:
+        sample, seen = await self._probe(
+            {"/metrics": _METRICS, "/v1/loads": self._LOADS}
+        )
+        assert sample is not None
+        # prefill_compute + decode over both ranks; cache hits are not work.
+        assert sample.tokens == 1000 + 500 + 200 + 300
+        assert sample.retracted == 3
+        assert sample.token_usage == 0.8
+        assert sample.max_running == 1024
+        assert seen == ["/metrics", "/v1/loads"]
+
+    @pytest.mark.anyio
+    async def test_falls_back_to_finished_request_counters(self) -> None:
+        metrics = "\n".join(
+            line for line in _METRICS.splitlines() if "realtime" not in line
+        )
+        sample, _ = await self._probe({"/metrics": metrics})
+        assert sample is not None
+        assert sample.tokens == 10
+        assert (sample.token_usage, sample.max_running) == (None, None)
+
+    @pytest.mark.anyio
+    async def test_no_metrics_still_reads_loads(self) -> None:
+        # An engine without --enable-metrics: no counters, so the gate
+        # counts tokens from the answers it admitted.
+        sample, _ = await self._probe({"/v1/loads": self._LOADS})
+        assert sample is not None
+        assert (sample.tokens, sample.retracted) == (None, None)
+        assert sample.token_usage == 0.8
+
+    @pytest.mark.parametrize(
+        "loads", [[1], {"loads": "x"}], ids=["not-a-mapping", "no-rank-list"]
+    )
+    @pytest.mark.anyio
+    async def test_unusable_loads_leave_the_counters(self, loads: object) -> None:
+        sample, _ = await self._probe({"/metrics": _METRICS, "/v1/loads": loads})
+        assert sample is not None and sample.tokens == 2000
+        assert sample.token_usage is None
+
+    @pytest.mark.anyio
+    async def test_no_answer_is_none(self) -> None:
+        sample, _ = await self._probe({})
+        assert sample is None
+
+
+class TestWithEngineMetrics:
+    def test_adds_the_flag_to_sglang_launches_once(self) -> None:
+        from sieval.infer.backends.translator import BackendCommand
+        from sieval.infer.deployer import with_engine_metrics
+
+        sglang = BackendCommand(cli_args=["sglang", "serve"], backend="sglang")
+        has = BackendCommand(
+            cli_args=["sglang", "serve", "--enable-metrics"], backend="sglang"
+        )
+        vllm = BackendCommand(cli_args=["vllm", "serve"], backend="vllm")
+
+        out = with_engine_metrics([sglang, has, vllm])
+
+        assert [c.cli_args for c in out] == [
+            ["sglang", "serve", "--enable-metrics"],
+            ["sglang", "serve", "--enable-metrics"],
+            ["vllm", "serve"],
+        ]
+        assert sglang.cli_args == ["sglang", "serve"]  # not mutated

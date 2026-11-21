@@ -7,9 +7,11 @@ implementations) and launcher.py polling into a single LocalDeployer.
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
+import dataclasses
 import hashlib
 import importlib
 import json
+import math
 import os
 import platform
 import re
@@ -34,7 +36,7 @@ from sieval.core.models import (
     Engine,
     ServingFacts,
 )
-from sieval.core.models.admission import EngineLoad
+from sieval.core.models.admission import EngineLoad, EngineSample
 from sieval.infer.backends.process import (
     kill_orphaned_group,
     kill_process_group,
@@ -904,6 +906,132 @@ class SglangLoadProbe:
 
 #: A load read is cheap; one slower than this is treated as no answer.
 _LOAD_PROBE_TIMEOUT = 2.0
+
+#: ``sglang:realtime_tokens_total`` modes the engine computed: prefill that
+#: missed the cache, and decode. ``prefill_cache`` was not computed.
+_COMPUTED_MODES = frozenset({"prefill_compute", "decode"})
+
+#: One Prometheus sample line: name, optional labels, value.
+_PROM_LINE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+(\S+)")
+_PROM_MODE = re.compile(r'(?:^|,)\s*mode="([^"]*)"')
+
+
+def _prometheus_sums(text: str) -> dict[str, float]:
+    """Each ``sglang:`` series of *text* summed over its labels; a
+    ``realtime_tokens_total`` only over :data:`_COMPUTED_MODES`."""
+    sums: dict[str, float] = {}
+    for line in text.splitlines():
+        match = _PROM_LINE.match(line)
+        if match is None or not match.group(1).startswith("sglang:"):
+            continue
+        name, labels, raw = match.groups()
+        if name == "sglang:realtime_tokens_total":
+            mode = _PROM_MODE.search(labels or "")
+            if mode is None or mode.group(1) not in _COMPUTED_MODES:
+                continue
+        try:
+            value = float(raw)
+        except ValueError:
+            continue
+        if math.isfinite(value):
+            sums[name] = sums.get(name, 0.0) + value
+    return sums
+
+
+class SglangThroughputProbe:
+    """Reads an SGLang engine's token counters for ``concurrency_limit: auto``.
+
+    From ``/metrics`` (SGLang 0.5.13 serves it under ``--enable-metrics``,
+    which ``sieval run`` adds for an ``auto`` root), summed over ranks:
+
+    - tokens: ``sglang:realtime_tokens_total`` in modes ``prefill_compute``
+      and ``decode``, counted every scheduler step; without it,
+      ``sglang:prompt_tokens_total`` + ``sglang:generation_tokens_total``,
+      counted as requests finish;
+    - retractions: ``sglang:num_retracted_requests_total``.
+
+    From ``/v1/loads?include=core``: the fullest rank's ``token_usage`` and
+    the sum of ``max_running_requests``. Either read failing leaves its
+    fields ``None``; both failing is ``None``.
+    """
+
+    def __init__(self, endpoint: str) -> None:
+        parsed = urlparse(endpoint)
+        self._client = httpx.AsyncClient(
+            base_url=urlunparse((parsed.scheme, parsed.netloc, "", "", "", "")),
+            timeout=_LOAD_PROBE_TIMEOUT,
+        )
+
+    async def __call__(self) -> EngineSample | None:
+        counters = await self._counters()
+        loads = await self._loads()
+        if counters is None and loads is None:
+            return None
+        sums = counters or {}
+        tokens = sums.get("sglang:realtime_tokens_total")
+        if tokens is None:
+            prompt = sums.get("sglang:prompt_tokens_total")
+            generated = sums.get("sglang:generation_tokens_total")
+            if prompt is not None and generated is not None:
+                tokens = prompt + generated
+        retracted = sums.get("sglang:num_retracted_requests_total")
+        usage, max_running = loads if loads is not None else (None, None)
+        return EngineSample(
+            tokens=int(tokens) if tokens is not None else None,
+            retracted=int(retracted) if retracted is not None else None,
+            token_usage=usage,
+            max_running=max_running,
+        )
+
+    async def _counters(self) -> dict[str, float] | None:
+        try:
+            response = await self._client.get("/metrics")
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+        return _prometheus_sums(response.text)
+
+    async def _loads(self) -> tuple[float | None, int | None] | None:
+        try:
+            response = await self._client.get("/v1/loads", params={"include": "core"})
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        ranks = payload.get("loads") if isinstance(payload, Mapping) else None
+        if not isinstance(ranks, list):
+            return None
+        usage: float | None = None
+        running = 0
+        for rank in ranks:
+            if not isinstance(rank, Mapping):
+                continue
+            u, m = rank.get("token_usage"), rank.get("max_running_requests")
+            if isinstance(u, int | float) and not isinstance(u, bool):
+                usage = max(usage or 0.0, float(u))
+            if isinstance(m, int) and not isinstance(m, bool) and m > 0:
+                running += m
+        return usage, running or None
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+
+#: The SGLang flag that serves ``/metrics``, which ``auto`` reads.
+SGLANG_METRICS_FLAG = "--enable-metrics"
+
+
+def with_engine_metrics(commands: list[BackendCommand]) -> list[BackendCommand]:
+    """*commands* with :data:`SGLANG_METRICS_FLAG` on every SGLang launch
+    that lacks it. Serving only: it changes no numerics, plan or identity."""
+    out = []
+    for command in commands:
+        if command.backend == "sglang" and SGLANG_METRICS_FLAG not in command.cli_args:
+            command = dataclasses.replace(
+                command, cli_args=[*command.cli_args, SGLANG_METRICS_FLAG]
+            )
+        out.append(command)
+    return out
 
 
 def command_endpoint(cmd: BackendCommand) -> str | None:
