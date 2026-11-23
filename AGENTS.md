@@ -16,6 +16,7 @@ Precise reproducibility is a product contract, not a nicety.
 
 - Safety guards (e.g. the resume stage comparison) ship strict-only. No `--force-*` flags, no bypass env vars, no "(future)" escape-hatch hints in errors.
 - A resume (`--resume`, `--resume DIR`) compares stage identities, not config text (`sieval/core/runners/stage_resume.py`), and reruns from the earliest changed stage: changed data → those samples rerun; changed preprocess (its code and arguments, not the rendered prompts) → every sample reruns; changed postprocess, feedback or report → rerun from that stage on the recorded inference (report only: recomputed from the records, no engine or judge); changed inference, or an unknown stage it would reuse → refused. Before that, `meta.json` `result_schema_version` must equal `RESULT_SCHEMA_VERSION` (absent: mapped from `version`, 0.10.0+ is 1); the package version is provenance only. `effective_config.yaml` and `infer_plans.yaml` are audit records; config changes go to `meta.json` `runs[].config`.
+- An external `EvalSubject`'s `call_key()` and `request_args()`, and any helper `Model` it is bound beside, are in the inference identity: a change refuses at `inference`. A `Model` subject keeps the weights/name comparison.
 - Recovery: "start fresh" or "match the stage the refusal names". Escape-hatch proposals must re-justify the contract, not just add a flag.
 
 ## Result Schema Version

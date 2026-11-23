@@ -441,7 +441,9 @@ class TestRequestRecord:
         lines: list[dict] = []
 
         class Sink:
-            def role_of(self, model_meta: Mapping[str, object]) -> str:
+            def role_of(
+                self, model_meta: Mapping[str, object], *, key: str | None = None
+            ) -> str:
                 return "subject"
 
             def record(self, line: dict[str, JSONValue]) -> None:

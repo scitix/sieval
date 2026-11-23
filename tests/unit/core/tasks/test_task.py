@@ -114,6 +114,10 @@ class _ConcreteTask(Task):
         return {"total": len(finals)}
 
 
+class _ModelLessTask(_ConcreteTask):
+    requires_model = False
+
+
 class _ChatOnlyTask(_ConcreteTask):
     model_type = "chat"
     requires = TaskRequirements(input=InputKind.CHAT)
@@ -195,6 +199,38 @@ class TestTaskName:
         task = _ConcreteTask(_SimpleDataset(), _MockChatModel())
         # No explicit name; falls back to class name or "task"
         assert task.name  # not empty
+
+    def test_existing_task_subject_defaults_to_its_model(self):
+        model = _MockChatModel()
+        task = _ConcreteTask(_SimpleDataset(), model)
+
+        assert task.subject is model
+
+    def test_subject_preserves_an_overridden_model_property(self):
+        class DerivedModelTask(_ConcreteTask):
+            @property
+            def model(self):
+                return super().model.with_args(temperature=0.5)
+
+        task = DerivedModelTask(_SimpleDataset(), _MockChatModel())
+
+        assert task.subject.subject_meta()["default_params"] == {"temperature": 0.5}
+
+    def test_model_is_required_by_default(self):
+        with pytest.raises(ValueError, match="requires a Model"):
+            _ConcreteTask(_SimpleDataset(), None)
+
+    def test_model_less_task_rejects_a_candidate_model(self):
+        with pytest.raises(ValueError, match="requires_model=False"):
+            _ModelLessTask(_SimpleDataset(), _MockChatModel())
+
+    def test_model_less_task_must_provide_its_subject(self):
+        task = _ModelLessTask(_SimpleDataset(), None)
+
+        with pytest.raises(NotImplementedError, match="must provide subject"):
+            _ = task.subject
+        with pytest.raises(AttributeError, match="declares no model"):
+            _ = task.model
 
 
 # ===================================================================

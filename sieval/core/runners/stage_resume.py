@@ -37,9 +37,11 @@ AI-Generated Code - Claude Opus 5.5 (Anthropic)
 import os
 import shutil
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
 
+from sieval.core.models import EvalSubject, Model
 from sieval.core.tasks.consts import TaskStage
 from sieval.core.tasks.context import TaskContext
 from sieval.core.tasks.run_meta import (
@@ -53,6 +55,7 @@ from sieval.core.tasks.run_meta import (
     grader_key,
     grader_task,
     grading_identities,
+    helper_identity,
     inference_identity,
     inference_matches,
     is_code_identity,
@@ -288,6 +291,55 @@ def task_preprocess_identity(task: "Task", code: StageCode) -> PreprocessIdentit
     return preprocess_identity(code, task.grader_args(), splits)
 
 
+@dataclass(frozen=True)
+class SubjectInferenceInputs:
+    """The serving inputs of the subject's inference identity.
+
+    For a Model subject, the bound Model's. For an independent subject they
+    are empty, and *helper* holds the bound Model's (:func:`helper_identity`).
+    """
+
+    context_limit: int | None = None
+    recipe: Mapping[str, JSONValue] | None = None
+    stated_serving: Mapping[str, JSONValue] | None = None
+    checkpoint_numerics: Mapping[str, JSONValue] | None = None
+    helper: Mapping[str, JSONValue] | None = None
+
+
+def subject_inference_inputs(
+    subject: EvalSubject,
+    helper: Model | None,
+    *,
+    weights: str | None = None,
+    context_limit: int | None = None,
+    recipe: Mapping[str, JSONValue] | None = None,
+    stated_serving: Mapping[str, JSONValue] | None = None,
+    checkpoint_numerics: Mapping[str, JSONValue] | None = None,
+) -> SubjectInferenceInputs:
+    """Assign the bound Model's serving inputs to the subject or the helper.
+
+    *helper* is the task's bound Model, ``None`` when it binds none.
+    """
+    if isinstance(subject, Model):
+        return SubjectInferenceInputs(
+            context_limit=context_limit,
+            recipe=recipe,
+            stated_serving=stated_serving,
+            checkpoint_numerics=checkpoint_numerics,
+        )
+    if helper is None:
+        return SubjectInferenceInputs()
+    return SubjectInferenceInputs(
+        helper=helper_identity(
+            helper,
+            weights=weights,
+            context_limit=context_limit,
+            numerics=served_numerics(recipe, stated_serving, checkpoint_numerics),
+            parsers=served_parsers(recipe, stated_serving),
+        )
+    )
+
+
 def task_resume_plan(
     task: "Task",
     recorded_meta: Mapping[str, Any] | None,
@@ -297,6 +349,7 @@ def task_resume_plan(
     recipe: Mapping[str, JSONValue] | None = None,
     stated_serving: Mapping[str, JSONValue] | None = None,
     checkpoint_numerics: Mapping[str, JSONValue] | None = None,
+    weights: str | None = None,
 ) -> ResumePlan:
     """:func:`plan_resume` for *task* against a recorded ``meta.json``.
 
@@ -307,6 +360,16 @@ def task_resume_plan(
     and the rest as the runner is given them. Reads files, starts nothing and
     calls no model.
     """
+    subject = task.subject
+    inputs = subject_inference_inputs(
+        subject,
+        task.model if task.requires_model else None,
+        weights=weights,
+        context_limit=context_limit,
+        recipe=recipe,
+        stated_serving=stated_serving,
+        checkpoint_numerics=checkpoint_numerics,
+    )
     task_cls = type(task)
     judges = judge_identities(task.judge_models(), task.judge_prompts())
     services = service_identities(task_cls.services)
@@ -318,12 +381,15 @@ def task_resume_plan(
     current: dict[str, Any] = {
         "preprocess": task_preprocess_identity(task, code["preprocess"]),
         "inference": inference_identity(
-            model=task.model,
+            model=subject,
             task_args=task.inference_args(),
             runner_keys=runner_keys,
-            context_limit=context_limit,
-            numerics=served_numerics(recipe, stated_serving, checkpoint_numerics),
-            parsers=served_parsers(recipe, stated_serving),
+            context_limit=inputs.context_limit,
+            helper=inputs.helper,
+            numerics=served_numerics(
+                inputs.recipe, inputs.stated_serving, inputs.checkpoint_numerics
+            ),
+            parsers=served_parsers(inputs.recipe, inputs.stated_serving),
         ),
         **grading,
     }
@@ -332,12 +398,12 @@ def task_resume_plan(
         current,
         legacy_grader_keys(task_cls, judges, services, args),
         legacy_inference_digest(
-            model=task.model,
+            model=subject,
             task_args=task.inference_args(),
             runner_keys=runner_keys,
-            recipe=recipe,
+            recipe=inputs.recipe,
         ),
-        checkpoint_numerics,
+        inputs.checkpoint_numerics,
     )
 
 

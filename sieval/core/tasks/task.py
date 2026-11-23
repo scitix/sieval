@@ -18,7 +18,7 @@ from sieval.core.datasets import (
     repeat_group_of,
     repeat_index_of,
 )
-from sieval.core.models import Model
+from sieval.core.models import EvalSubject, Model
 from sieval.core.models.requirements import (
     RequirementContext,
     TaskModelRequirement,
@@ -128,6 +128,9 @@ class Task[
         model_type: Declares the required model kind (``"chat"`` or ``"gen"``).
             ``None`` means no specific requirement (defaults to ``"chat"`` in
             *cli/session*).
+        requires_model: Whether SiEval must bind and validate a candidate
+            :class:`Model`. Set this to ``False`` only when the task provides an
+            independent :attr:`subject` and performs inference itself.
         tags: Free-form tag set describing the task (e.g. ``{"gen", "zero_shot"}``).
             Used by the anomaly-detection framework to decide which rules apply.
         requires: Provider-neutral input and scoring semantics required from the
@@ -159,6 +162,7 @@ class Task[
     """
 
     model_type: ClassVar[Literal["chat", "gen"] | None] = None
+    requires_model: ClassVar[bool] = True
     tags: ClassVar[AbstractSet[str]] = frozenset()  # override in subclasses
     requires: ClassVar[TaskRequirements] = TaskRequirements()
     services: ClassVar[AbstractSet[str]] = frozenset()
@@ -166,12 +170,26 @@ class Task[
     python_requires: ClassVar[Mapping[str, str]] = MappingProxyType({})
 
     def __init__(
-        self, dataset: Dataset[TRawSample], model: Model, name: str | None = None
+        self,
+        dataset: Dataset[TRawSample],
+        model: Model | None,
+        name: str | None = None,
     ):
         self._dataset = dataset
         self._model = model
         self._name = name
 
+        if not isinstance(self.requires_model, bool):
+            raise TypeError(f"{type(self).__name__}.requires_model must be a boolean")
+        if self.requires_model and model is None:
+            raise ValueError(
+                f"{type(self).__name__} requires a Model; pass one explicitly"
+            )
+        if not self.requires_model and model is not None:
+            raise ValueError(
+                f"{type(self).__name__} declares requires_model=False and cannot "
+                "receive a Model"
+            )
         self._validate_model_requirements()
 
     @classmethod
@@ -200,6 +218,8 @@ class Task[
     ) -> tuple[TaskModelRequirement, ...]:
         if not isinstance(context, RequirementContext):
             raise TypeError("context must be a RequirementContext")
+        if not cls.requires_model:
+            return ()
 
         bindings = context.model_bindings
         if not bindings:
@@ -313,6 +333,11 @@ class Task[
         if not isinstance(requires, TaskRequirements):
             raise TypeError(f"{type(self).__name__}.requires must be TaskRequirements")
 
+        if not self.requires_model:
+            return
+
+        if self._model is None:
+            raise RuntimeError("a required model was not initialized")
         view = cast("_RuntimeModelView", self._model)
         dialect_id = getattr(view, "dialect_id", None)
         if not isinstance(dialect_id, str) or not dialect_id:
@@ -351,7 +376,21 @@ class Task[
 
     @property
     def model(self) -> Model:
+        if self._model is None:
+            raise AttributeError(
+                f"{type(self).__name__} declares no model; use task.subject"
+            )
         return self._model
+
+    @property
+    def subject(self) -> EvalSubject:
+        """The system measured by this task; existing tasks use their Model."""
+
+        if self._model is None:
+            raise NotImplementedError(
+                f"{type(self).__name__} must provide subject when requires_model=False"
+            )
+        return self.model
 
     @property
     def name(self) -> str:

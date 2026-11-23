@@ -1,4 +1,7 @@
-"""Task pipeline state machine: context, stage outputs and ``meta.json`` types."""
+"""Task pipeline state machine: context, stage outputs and ``meta.json`` types.
+
+AI-Generated Code - GPT-6.1 (OpenAI)
+"""
 
 from dataclasses import dataclass, field, replace
 from typing import Any, NotRequired, Self, TypedDict
@@ -88,6 +91,22 @@ class TaskStageMeta(TypedDict, total=False):
     # Set on the `inferred` entry when the model under test refused a prompt as
     # longer than its context window: each refusal's message, in call order.
     context_overflow: list[str]
+
+
+def _serialize_stage_meta(
+    meta: TaskStageMeta, store_type_metadata: bool
+) -> dict[str, Any]:
+    """Keep external request JSON intact without changing legacy field omission."""
+
+    data = obj_to_dict(meta, store_type_metadata)
+    for call, serialized in zip(
+        meta.get("model_calls", ()), data.get("model_calls", ()), strict=True
+    ):
+        if "call_key" in call and (params := call.get("request_params")) is not None:
+            serialized["request_params"] = obj_to_dict(
+                params, store_type_metadata, preserve_none=True
+            )
+    return data
 
 
 @sieval_record
@@ -290,14 +309,22 @@ class TaskContext[TRawSample, TPreprocessed, TInferred, TPostprocessed, TFeedbac
             if include_meta:
                 meta_arr = self.stage_meta.get(self.stage.value)
                 if meta_arr:
-                    d["meta_last"] = obj_to_dict(meta_arr[-1], store_type_metadata)
+                    d["meta_last"] = _serialize_stage_meta(
+                        meta_arr[-1], store_type_metadata
+                    )
         else:
             for f in STAGE_TO_RESULT_FIELD.values():
                 v = getattr(self, f)
                 if v is not None:
                     d[f] = obj_to_dict(v, store_type_metadata)
             if include_meta and self.stage_meta:
-                d["stage_meta"] = obj_to_dict(self.stage_meta, store_type_metadata)
+                d["stage_meta"] = {
+                    stage: [
+                        _serialize_stage_meta(meta, store_type_metadata)
+                        for meta in history
+                    ]
+                    for stage, history in self.stage_meta.items()
+                }
 
         if self.error_action:
             d["error_action"] = (

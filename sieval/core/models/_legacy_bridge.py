@@ -42,6 +42,7 @@ from .ir import (
     TopKEntry,
     UsageStats,
 )
+from .subject import SubjectMeta
 
 
 class ModelUsage(TypedDict):
@@ -77,8 +78,10 @@ class ModelMeta(TypedDict):
 class ModelCallMeta(TypedDict):
     """Per-API-call metadata: model info, usage, params, finish reasons."""
 
-    model: ModelMeta
-    usage: NotRequired[ModelUsage]
+    model: ModelMeta | SubjectMeta
+    #: Explicit external subject identity; legacy Model calls derive it from model.
+    call_key: NotRequired[str]
+    usage: NotRequired[Mapping[str, JSONValue]]
     request_params: NotRequired[dict[str, JSONValue]]
     finish_reasons: NotRequired[list[str]]
     finish_reason_sources: NotRequired[list[str]]

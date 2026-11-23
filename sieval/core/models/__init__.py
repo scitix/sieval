@@ -109,7 +109,15 @@ from .reconcile import (
     RuntimeBindingPlan,
     reconcile,
 )
+from .request_log import RecordingAsyncClient, SubjectCall, subject_call
 from .sglang_gen_model import SglangGenModel
+from .subject import (
+    EvalSubject,
+    ServingFingerprint,
+    SubjectMeta,
+    subject_call_key,
+    validate_eval_subject,
+)
 
 __all__ = [
     "BINDING_RESOURCE_KEYS",
@@ -140,6 +148,7 @@ __all__ = [
     "Dialect",
     "DialectError",
     "DialectOptions",
+    "EvalSubject",
     "DialectSpec",
     "Engine",
     "FINISH_SOURCE_CANDIDATE",
@@ -173,6 +182,7 @@ __all__ = [
     "ReconcileBatch",
     "ReconcileDiagnostic",
     "ReconcileResult",
+    "RecordingAsyncClient",
     "Request",
     "RequestDefaults",
     "RequestSeedSupport",
@@ -188,10 +198,13 @@ __all__ = [
     "ServerToolType",
     "ServerToolUse",
     "ServingFacts",
+    "ServingFingerprint",
+    "SubjectCall",
     "SessionParams",
     "SglangGenModel",
     "StructuredOutput",
     "StructuredOutputParams",
+    "SubjectMeta",
     "TextPart",
     "TokenLogprob",
     "ToolCallPart",
@@ -201,6 +214,8 @@ __all__ = [
     "UsageStats",
     "check_extra",
     "sequence_wrapper",
+    "subject_call",
+    "subject_call_key",
     "ASYNC_HTTP_JSON_FACTORY",
     "AsyncHTTPJSONConnection",
     "BindingReconcileInput",
@@ -208,5 +223,6 @@ __all__ = [
     "get_dialect_spec",
     "normalize_chat_input",
     "reconcile",
+    "validate_eval_subject",
     "UnknownConnectionFamily",
 ]
