@@ -55,6 +55,7 @@ from sieval.core.tasks.run_meta import (
     grader_key,
     grader_task,
     grading_identities,
+    helper_identity,
     inference_identity,
     inference_matches,
     is_code_identity,
@@ -292,34 +293,50 @@ def task_preprocess_identity(task: "Task", code: StageCode) -> PreprocessIdentit
 
 @dataclass(frozen=True)
 class SubjectInferenceInputs:
-    """Bound-model inputs applicable to the actual evaluation subject."""
+    """The serving inputs of the subject's inference identity.
+
+    For a Model subject, the bound Model's. For an independent subject they
+    are empty, and *helper* holds the bound Model's (:func:`helper_identity`).
+    """
 
     context_limit: int | None = None
     recipe: Mapping[str, JSONValue] | None = None
     stated_serving: Mapping[str, JSONValue] | None = None
     checkpoint_numerics: Mapping[str, JSONValue] | None = None
+    helper: Mapping[str, JSONValue] | None = None
 
 
 def subject_inference_inputs(
     subject: EvalSubject,
+    helper: Model | None,
     *,
+    weights: str | None = None,
     context_limit: int | None = None,
     recipe: Mapping[str, JSONValue] | None = None,
     stated_serving: Mapping[str, JSONValue] | None = None,
     checkpoint_numerics: Mapping[str, JSONValue] | None = None,
 ) -> SubjectInferenceInputs:
-    """Keep Model binding inputs only when the subject is a Model.
+    """Assign the bound Model's serving inputs to the subject or the helper.
 
-    For an external subject these describe a helper, not the measured system.
-    Its inference identity comes from its own request and task arguments.
+    *helper* is the task's bound Model, ``None`` when it binds none.
     """
-    if not isinstance(subject, Model):
+    if isinstance(subject, Model):
+        return SubjectInferenceInputs(
+            context_limit=context_limit,
+            recipe=recipe,
+            stated_serving=stated_serving,
+            checkpoint_numerics=checkpoint_numerics,
+        )
+    if helper is None:
         return SubjectInferenceInputs()
     return SubjectInferenceInputs(
-        context_limit=context_limit,
-        recipe=recipe,
-        stated_serving=stated_serving,
-        checkpoint_numerics=checkpoint_numerics,
+        helper=helper_identity(
+            helper,
+            weights=weights,
+            context_limit=context_limit,
+            numerics=served_numerics(recipe, stated_serving, checkpoint_numerics),
+            parsers=served_parsers(recipe, stated_serving),
+        )
     )
 
 
@@ -332,6 +349,7 @@ def task_resume_plan(
     recipe: Mapping[str, JSONValue] | None = None,
     stated_serving: Mapping[str, JSONValue] | None = None,
     checkpoint_numerics: Mapping[str, JSONValue] | None = None,
+    weights: str | None = None,
 ) -> ResumePlan:
     """:func:`plan_resume` for *task* against a recorded ``meta.json``.
 
@@ -341,22 +359,18 @@ def task_resume_plan(
     read. *runner_keys* holds :data:`~sieval.core.tasks.run_meta.INFERENCE_RUNNER_KEYS`
     and the rest as the runner is given them. Reads files, starts nothing and
     calls no model.
-
-    The serving inputs describe a bound Model. An independent external subject
-    excludes them, even when the task also binds a helper Model.
     """
     subject = task.subject
     inputs = subject_inference_inputs(
         subject,
+        task.model if task.requires_model else None,
+        weights=weights,
         context_limit=context_limit,
         recipe=recipe,
         stated_serving=stated_serving,
         checkpoint_numerics=checkpoint_numerics,
     )
     task_cls = type(task)
-    helper = (
-        task.model if task.requires_model and not isinstance(subject, Model) else None
-    )
     judges = judge_identities(task.judge_models(), task.judge_prompts())
     services = service_identities(task_cls.services)
     args = task.grader_args()
@@ -371,7 +385,7 @@ def task_resume_plan(
             task_args=task.inference_args(),
             runner_keys=runner_keys,
             context_limit=inputs.context_limit,
-            helper_model=helper,
+            helper=inputs.helper,
             numerics=served_numerics(
                 inputs.recipe, inputs.stated_serving, inputs.checkpoint_numerics
             ),

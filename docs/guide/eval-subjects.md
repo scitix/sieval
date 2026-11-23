@@ -1,21 +1,16 @@
 # Evaluating an external system
 
-Most SiEval tasks evaluate a `Model` that SiEval calls through its dialects.
-Some tasks measure a service or API that the task itself calls. Those tasks can
-provide an `EvalSubject` instead of configuring a placeholder `Model`.
-
-`EvalSubject` is the stable identity boundary between a task and the system it
-measures. Its `subject_meta()` is written as the result's model identity,
-`request_args()` contributes to inference identity, and `serving()` records
-serving facts when they are known. Changing the subject identity or request
-arguments refuses resume at inference. The default subject for existing tasks
-is still their `Model`, so their recorded identity remains unchanged.
+A task that measures a service it calls itself can provide an `EvalSubject`
+instead of a placeholder `Model`. `subject_meta()` becomes the result's model
+identity; `call_key()` and `request_args()` join the inference identity, so a
+change to either refuses resume at `inference`; `serving()` records serving
+facts when known. Existing tasks keep their `Model` as the subject, and their
+identities are unchanged.
 
 ## Declare a model-less task
 
-Set `requires_model = False` explicitly and implement `subject`. The task
-constructor still accepts `model` because the CLI uses the same constructor
-contract; it will pass `None` for a model-less task.
+Set `requires_model = False` and implement `subject`. The constructor still
+takes `model`; the CLI passes `None`.
 
 ```python
 import httpx
@@ -80,40 +75,25 @@ class RemoteAnswerTask(Task):
         return result["answer"]
 ```
 
-The subject may return any JSON-compatible value from `request_args()`. Keep
-values that affect inference there so resume detects a change. `call_key()` is a
-stable, non-empty string defined by the plugin and recorded on its calls.
-`subject_call_key()` is an optional helper that derives it from `subject_meta()`.
-The runner resolves and validates the subject after `setup()`, so a task may
-resolve the service version there. Keep that subject stable while the run executes.
-When setup cannot reach a checked service that has not started, a fresh dry-run
-can count pending samples without resolving its subject. When setup succeeds,
-the fresh plan validates the subject. A resume plan still requires a resolved
-subject before comparing the recorded inference identity.
-
-A task may bind a helper `Model` and provide an independent subject. Weights,
-context windows, numerics and parsers from that binding describe the helper;
-the subject supplies the measured system's identity and serving facts. The
-helper's resolved request arguments are included in the inference identity, so
-changing parameters of a helper used during `infer()` refuses resume. Other
-helper details that affect inference belong in the subject's `request_args()`
-or the task's `inference_args()`.
-Both `TaskRunner.plan_run()` and `task_resume_plan()` apply this rule. Call
-`task_resume_plan()` after setup has resolved the subject.
-
-`subject_call()` opens one recorded logical call. Requests made through
-`RecordingAsyncClient` inside it become attempts in `requests.jsonl`; its retry
-loop is shared with SiEval's model clients. Call `call.record()` with the
-request parameters and usage to populate `model_calls`, the request digest, and
-token profiling. Calls outside an active task stage are not recorded.
-`call.record()` takes a recursive JSON snapshot of the request parameters, so
-later changes to a reused request body do not change the recorded call.
-
-The runner holds task and stage concurrency limits while `infer()` runs. A
-model-less task is responsible for its own provider protocol, validation,
-capabilities, authentication, and any client configuration. SiEval does not
-reconcile a dialect or model capability contract for it. Keep secrets out of
-`subject_meta()`, `request_args()`, and `call.record()`.
+- **Identity.** `request_args()` may return any JSON value; put everything
+  that affects inference there. `call_key()` is a stable, non-empty string;
+  `subject_call_key()` derives one from `subject_meta()`. Keep secrets out of
+  all of these and out of `call.record()`.
+- **Resolution.** The runner validates the subject after `setup()`, so setup
+  may resolve a service version; keep it stable for the run. Call
+  `task_resume_plan()` after setup too.
+- **Recording.** `subject_call()` opens one logical call. Each attempt made by
+  `RecordingAsyncClient` inside it goes to `requests.jsonl`, with SiEval's
+  retry loop. `call.record()` snapshots the request parameters and usage into
+  `model_calls`, the request digest and token profiling. Calls outside a task
+  stage are not recorded.
+- **Protocol.** The task owns the provider protocol, authentication and
+  response validation; no dialect or capability contract is reconciled.
+- **Helper `Model`.** A task may also bind a `Model` that it calls beside an
+  independent subject. The run records no weights or serving for it, but its
+  name, weights, request arguments, context window, numerics and parsers join
+  the inference identity, so swapping it refuses resume. A context overflow
+  recorded by such a task is inferred again rather than replayed.
 
 ## Configuration
 
@@ -129,7 +109,5 @@ tasks:
     dataset: questions
 ```
 
-Static validation and `--dry-run` identify the task as model-less and explain
-that its `EvalSubject` owns the protocol contract. A task with the default
-`requires_model = True` must still bind a `Model`; a missing model is never
-inferred from a task's `infer()` implementation.
+Validation and `--dry-run` report the task as model-less. A task with the
+default `requires_model = True` must still bind a `Model`.

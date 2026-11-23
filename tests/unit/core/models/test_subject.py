@@ -3,9 +3,11 @@
 AI-Generated Code - GPT-6.1 (OpenAI)
 """
 
+from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any
 
+import numpy as np
 import pytest
 
 from sieval.core.models.subject import (
@@ -16,6 +18,7 @@ from sieval.core.models.subject import (
     validate_eval_subject,
 )
 from sieval.core.tasks.run_meta import digest, request_key
+from sieval.core.utils.canonical import canonical_json
 
 
 class _Subject:
@@ -62,6 +65,23 @@ def test_subject_call_key_is_canonical_and_excludes_endpoint_provenance() -> Non
     }
 
     assert subject_call_key(first) == subject_call_key(second)
+
+
+def test_subject_call_key_is_the_canonical_json_of_the_kept_keys() -> None:
+    # A Model's call key predates EvalSubject; extended values must keep it.
+    meta = {
+        "model": "m",
+        "api_base": "http://x",
+        "extra": {
+            "tags": {"y", "x"},
+            "pair": (1, 2),
+            "blob": b"ab",
+            "vec": np.arange(3),
+            "when": datetime(2026, 1, 1, tzinfo=UTC),
+        },
+    }
+    kept = {key: value for key, value in meta.items() if key != "api_base"}
+    assert subject_call_key(meta) == canonical_json(kept)
 
 
 def test_validate_eval_subject_accepts_json_request_args_and_optional_serving() -> None:

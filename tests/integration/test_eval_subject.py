@@ -331,6 +331,10 @@ async def test_subject_change_refuses_resume_at_inference(tmp_path: Path) -> Non
     await EvalSession(config_path=str(path)).arun()
     path = _write_config(tmp_path, revision="v2")
 
+    await _assert_refused_at_inference(path)
+
+
+async def _assert_refused_at_inference(path: Path) -> None:
     with pytest.raises(ExceptionGroup) as exc_info:
         await EvalSession(config_path=str(path), resume=True).arun()
     pending: list[BaseException] = list(exc_info.value.exceptions)
@@ -341,7 +345,7 @@ async def test_subject_change_refuses_resume_at_inference(tmp_path: Path) -> Non
         elif isinstance(error, StageResumeError):
             assert "stage `inference` differs" in str(error)
             return
-    pytest.fail("resume did not refuse the changed subject at inference")
+    pytest.fail("resume was not refused at inference")
 
 
 @pytest.mark.anyio
@@ -381,7 +385,7 @@ def test_validation_and_dry_run_explain_model_less_contract(tmp_path: Path) -> N
 
 
 @pytest.mark.anyio
-async def test_cli_mixed_subject_does_not_inherit_helper_weights_or_context(
+async def test_cli_mixed_subject_records_no_helper_weights_and_compares_them(
     tmp_path: Path,
 ) -> None:
     path = _write_config(tmp_path)
@@ -406,10 +410,13 @@ async def test_cli_mixed_subject_does_not_inherit_helper_weights_or_context(
         meta = json.loads((tmp_path / "results" / "external" / "meta.json").read_text())
         assert meta["model"] == "reference-service"
         assert "weights" not in meta
-        config["models"]["helper"]["context_limit"] = 16384
-        config["models"]["helper"]["weights"] = "other-helper-w"
     requests = tmp_path / "results" / "external" / "requests.jsonl"
     assert len(requests.read_text().splitlines()) == 1
+
+    # The helper may be called in infer(), so swapping it refuses the resume.
+    config["models"]["helper"]["weights"] = "other-helper-w"
+    path.write_text(json.dumps(config))
+    await _assert_refused_at_inference(path)
 
 
 def test_fresh_cli_dry_run_rejects_a_missing_subject(tmp_path: Path) -> None:

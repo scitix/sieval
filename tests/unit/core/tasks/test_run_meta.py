@@ -94,23 +94,6 @@ class TestDigest:
     def test_different_content_differs(self):
         assert digest({"a": 1}) != digest({"a": 2})
 
-    def test_encodes_values_a_raw_sample_may_hold(self):
-        raw = {
-            "ids": (1, 2),
-            "tags": {"y", "x"},
-            "blob": b"\x00\x01",
-            "score": np.float32(0.5),
-            "vec": np.array([1, 2]),
-            "when": datetime(2026, 1, 1, tzinfo=UTC),
-        }
-        decoded = json.loads(canonical_json(raw))
-        assert decoded["ids"] == [1, 2]
-        assert decoded["tags"] == ['"x"', '"y"']
-        assert decoded["blob"] == {"__bytes__": hashlib.sha256(b"\x00\x01").hexdigest()}
-        assert decoded["score"] == 0.5
-        assert decoded["vec"] == [1, 2]
-        assert decoded["when"].startswith("2026-01-01")
-
     def test_an_image_is_digested_by_its_bytes(self):
         class _Image:
             def __init__(self, data):
@@ -120,10 +103,6 @@ class TestDigest:
                 return self._data
 
         assert digest({"img": _Image(b"a")}) != digest({"img": _Image(b"b")})
-
-    def test_undigestable_value_raises(self):
-        with pytest.raises(TypeError, match="cannot digest"):
-            digest({"f": object()})
 
     def test_a_missing_float_is_digested_and_tells_samples_apart(self):
         """NaN is encoded, not refused: a refused sample could not tell two
@@ -1625,7 +1604,6 @@ class TestGraderPatchesAndDynamicImports:
         assert grader_modules(Local) != after
 
     def test_stdlib_and_installed_functions_are_not_patches(self):
-        import json
 
         class Local:
             loads = staticmethod(json.loads)

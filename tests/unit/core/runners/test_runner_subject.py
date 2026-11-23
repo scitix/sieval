@@ -253,43 +253,68 @@ async def test_independent_subject_does_not_inherit_helper_deployment_facts(tmp_
         await model.aclose()
 
 
+class _OtherMockChatModel(MockChatModel):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._model = "other-mock-chat"
+
+
+def _helper_runs(model):
+    """Two helper bindings of one subject task, alike but for one fact."""
+    other = _OtherMockChatModel()
+    return {
+        "name": ({}, {}, model, other),
+        "weights": ({"weights": "w1"}, {"weights": "w2"}, model, model),
+        "context_limit": (
+            {"context_limit": 8192},
+            {"context_limit": 16384},
+            model,
+            model,
+        ),
+        "numerics": (
+            {"stated_serving": {"numerics": {"dtype": "float16"}}},
+            {"stated_serving": {"numerics": {"dtype": "bfloat16"}}},
+            model,
+            model,
+        ),
+        "request_args": (
+            {},
+            {},
+            model.with_args(temperature=0.1),
+            model.with_args(temperature=0.9),
+        ),
+    }, other
+
+
 @pytest.mark.anyio
-async def test_independent_subject_resume_ignores_helper_context_changes(tmp_path):
+@pytest.mark.parametrize(
+    "changed", ["name", "weights", "context_limit", "numerics", "request_args"]
+)
+async def test_independent_subject_resume_refuses_a_changed_helper(tmp_path, changed):
     model = MockChatModel()
     dataset = MockDataset(samples=[{"question": "q", "answer": "v1"}])
+    runs, other = _helper_runs(model)
+    first, second, first_model, second_model = runs[changed]
     try:
         await TaskRunner(
-            _ModelWithSubjectTask(dataset, model),
-            make_config(tmp_path),
-            context_limit=8192,
+            _ModelWithSubjectTask(dataset, first_model), make_config(tmp_path), **first
         ).arun()
-        runner = TaskRunner(
-            _ModelWithSubjectTask(dataset, model),
+        same = TaskRunner(
+            _ModelWithSubjectTask(dataset, first_model),
             make_config(tmp_path, resume=True),
-            context_limit=16384,
+            **first,
         )
-        assert (await runner.plan_run())["start"] == "reuse"
-    finally:
-        await model.aclose()
-
-
-@pytest.mark.anyio
-async def test_independent_subject_resume_compares_helper_request_args(tmp_path):
-    model = MockChatModel()
-    dataset = MockDataset(samples=[{"question": "q", "answer": "v1"}])
-    try:
-        await TaskRunner(
-            _ModelWithSubjectTask(dataset, model.with_args(temperature=0.1)),
-            make_config(tmp_path),
-        ).arun()
+        assert (await same.plan_run())["start"] == "reuse"
         runner = TaskRunner(
-            _ModelWithSubjectTask(dataset, model.with_args(temperature=0.9)),
+            _ModelWithSubjectTask(dataset, second_model),
             make_config(tmp_path, resume=True),
+            **second,
         )
         with pytest.raises(StageResumeError, match="stage `inference` differs"):
             await runner.plan_run()
     finally:
         await model.aclose()
+        await other.aclose()
 
 
 @pytest.mark.anyio
@@ -363,11 +388,14 @@ async def test_public_resume_plan_matches_runner_for_independent_subject(
             stated_serving=stated,
             checkpoint_numerics=checkpoint,
         )
-        planned = await runner.plan_run()
-        assert planned["start"] == "reuse"
-        stages = planned["stages"]
-        assert stages is not None
-        assert stages["stages"]["inference"] == "same"
+        same = context_limit == 8192 and serving_source == "none"
+        if same:
+            planned = await runner.plan_run()
+            assert planned["stages"] is not None
+            assert planned["stages"]["stages"]["inference"] == "same"
+        else:
+            with pytest.raises(StageResumeError, match="stage `inference` differs"):
+                await runner.plan_run()
 
         # The public entry point is called after setup, like the runner.
         await task.setup()
@@ -387,9 +415,7 @@ async def test_public_resume_plan_matches_runner_for_independent_subject(
             )
         finally:
             await task.shutdown()
-        assert public["refused"] is None
-        assert public["stages"]["inference"] == "same"
-        assert public["stages"]["inference"] == stages["stages"]["inference"]
+        assert public["refused"] == (None if same else "inference")
     finally:
         await model.aclose()
 

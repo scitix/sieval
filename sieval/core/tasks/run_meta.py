@@ -91,6 +91,7 @@ from loguru import logger
 from sieval.core.models import REQUEST_ENVELOPE_HTTP, REQUEST_ENVELOPE_KEY, Model
 from sieval.core.models.subject import EvalSubject, ServingFingerprint, subject_call_key
 from sieval.core.types import JSONValue
+from sieval.core.utils.canonical import canonical_json
 
 from .services import SERVICE_ENDPOINT_ENV, ServiceIdentity
 
@@ -435,48 +436,6 @@ wrote it. Not part of any identity.
 # ---------------------------------------------------------------------------
 
 
-def _default(value: object) -> Any:
-    """Encode the non-JSON values a raw sample or a model default may hold."""
-    if isinstance(value, (set, frozenset)):
-        return sorted(canonical_json(v) for v in value)
-    if isinstance(value, tuple):
-        return list(value)
-    if isinstance(value, bytes):
-        return {"__bytes__": hashlib.sha256(value).hexdigest()}
-    if isinstance(value, Mapping):
-        return dict(value)
-    tolist = getattr(value, "tolist", None)  # numpy arrays and scalars
-    if callable(tolist):
-        return tolist()
-    tobytes = getattr(value, "tobytes", None)  # PIL images
-    if callable(tobytes):
-        raw = tobytes()
-        if isinstance(raw, bytes):
-            return {"__bytes__": hashlib.sha256(raw).hexdigest()}
-    if isinstance(value, datetime):
-        return value.isoformat()
-    raise TypeError(f"cannot digest a {type(value).__name__}")
-
-
-def canonical_json(value: object) -> str:
-    """Canonical JSON: sorted keys, no whitespace, ASCII only.
-
-    NaN and the infinities are written as the bare tokens ``NaN``,
-    ``Infinity`` and ``-Infinity``. That is not strict JSON, but this text is
-    only ever hashed: refusing them would leave a sample holding a missing
-    float with no digest, and spelling them as strings would make them equal
-    to the string ``"NaN"``.
-    """
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-        allow_nan=True,
-        default=_default,
-    )
-
-
 def digest(value: object) -> str:
     """``sha256:`` over :func:`canonical_json` of *value*."""
     return "sha256:" + hashlib.sha256(canonical_json(value).encode()).hexdigest()
@@ -647,13 +606,36 @@ def request_key(*, model: EvalSubject, task_args: Mapping[str, JSONValue]) -> st
     return digest({"model_args": args, "task_args": dict(task_args)})
 
 
+def helper_identity(
+    model: Model,
+    *,
+    weights: str | None,
+    context_limit: int | None,
+    numerics: Numerics | None,
+    parsers: Parsers | None,
+) -> dict[str, JSONValue]:
+    """A bound Model that an independent subject's task may call in ``infer``.
+
+    Everything a Model subject is compared by, so a swapped helper refuses
+    the resume at ``inference``.
+    """
+    return {
+        "call_key": model.call_key(),
+        "weights": weights,
+        "model_args": model_request_args(model),
+        "context_limit": context_limit,
+        "numerics": numerics,
+        "parsers": parsers,
+    }
+
+
 def inference_identity(
     *,
     model: EvalSubject,
     task_args: Mapping[str, JSONValue],
     runner_keys: Mapping[str, JSONValue],
     context_limit: int | None,
-    helper_model: Model | None = None,
+    helper: Mapping[str, JSONValue] | None = None,
     numerics: Numerics | None = None,
     parsers: Parsers | None = None,
 ) -> InferenceIdentity:
@@ -664,9 +646,9 @@ def inference_identity(
     kept beside the digest as values, since a key may be unknown. What was
     actually sent is folded per sample into ``requests`` at the end.
 
-    A :class:`Model`'s identity and serving are compared outside this digest.
-    An external :class:`EvalSubject` has no separate model binding, so its
-    stable ``call_key()`` is included. ``request_key`` is not part of ``digest``.
+    A :class:`Model` subject's name and serving are compared outside this
+    digest; an external :class:`EvalSubject`'s ``call_key()`` and its *helper*
+    (:func:`helper_identity`) are inside it. ``request_key`` is not.
     """
     payload = {
         "model_args": model_request_args(model),
@@ -676,8 +658,8 @@ def inference_identity(
     }
     if not isinstance(model, Model):
         payload["subject"] = model.call_key()
-    if helper_model is not None:
-        payload["helper_model_args"] = model_request_args(helper_model)
+    if helper is not None:
+        payload["helper"] = dict(helper)
     identity: InferenceIdentity = {
         "digest": digest(payload),
         "request_key": request_key(model=model, task_args=task_args),

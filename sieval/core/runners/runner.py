@@ -599,6 +599,7 @@ class TaskRunner:
         self._inference_recipe = inference_recipe
         self._context_limit = context_limit
         self._weights = weights
+        self._helper: Mapping[str, JSONValue] | None = None
         self._judge_weights = dict(judge_weights or {})
         self._lifecycles = lifecycles
         self._stated_serving = stated_serving
@@ -855,6 +856,8 @@ class TaskRunner:
         )
         inputs = subject_inference_inputs(
             subject,
+            self._task.model if self._task.requires_model else None,
+            weights=self._weights,
             context_limit=self._context_limit,
             recipe=self._inference_recipe,
             stated_serving=self._stated_serving,
@@ -864,6 +867,7 @@ class TaskRunner:
         self._inference_recipe = inputs.recipe
         self._stated_serving = inputs.stated_serving
         self._checkpoint_numerics = inputs.checkpoint_numerics
+        self._helper = inputs.helper
         if not isinstance(subject, Model):
             # These facts describe the bound Model. An independent subject
             # supplies its own identity and serving, even if the task uses a Model.
@@ -1211,48 +1215,23 @@ class TaskRunner:
         inference identity equals this run's for the same model. A sample whose
         data or prompt changed was restarted by the plan already.
         """
-        if not self._task.requires_model or self._task.context_overflow != "score":
+        # An independent subject's own overflows are not the bound Model's to
+        # replay; its samples infer again, where the scope still converts.
+        if (
+            not isinstance(self._subject, Model)
+            or self._task.context_overflow != "score"
+        ):
             return
         if self._inference_matches(inference) is not True or self._model_differs():
             return
-        helper_overflows = self._recorded_helper_overflows()
         for sid, ctx in self._contexts.items():
             if (
                 ctx.stage is TaskStage.FAILED
                 and ctx.error_action is TaskAction.INFER
                 and ctx.error_msg is not None
                 and is_recorded_context_overflow(ctx.error_reason, ctx.error_msg)
-                and (isinstance(self._subject, Model) or sid in helper_overflows)
             ):
                 self._overflow_replays[sid] = ctx.error_msg
-
-    def _recorded_helper_overflows(self) -> set[str | int]:
-        """Return samples whose recorded overflow came from a helper Model."""
-        if isinstance(self._subject, Model):
-            return set()
-        samples: set[str | int] = set()
-        for path in self._root_dir.glob("requests*.jsonl"):
-            try:
-                lines = path.read_text(encoding="utf-8").splitlines()
-            except OSError:
-                continue
-            for line in lines:
-                try:
-                    entry = orjson.loads(line)
-                except orjson.JSONDecodeError:
-                    continue
-                if (
-                    isinstance(entry, dict)
-                    and entry.get("role") != "subject"
-                    and entry.get("phase") == "infer"
-                    and entry.get("outcome") == CONTEXT_OVERFLOW
-                ):
-                    sample_id = entry.get("sample_id")
-                    if isinstance(sample_id, (str, int)) and not isinstance(
-                        sample_id, bool
-                    ):
-                        samples.add(sample_id)
-        return samples
 
     async def _hydrate_initial(self, *, resumed: bool) -> None:
         """Hydrate the recorded contexts a run continues from."""
@@ -2979,18 +2958,12 @@ class TaskRunner:
 
     def _inference_identity(self) -> InferenceIdentity | None:
         try:
-            subject = self._subject
-            helper = (
-                self._task.model
-                if self._task.requires_model and not isinstance(subject, Model)
-                else None
-            )
             return inference_identity(
-                model=subject,
+                model=self._subject,
                 task_args=self._task.inference_args(),
                 runner_keys=self._runner_keys(),
                 context_limit=self._context_limit,
-                helper_model=helper,
+                helper=self._helper,
                 numerics=served_numerics(
                     self._inference_recipe,
                     self._stated_serving,

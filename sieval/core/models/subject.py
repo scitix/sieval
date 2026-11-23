@@ -7,13 +7,12 @@ include every stable subject detail whose change should invalidate inference.
 AI-Generated Code - GPT-6.1 (OpenAI)
 """
 
-import hashlib
 import json
 from collections.abc import Mapping
-from datetime import datetime
 from typing import Literal, NotRequired, Protocol, TypedDict, runtime_checkable
 
 from sieval.core.types import JSONValue
+from sieval.core.utils.canonical import canonical_json
 
 type SubjectMeta = Mapping[str, JSONValue]
 
@@ -94,43 +93,9 @@ _CALL_KEY_EXCLUDED = frozenset({"api_base", "api_base_env", "provenance"})
 def subject_call_key(meta: Mapping[str, object]) -> str:
     """Canonical subject call key, excluding endpoint and provenance details."""
 
-    return json.dumps(
-        {key: value for key, value in meta.items() if key not in _CALL_KEY_EXCLUDED},
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-        allow_nan=True,
-        default=_subject_json_value,
+    return canonical_json(
+        {key: value for key, value in meta.items() if key not in _CALL_KEY_EXCLUDED}
     )
-
-
-def _subject_json_value(value: object) -> object:
-    """Encode the same extended values as the result identity encoder.
-
-    Model call keys are part of the legacy result identity. Keep this encoder
-    compatible with ``canonical_json`` without importing the module that
-    imports this protocol.
-    """
-
-    if isinstance(value, (set, frozenset)):
-        return sorted(_subject_canonical_json(item) for item in value)
-    if isinstance(value, tuple):
-        return list(value)
-    if isinstance(value, bytes):
-        return {"__bytes__": hashlib.sha256(value).hexdigest()}
-    if isinstance(value, Mapping):
-        return dict(value)
-    tolist = getattr(value, "tolist", None)
-    if callable(tolist):
-        return tolist()
-    tobytes = getattr(value, "tobytes", None)
-    if callable(tobytes):
-        raw = tobytes()
-        if isinstance(raw, bytes):
-            return {"__bytes__": hashlib.sha256(raw).hexdigest()}
-    if isinstance(value, datetime):
-        return value.isoformat()
-    raise TypeError(f"cannot encode {type(value).__name__} as a subject JSON value")
 
 
 def _mapping_json_value(value: object) -> object:
@@ -139,16 +104,3 @@ def _mapping_json_value(value: object) -> object:
     if isinstance(value, Mapping):
         return dict(value)
     raise TypeError(f"cannot encode {type(value).__name__} as a subject JSON value")
-
-
-def _subject_canonical_json(value: object) -> str:
-    """Canonical text used when sorting set members in a subject key."""
-
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-        allow_nan=True,
-        default=_subject_json_value,
-    )
