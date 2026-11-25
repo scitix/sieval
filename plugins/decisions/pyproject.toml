@@ -1,0 +1,24 @@
+[project]
+name = "sieval-decisions"
+version = "0.1.0"
+description = "Decision API clients and evaluation tasks for SiEval"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  # EvalSubject (#301) is unreleased; use its immutable merge commit for development.
+  "sieval @ git+https://github.com/scitix/sieval.git@607cfded82fca553716b4e92215c6c423926ab83",
+  "httpx>=0.28.1",
+]
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pdm.build]
+package-dir = "src"
+includes = ["src/sieval_decisions/"]
+source-includes = ["README.md", "examples/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

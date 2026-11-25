@@ -1,0 +1,22 @@
+result_dir: ./results/decisions-openrouter
+
+datasets:
+  tickets:
+    class: sieval_decisions.dataset.DecisionJSONLDataset
+    args:
+      name_or_path: plugins/decisions/examples/tickets.jsonl
+
+tasks:
+  ticket_decisions:
+    class: sieval_decisions.task.DecisionJSONLTask
+    dataset: tickets
+    args:
+      provider: openrouter
+      model_name: typesafe/jev-1.14
+      predicate_threshold: 0.5
+      score_tolerance: 0.5
+      require_probabilities: true
+    runner_config:
+      concurrency_limit: 4
+      max_retries: 0
+      profile_usage: true

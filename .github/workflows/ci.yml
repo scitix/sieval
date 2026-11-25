@@ -56,6 +56,7 @@ jobs:
           filters: |
             code:
               - 'sieval/**'
+              - 'plugins/decisions/**'
               - 'scripts/**'
               - 'pyproject.toml'
               - 'pdm.lock'
@@ -108,7 +109,7 @@ jobs:
           python-version: ${{ env.PYTHON_DEFAULT }}
           cache: true
       - run: pdm install --check --frozen-lockfile ${{ env.INSTALL_GROUPS }}
-      - run: pdm run ty check
+      - run: pdm run ty check --extra-search-path plugins/decisions/src
 
   checks:
     needs: changes
@@ -172,7 +173,7 @@ jobs:
       # lands at 1:1. Pinning a literal here would only drift from the runner.
       - name: Unit + integration + acceptance tests + coverage
         run: >-
-          pdm run python -m pytest tests/unit tests/integration tests/acceptance
+          pdm run python -m pytest tests/unit tests/integration tests/acceptance plugins/decisions/tests
           -m "not stress and not benchmark"
           -n auto --cov --cov-report=xml -q
       # The lock pins `datasets` 4, but `>=4.2.0` admits 5, whose builder API
