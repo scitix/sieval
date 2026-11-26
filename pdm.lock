@@ -5,7 +5,7 @@
 groups = ["default", "bfcl-v3", "code-eval", "dev", "drop", "hle", "ifbench", "ifeval", "iheval", "math", "multi-if", "nl2sh-alfa", "ruler", "ruler-gen", "scicode", "spider", "spider2", "t-eval", "test", "wikisql"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:e866a7d5a816db521257f4dc9ac9dc12e37d43dd7d667f47da49c0e1e49b09bb"
+content_hash = "sha256:3dcc524be88098310a982da917bdec26546c8925af620f27ed0691fc56fc989f"
 
 [[metadata.targets]]
 requires_python = ">=3.12,<3.15"
